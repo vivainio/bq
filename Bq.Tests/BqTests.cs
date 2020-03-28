@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using TrivialTestRunner;
 
@@ -18,10 +19,23 @@ namespace Bq.Tests
     }
     public class BqTests
     {
+        class FakeRepository : IBqRepository
+        {
+            public Task CreateJob(DbJob job)
+            {
+                throw new NotImplementedException();
+            }
+
+            public Task<DbJob> ReadJobs(IReadOnlyList<string> tokens)
+            {
+                throw new NotImplementedException();
+            }
+        }
         [Case]
         public static void CreateWorker()
         {
-            var hub = new BqJobHub();
+            var repo = new FakeRepository();
+            var hub = new BqJobServer(repo);
             var handler = new PingHandler();
             
             hub.AddHandler(handler);
@@ -35,6 +49,7 @@ namespace Bq.Tests
                 Msg = Any.Pack(pingMessage)
             };
 
+            var dbJob = hub.CreateDbJob(env);
             hub.DispatchToHandler(env);
 
         }

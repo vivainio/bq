@@ -1,6 +1,7 @@
 syntax = "proto3";
 
 import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
 
 package bq.jobs;
 
@@ -12,6 +13,19 @@ message Envelope {
     string cursor = 4;
 }
 
+
+// you will only get "READY" jobs when reading
+enum JobStatus {
+    // not used, required by protobuf
+    UNKNOWN = 0;
+    // task that can be started by anyone
+    READY = 1;
+    // task that has been started and someone is working on it
+    PENDING = 2;
+    // task that has failed
+    FAILED = 3;
+    
+}
 // representation of job in database
 message DbJob {
     // descibes "channel" where message is. different workers can be picky about what channels they care about
@@ -22,6 +36,9 @@ message DbJob {
     bytes envelope = 2;
     string descriptor = 3;
     string cursor = 4; // this will populate Envelope.cursor & is authority
+    google.protobuf.Timestamp launch_at = 5;
+    google.protobuf.Timestamp expires_at = 6;
+    
 }
 
 // use this for your first demo

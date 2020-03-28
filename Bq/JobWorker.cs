@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics.Contracts;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -24,6 +25,15 @@ namespace Bq
         Task HandleJob(IJobContext context);
     }
 
+    // abstraction for the database
+    public interface IBqRepository
+    {
+        // writes the job to database
+        Task CreateJob(DbJob job);
+        // get some number of db jobs, depends on repository how many
+        Task<DbJob> ReadJobs(IReadOnlyList<string> tokens);
+    }
+    
     public class BqError : Exception
     {
         public readonly string Code;
@@ -76,10 +86,15 @@ namespace Bq
     }
     
     
-    public class BqJobHub
+    public class BqJobServer
     {
+        private readonly IBqRepository _repository;
         private ConcurrentDictionary<string, IJobHandler> _handlers = new ConcurrentDictionary<string, IJobHandler>();
 
+        public BqJobServer(IBqRepository repository)
+        {
+            _repository = repository;
+        }
         // yeah I don't know how to get access to static descriptor from T
         public void AddHandler<T>(BqMessageHandler<T> handler) where T: IMessage<T>, new()
         {
@@ -109,7 +124,17 @@ namespace Bq
             var ctx = new DbJobContext(envelope);
             await handler.HandleJob(ctx);
         }
+
+        public DbJob CreateDbJob(Envelope envelope)
+        {
+            var dbJob = new DbJob
+            {
+                Envelope = envelope.ToByteString(),
+                Cursor = "",
+            };
+            return dbJob;
+
+        }
         
     }
-    
 }
