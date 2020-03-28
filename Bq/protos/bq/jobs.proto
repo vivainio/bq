@@ -24,3 +24,11 @@ message DbJob {
     string cursor = 4; // this will populate Envelope.cursor & is authority
 }
 
+// use this for your first demo
+message DemoMessagePing {
+    string message = 1;
+}
+
+message DemoMessagePong {
+    string message = 1;
+}
