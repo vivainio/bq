@@ -1,10 +1,26 @@
 syntax = "proto3";
-package Bq.Bq;
 
-message PingRequest {
-    string Text = 1;
+import "google/protobuf/any.proto";
+
+package bq.jobs;
+
+// envelope passed to message handlers
+message Envelope {
+    google.protobuf.Any msg = 1;
+    string id = 2;
+    string token = 3;
+    string cursor = 4;
 }
 
-message PingResponse {
-    string ReplyString = 1;
+// representation of job in database
+message DbJob {
+    // descibes "channel" where message is. different workers can be picky about what channels they care about
+    // similar to rabbit queue maybe?
+    string token = 1;
+    
+    // This can be parsed to Envelope
+    bytes envelope = 2;
+    string descriptor = 3;
+    string cursor = 4; // this will populate Envelope.cursor & is authority
 }
+
