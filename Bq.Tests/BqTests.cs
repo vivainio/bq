@@ -53,5 +53,13 @@ namespace Bq.Tests
             hub.DispatchToHandler(env);
 
         }
+
+        [Case]
+        public static void TestRedis()
+        {
+            var rs = new BqRedisScheduler();
+            var t =  rs.Connect();
+            t.Wait();
+        }
     }
 }

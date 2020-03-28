@@ -1,17 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>netcoreapp3.1</TargetFramework>
+    <TargetFramework>net472</TargetFramework>
+    <UserSecretsId>708e3b9d-6f83-4986-bf62-b5f87a8be3fc</UserSecretsId>
   </PropertyGroup>
-
   <ItemGroup>
     <PackageReference Include="NFluent" Version="2.7.0" />
     <PackageReference Include="trivialtestrunner" Version="1.1.0" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\Bq.Core\Bq.Core.csproj" />
+    <ProjectReference Include="..\Bq\Bq.csproj" />
   </ItemGroup>
-
 </Project>
