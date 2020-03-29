@@ -1,0 +1,8 @@
+redis:
+  container_name: redis
+  image: redis
+  ports:
+    - "17005:6379"
+  volumes:
+    - ../data/redis:/data
+  restart: always

@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Threading.Tasks;
 using TrivialTestRunner;
 
 using Bq.Jobs;
 using Google.Protobuf.WellKnownTypes;
+using Microsoft.Extensions.Configuration;
 
 namespace Bq.Tests
 {
@@ -54,9 +56,13 @@ namespace Bq.Tests
 
         }
 
-        [Case]
+        [fCase]
         public static void TestRedis()
         {
+            var config = new ConfigurationBuilder();
+            config.AddUserSecrets(Assembly.GetExecutingAssembly());
+            var croot = config.Build();
+            var sect = croot.GetSection("AppSettings:RedisAuth");
             var rs = new BqRedisScheduler();
             var t =  rs.Connect();
             t.Wait();

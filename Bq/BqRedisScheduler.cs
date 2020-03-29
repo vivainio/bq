@@ -9,7 +9,7 @@ namespace Bq
     {
         public async Task Connect()
         {
-            var conn = await ConnectionMultiplexer.ConnectAsync("localhost");
+            var conn = await ConnectionMultiplexer.ConnectAsync("localhost:17005");
             return;
         }
         
