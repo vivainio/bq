@@ -4,6 +4,5 @@ redis:
   ports:
     - "17005:6379"
   volumes:
-    - ../data/redis:/data
+    - /c/Docker/redis:/data
   restart: always
-  

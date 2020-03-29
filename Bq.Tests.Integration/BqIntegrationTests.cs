@@ -73,13 +73,13 @@ namespace Bq.Tests.Integration
             var full = "create table BQ_JOBS " + sql;
         }
 
-        [fCase]
-        public void TestInsertionSql()
+        [Case]
+        public async Task TestInsertionSql()
         {
             var orm = new FastMemberOrm<DbJob>().OmitProperties("Envelope");
 
             var sql = DbExtensions.InsertionSql("BQ_JOBS", 
-                orm.Props.Select(p => p.ToUpperInvariant()).ToArray());
+                orm.Props.Select(p => p.Name.ToUpperInvariant()).ToArray());
             Check.That(sql).Contains("values");
             
             var conn = OracleConnectionFactory();
@@ -88,10 +88,10 @@ namespace Bq.Tests.Integration
             var dbJob = _fixture.Create<DbJob>();
             orm.AddParamsToCommand(cmd, dbJob);
             cmd.ExecuteNonQuery();
-
+            
+            var repo = new BqDbRepository(OracleConnectionFactory);
+            var readback = await repo.ReadJobAsync("Id89024cda-39ec-419f-b89c-b7c9cba803c0");
+            Check.That(readback).IsEqualTo(dbJob);
         }
-        
-        
-        
     }
 }

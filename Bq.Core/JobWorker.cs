@@ -55,16 +55,6 @@ namespace Bq
         }
     }
 
-    [AttributeUsage(AttributeTargets.Class, AllowMultiple = true)]
-    public class BqJobHandlerAttribute: Attribute
-    {
-        public string Descriptor { get; }
-
-        public BqJobHandlerAttribute(string descriptor)
-        {
-            Descriptor = descriptor;
-        }
-    }
 
     public class DbJobContext : IJobContext
     {

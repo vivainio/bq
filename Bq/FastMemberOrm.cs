@@ -8,6 +8,7 @@ using System.Text;
 using FastMember;
 using Google.Protobuf.WellKnownTypes;
 using Enum = System.Enum;
+using Type = System.Type;
 
 namespace Bq
 {
@@ -46,7 +47,7 @@ namespace Bq
             }
             sb.Append("(");
             sb.Append(string.Join(",\n", members.Select(declaredCol)));
-            sb.Append(");");
+            sb.Append(")");
             return sb.ToString();
         }
 
@@ -62,20 +63,21 @@ namespace Bq
         }
 
     }
-
     public class FastMemberOrm<T> where T : new()
     {
         private readonly TypeAccessor _accessor;
-        private readonly Dictionary<string, string> _lowercaseMap;
+        private readonly Dictionary<string, (string Name, Type Type)> _lowercaseMap;
         private Action<string, object, T> _unknownMapper;
 
         public FastMemberOrm()
         {
             this._accessor = TypeAccessor.Create(typeof(T));
-            this._lowercaseMap = this._accessor.GetMembers().ToDictionary(i => i.Name.ToLowerInvariant(), i => i.Name);
+            this._lowercaseMap = this._accessor.GetMembers().ToDictionary(i => i.Name.ToLowerInvariant(), i => 
+                (i.Name, i.Type));
+            
         }
 
-        public string[] Props => _lowercaseMap.Values.ToArray();
+        public (string Name, Type Type)[] Props => _lowercaseMap.Values.ToArray();
 
         public FastMemberOrm<T> OmitProperties(params string[] properties)
         {
@@ -93,7 +95,18 @@ namespace Bq
             return this;
         }
 
-        private static object Rebox(object value)
+        private static object ReboxToType(object src, Type targetType)
+        {
+            switch (src)
+            {
+                case DateTime dateTime when targetType == typeof(Timestamp):
+                    return Timestamp.FromDateTime(dateTime);
+                default:
+                    return src;
+                     
+            }
+        }
+        private static object ReboxToDb(object value)
         {
             if (value is Enum @enum)
             {
@@ -107,6 +120,8 @@ namespace Bq
 
             return value;
         }
+        
+        
 
         
         public void AddParamsToCommand(DbCommand command, T entity)
@@ -115,8 +130,8 @@ namespace Bq
             {
                 var param = command.CreateParameter();
                 param.ParameterName = prop.Key.ToUpperInvariant();
-                var value = _accessor[entity, prop.Value];
-                param.Value = Rebox(value);
+                var value = _accessor[entity, prop.Value.Name];
+                param.Value = ReboxToDb(value);
                 command.Parameters.Add(param);
             }
         }
@@ -131,7 +146,7 @@ namespace Bq
                     continue;
                 }
 
-                var trivialMapperFound = _lowercaseMap.TryGetValue(name, out var propName);
+                var trivialMapperFound = _lowercaseMap.TryGetValue(name, out var propData);
                 if (!trivialMapperFound)
                 {
                     if (_unknownMapper == null)
@@ -141,10 +156,11 @@ namespace Bq
                 }
 
                 var value = dataReader.IsDBNull(i) ? null : dataReader.GetValue(i);
-
+                    
                 if (trivialMapperFound)
                 {
-                    _accessor[newObject, propName] = value;
+                    
+                    _accessor[newObject, propData.Name] = value;
                 }
                 else
                 {

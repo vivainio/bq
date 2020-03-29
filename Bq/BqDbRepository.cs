@@ -38,7 +38,10 @@ namespace Bq
                 {
                     if (prop.ToLowerInvariant() == "envelope")
                     {
-                        tgt.Envelope = ByteString.CopyFrom(value as byte[]);
+                        if (value != null)
+                        {
+                            tgt.Envelope = ByteString.CopyFrom(value as byte[]);
+                        }
                         
                     }
                 });
@@ -55,9 +58,13 @@ namespace Bq
         public async Task<DbJob> ReadJobAsync(string id)
         {
             using var conn = ConnectionFactory();
-            var query = $"select * from {TABLE_NAME} where id = {id}";
+            var query = $"select * from {TABLE_NAME} where id = '{id}'";
             var rd = conn.ExecuteReader(query);
-            await rd.ReadAsync();
+            var got = await rd.ReadAsync();
+            if (!got)
+            {
+                return null;
+            }
             var dbJob = new DbJob();
             Mapper.CopyReaderRowToObject(rd, dbJob);
             return dbJob;

@@ -38,7 +38,6 @@ namespace Bq.Tests
             var repo = new FakeRepository();
             var hub = new BqJobServer(repo);
             var handler = new PingHandler();
-            
             hub.AddHandler(handler);
             var pingMessage = new DemoMessagePing
             {

@@ -39,7 +39,6 @@ message DbJob {
     // similar to rabbit queue maybe?
     string channel = 7;
     JobStatus state = 8;
-    
 }
 
 // use this for your first demo
