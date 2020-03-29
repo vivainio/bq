@@ -32,13 +32,13 @@ message DbJob {
     
     // This can be parsed to Envelope
     bytes envelope = 2;
-    string descriptor = 3;
     string cursor = 4; // this will populate Envelope.cursor & is authority
     google.protobuf.Timestamp launch_at = 5;
     google.protobuf.Timestamp expires_at = 6;
     // descibes "channel" where message is. different workers can be picky about what channels they care about
     // similar to rabbit queue maybe?
     string channel = 7;
+    JobStatus state = 8;
     
 }
 

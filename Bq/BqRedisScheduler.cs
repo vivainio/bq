@@ -80,7 +80,5 @@ namespace Bq
         {
             _redisQueue.Send(id);
         }
-        
-        
     }
 }

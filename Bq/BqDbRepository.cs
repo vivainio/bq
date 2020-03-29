@@ -34,7 +34,7 @@ namespace Bq
             ConnectionFactory = connectionFactory;
             Mapper = new FastMemberOrm<DbJob>()
                 .OmitProperties("Envelope")
-                .UseFallback((prop, value, tgt) =>
+                .UseFallbackWhenReading((prop, value, tgt) =>
                 {
                     if (prop.ToLowerInvariant() == "envelope")
                     {
