@@ -21,12 +21,13 @@ namespace Bq.Tests
     {
         class FakeRepository : IBqRepository
         {
-            public Task CreateJob(DbJob job)
+
+            public Task CreateJobAsync(DbJob job)
             {
                 throw new NotImplementedException();
             }
 
-            public Task<DbJob> ReadJobs(IReadOnlyList<string> tokens)
+            public Task<DbJob> ReadJobAsync(string id)
             {
                 throw new NotImplementedException();
             }

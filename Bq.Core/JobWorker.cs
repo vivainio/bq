@@ -29,9 +29,9 @@ namespace Bq
     public interface IBqRepository
     {
         // writes the job to database
-        Task CreateJob(DbJob job);
+        Task CreateJobAsync(DbJob job);
         // get some number of db jobs, depends on repository how many
-        Task<DbJob> ReadJobs(IReadOnlyList<string> tokens);
+        Task<DbJob> ReadJobAsync(string id);
     }
     
     public class BqError : Exception

@@ -9,6 +9,7 @@ namespace Bq.Tests.Integration
         static async Task Main(string[] args)
         {
             TRunner.AddTests<BqIntegrationTests>();
+            TRunner.CrashHard = true;
             await TRunner.RunTestsAsync();
             TRunner.ReportAll();
         }
