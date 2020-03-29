@@ -39,15 +39,14 @@ namespace Bq
             );
         }
 
-        public void SendAsync(RedisValue message)
+        public void Send(RedisValue message)
         {
             var db = _redis.GetDatabase();
             var chan = _redis.GetSubscriber();
             db.ListLeftPush(_listName, message);
             // short for "read now" eh
-            db.PublishAsync(_subName, "r");
+            db.Publish(_subName, "r", CommandFlags.FireAndForget);
         }
-        
     }
     // create singleton instance of this
     public class BqRedisScheduler
@@ -65,7 +64,7 @@ namespace Bq
         public string ChannelName { get; set; }
         
         private IDatabase Db() => _redis.GetDatabase();
-        public async Task Connect()
+        public async Task ConnectAsync()
         {
             _redis = await ConnectionMultiplexer.ConnectAsync("localhost:17005");
             _redisQueue = new RedisPubSubQueue(_redis, $"{SUB_CHANNEL_NAME}/{ChannelName}", 
@@ -79,5 +78,12 @@ namespace Bq
                 throw new InvalidOperationException("Must call Connect() before StartListening()");
             _redisQueue.StartListening(( async msg => { await onReceive(msg); }));
         }
+
+        public void Send(string id)
+        {
+            _redisQueue.Send(id);
+        }
+        
+        
     }
 }

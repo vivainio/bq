@@ -2,14 +2,15 @@
 using System.Threading.Tasks;
 using TrivialTestRunner;
 
-namespace Bq.Tests
+namespace Bq.Tests.Integration
 {
-    static class Program
+    class Program
     {
         static async Task Main(string[] args)
         {
-            TRunner.AddTests<BqTests>();
+            TRunner.AddTests<BqIntegrationTests>();
             await TRunner.RunTestsAsync();
+            TRunner.ReportAll();
         }
     }
 }

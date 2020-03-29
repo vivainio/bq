@@ -1,15 +1,17 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net472</TargetFramework>
   </PropertyGroup>
+
   <ItemGroup>
     <PackageReference Include="NFluent" Version="2.7.0" />
-    <PackageReference Include="trivialtestrunner" Version="2.0.0" />
+    <PackageReference Include="TrivialTestRunner" Version="2.0.0" />
   </ItemGroup>
+
   <ItemGroup>
-    <ProjectReference Include="..\Bq.Core\Bq.Core.csproj" />
     <ProjectReference Include="..\Bq\Bq.csproj" />
   </ItemGroup>
+
 </Project>
