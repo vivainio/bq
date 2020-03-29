@@ -1,19 +1,19 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net472</TargetFramework>
+    <UserSecretsId>2e254691-4943-45b5-95ce-364adf384286</UserSecretsId>
   </PropertyGroup>
-
   <ItemGroup>
     <PackageReference Include="AutoFixture" Version="4.11.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="3.1.3" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="3.1.3" />
     <PackageReference Include="NFluent" Version="2.7.0" />
     <PackageReference Include="Oracle.ManagedDataAccess" Version="19.6.0" />
     <PackageReference Include="TrivialTestRunner" Version="2.0.0" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\Bq\Bq.csproj" />
   </ItemGroup>
-
 </Project>
