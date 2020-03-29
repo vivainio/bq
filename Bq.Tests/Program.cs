@@ -1,15 +1,16 @@
 ﻿using System;
+using System.Threading.Tasks;
 using TrivialTestRunner;
 
 namespace Bq.Tests
 {
-    class Program
+    static class Program
     {
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             Console.WriteLine("Hello World!");
             TRunner.AddTests<BqTests>();
-            TRunner.RunTests();
+            await TRunner.RunTestsAsync();
         }
     }
 }
