@@ -6,3 +6,4 @@ redis:
   volumes:
     - ../data/redis:/data
   restart: always
+  

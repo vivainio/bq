@@ -63,7 +63,7 @@ namespace Bq.Tests
             config.AddUserSecrets(Assembly.GetExecutingAssembly());
             var croot = config.Build();
             var sect = croot.GetSection("AppSettings:RedisAuth");
-            var rs = new BqRedisScheduler();
+            var rs = new BqRedisScheduler("main");
             var t =  rs.Connect();
             t.Wait();
         }
