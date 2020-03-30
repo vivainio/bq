@@ -4,7 +4,7 @@
 
 Problem: you want to implement batching/messaging patterns (i.e. "run later while I go about other stuff") but with following constraints:
 
-- Messages appear change state together with business transactions.
+- Messages appear and change state together with business transactions.
 - There are no messages anywhere apart from database. There are no queues to
   back up or synchronize
 - Messages are small and fast to parse
