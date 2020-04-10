@@ -19,13 +19,8 @@ using Google.Protobuf;
 
 namespace Bq
 {
-    
-    
-    
     public class BqDbRepository: IBqRepository
     {
-        
-        
         private const string TABLE_NAME = "BQ_JOBS";
         private readonly Func<DbConnection> ConnectionFactory;
 
@@ -45,14 +40,24 @@ namespace Bq
                         
                     }
                 });
+            InsertionSql = DbExtensions.InsertionSql(TABLE_NAME, 
+                Mapper.Props.Select(p => p.Name.ToUpperInvariant()).ToArray());
+
         }
 
+        private string InsertionSql { get; set; }
+        
         private FastMemberOrm<DbJob> Mapper { get; set; }
 
 
-        public Task CreateJobAsync(DbJob job)
+        public async Task CreateJobAsync(DbJob job)
         {
-            throw new NotImplementedException();
+            using var conn = ConnectionFactory();
+            
+            var cmd = conn.CreateCommand();
+            cmd.CommandText = InsertionSql;
+            Mapper.AddParamsToCommand(cmd, job);
+            await cmd.ExecuteNonQueryAsync();
         }
 
         public async Task<DbJob> ReadJobAsync(string id)
@@ -68,6 +73,21 @@ namespace Bq
             var dbJob = new DbJob();
             Mapper.CopyReaderRowToObject(rd, dbJob);
             return dbJob;
+        }
+
+        public void DangerouslyDropTable()
+        {
+            using var conn = ConnectionFactory();
+            conn.ExecuteSql("drop table BQ_JOBS");
+
+        }
+        public void CreateTable()
+        {
+            var sql = DbExtensions.CreationSql<DbJob>();
+            var full = "create table BQ_JOBS " + sql;
+            using var conn = ConnectionFactory();
+            
+            conn.ExecuteSql(full);
         }
 
 

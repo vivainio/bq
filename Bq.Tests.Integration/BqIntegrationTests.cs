@@ -70,9 +70,16 @@ namespace Bq.Tests.Integration
         {
             var sql = DbExtensions.CreationSql<DbJob>();
             Check.That(sql).Contains("ENVELOPE", "BLOB", "EXPIRESAT", "TIMESTAMP");
-            var full = "create table BQ_JOBS " + sql;
         }
 
+        [Case]
+        public void CreateTable()
+        {
+            var repo = new BqDbRepository(OracleConnectionFactory);
+            repo.DangerouslyDropTable();
+            repo.CreateTable();
+            
+        }
         [Case]
         public async Task TestInsertionSql()
         {
@@ -81,17 +88,16 @@ namespace Bq.Tests.Integration
             var sql = DbExtensions.InsertionSql("BQ_JOBS", 
                 orm.Props.Select(p => p.Name.ToUpperInvariant()).ToArray());
             Check.That(sql).Contains("values");
-            
-            var conn = OracleConnectionFactory();
-            var cmd = conn.CreateCommand();
-            cmd.CommandText = sql;
-            var dbJob = _fixture.Create<DbJob>();
-            orm.AddParamsToCommand(cmd, dbJob);
-            cmd.ExecuteNonQuery();
-            
+        }
+
+        [Case]
+        public async Task TestSend()
+        {
             var repo = new BqDbRepository(OracleConnectionFactory);
-            var readback = await repo.ReadJobAsync("Id89024cda-39ec-419f-b89c-b7c9cba803c0");
-            Check.That(readback).IsEqualTo(dbJob);
+            var job = _fixture.Create<DbJob>();
+            await repo.CreateJobAsync(job);
         }
     }
+    
+    
 }
