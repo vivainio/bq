@@ -81,7 +81,7 @@ namespace Bq.Tests.Integration
             
         }
         [Case]
-        public async Task TestInsertionSql()
+        public void TestInsertionSql()
         {
             var orm = new FastMemberOrm<DbJob>().OmitProperties("Envelope");
 
