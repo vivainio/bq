@@ -6,6 +6,7 @@ using System.Data.Common;
 using System.Drawing.Drawing2D;
 using System.Linq;
 using System.Reflection;
+using System.Security.Policy;
 using System.Threading;
 using System.Threading.Tasks;
 using AutoFixture;
@@ -13,6 +14,7 @@ using Bq.Jobs;
 using Microsoft.Extensions.Configuration;
 using NFluent;
 using Oracle.ManagedDataAccess.Client;
+using Polly;
 using TrivialTestRunner;
 
 namespace Bq.Tests.Integration
@@ -131,15 +133,14 @@ namespace Bq.Tests.Integration
             {
                 Message = "ping"
             };
-            var pong = new DemoMessagePong
-            {
-                Message = "heeoeoaeaoeoae"
-            };
             
             var pingHandler = new PingHandler();
+
+            worker.ResiliencePolicy = Policy.Handle<Exception>().RetryAsync(2);
             worker.AddHandler(pingHandler);
 
             await worker.SendAsync("main", ping);
+            // crashing message
             await worker.SendAsync("main", new DemoMessagePing
             {
                 Message = "error"
@@ -158,8 +159,8 @@ namespace Bq.Tests.Integration
             {
                 await scheduler.SendAsync(job.Channel, job.Id);
             }
-            await Task.Delay(100);
-            Check.That(received).HasSize(1);
+            await Task.Delay(10000);
+            Check.That(received).HasSize(2);
         }
     }
 }

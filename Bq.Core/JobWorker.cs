@@ -1,16 +1,11 @@
 ﻿using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Diagnostics.Contracts;
-using System.Runtime.InteropServices;
-using System.Threading;
 using System.Threading.Tasks;
 using System.Transactions;
-using System.Xml;
 using Bq.Jobs;
 using Google.Protobuf;
-using Google.Protobuf.Reflection;
 using Google.Protobuf.WellKnownTypes;
+using Polly;
 
 
 namespace Bq
@@ -31,16 +26,6 @@ namespace Bq
     }
 
     // abstraction for the database
-    public interface IBqRepository
-    {
-        // writes the job to database
-        Task<DbJob> CreateJobAsync(DbJob job);
-
-        // get some number of db jobs, depends on repository how many
-        Task<DbJob> ReadJobAsync(string id);
-        Task SetJobStatusAsync(string id, JobStatus status);
-        Task DeleteJobAsync(string id);
-    }
 
     public interface IBqScheduler
     {
@@ -78,6 +63,8 @@ namespace Bq
         {
             _repository = repository;
         }
+
+        public AsyncPolicy ResiliencePolicy { get; set; } = Policy.NoOpAsync();
 
         // yeah I don't know how to get access to static descriptor from T
         public void AddHandler<T>(BqMessageHandler<T> handler) where T : IMessage<T>, new()
@@ -174,7 +161,9 @@ namespace Bq
             using var tx = new TransactionScope(TransactionScopeOption.Required);
             try
             {
-                await DispatchToHandler(env);
+                
+                var t = ResiliencePolicy.ExecuteAsync(() => DispatchToHandler(env));
+                await t;
                 tx.Complete();
             }
             catch (Exception ex)
