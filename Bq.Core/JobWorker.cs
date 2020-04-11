@@ -29,7 +29,7 @@ namespace Bq
 
     public interface IBqScheduler
     {
-        Task SendAsync(string channel, string id);
+        Task NotifyJobAvailableToListeners(string channel, string id);
     }
 
     public class BqError : Exception
@@ -53,11 +53,29 @@ namespace Bq
         }
     }
 
+    // redis scheduler calls this
+    public interface IDispatchJobs
+    {
+        Task ReadAndDispatchJob(string id);
+    }
 
-    public class BqJobServer
+    // use e.g. in tests
+    public class DummyJobServer : IDispatchJobs
+    {
+        public readonly ConcurrentBag<string> Handled = new ConcurrentBag<string>();
+        public Task ReadAndDispatchJob(string id)
+        {
+            Handled.Add(id);
+            return Task.CompletedTask;
+        }
+    }
+
+    public class BqJobServer : IDispatchJobs
     {
         private readonly IBqRepository _repository;
-        private readonly ConcurrentDictionary<string, IJobHandler> _handlers = new ConcurrentDictionary<string, IJobHandler>();
+
+        private readonly ConcurrentDictionary<string, IJobHandler> _handlers =
+            new ConcurrentDictionary<string, IJobHandler>();
 
         public BqJobServer(IBqRepository repository)
         {
@@ -120,7 +138,7 @@ namespace Bq
             return env;
         }
 
-        public async Task<DbJob> SendAsync(string channel, IMessage msg)
+        public async Task<DbJob> SendJobAsync(string channel, IMessage msg)
         {
             var env = CreateEnvelope(msg);
             var dbJob = CreateDbJob(env);
@@ -142,23 +160,38 @@ namespace Bq
             {
                 throw new BqError("ASSERT", error);
             }
-            
+
         }
 
-        public void LogError(Exception ex)
+        public static void LogError(Exception ex)
         {
-            Console.WriteLine("BqJobServer crash:", ex);
-            
+            Console.WriteLine("BqJobServer crash:");
+            Console.WriteLine(ex);
+
         }
-        
+
+        public static void LogWarning(string warning)
+        {
+            Console.WriteLine($"BqJobServer WARN: {warning}");
+        }
+
+
         // this is the main dispatch entry point. Does the transactions etc
+        // will NOT raise exceptions but "handle" them according to
+        // configured behavior 
         public async Task ReadAndDispatchJob(string id)
         {
             var job = await _repository.ReadJobAsync(id);
+            // These two shouldn't happen if redis works correctly
+            if (job == null)
+            {
+                LogWarning($"JOB_GONE Job {id} was completed when Bq tried to load it for running");
+                return;
+            }
             Assert(job.State == JobStatus.Ready, $"Job {id} should be READY, is {job.State}");
             var env = CreateEnvelopeFromDbJob(job);
             await _repository.SetJobStatusAsync(id, JobStatus.Pending);
-            using var tx = new TransactionScope(TransactionScopeOption.Required);
+            using var tx = BqUtil.Tx();
             try
             {
                 
@@ -168,8 +201,8 @@ namespace Bq
             }
             catch (Exception ex)
             {
+                await _repository.SetJobStatusAsync(id, JobStatus.Failed);
                 LogError(ex);
-                throw;
             }
         }
     }

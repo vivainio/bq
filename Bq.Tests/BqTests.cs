@@ -19,7 +19,7 @@ namespace Bq.Tests
     public class BqTests
     {
         class FakeRepository : IBqRepository
-        {
+        { 
             public Task<DbJob> CreateJobAsync(DbJob job)
             {
                 throw new NotImplementedException();
@@ -36,6 +36,11 @@ namespace Bq.Tests
             }
 
             public Task DeleteJobAsync(string id)
+            {
+                throw new NotImplementedException();
+            }
+
+            public Task<IReadOnlyList<DbJob>> ReadAvailableWork()
             {
                 throw new NotImplementedException();
             }

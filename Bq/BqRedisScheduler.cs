@@ -1,77 +1,49 @@
 ﻿using System;
+using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading.Tasks;
 using StackExchange.Redis;
-
+using static System.Console;
 namespace Bq
 {
 
     // cheapo alternative to Streams
-    public class RedisPubSubQueue
-    {
-        private readonly ConnectionMultiplexer _redis;
-        private readonly string _subName;
-        private readonly string _listName;
-
-        public RedisPubSubQueue(ConnectionMultiplexer redis, string subName, string listName)
-        {
-            _redis = redis;
-            _subName = subName;
-            _listName = listName;
-        }
-
-        // 
-        public void StartListening(Func<RedisValue, Task> handler)
-        {
-            var db = _redis.GetDatabase();
-            var sub = _redis.GetSubscriber();
-
-            sub.Subscribe(_subName, async (channel, channelMessage) =>
-                {
-                    RedisValue work = db.ListRightPop(_listName);
-                    if (!work.IsNull)
-                    {
-                        await handler(work);
-                    }
-                }
-            );
-        }
-    }
     // create singleton instance of this
     public class BqRedisScheduler : IBqScheduler
     {
+        private readonly IBqRepository _repository;
         private const string WORKLIST_NAME = "bq_worklist";
         private const string SUB_CHANNEL_NAME = "bq_chan";
         private ConnectionMultiplexer _redis;
-        private RedisPubSubQueue _redisQueue;
 
-        public BqRedisScheduler(string channelName)
+        private ConcurrentDictionary<string, object> _recentlySent = new ConcurrentDictionary<string, object>();
+        
+        public BqRedisScheduler(IBqRepository repository)
         {
-            ChannelName = channelName;
+            _repository = repository;
         }
-
-        public string ChannelName { get; set; }
         
         private IDatabase Db() => _redis.GetDatabase();
 
-
         private string SubChan(string channelName) => $"{SUB_CHANNEL_NAME}/{channelName}";
-        private string WorkList(string channelName) => $"{WORKLIST_NAME}/{ChannelName}";
+        private string WorkList(string channelName) => $"{WORKLIST_NAME}/{channelName}";
         public async Task ConnectAsync()
         {
             _redis = await ConnectionMultiplexer.ConnectAsync("localhost:17005");
-            _redisQueue = new RedisPubSubQueue(_redis, SubChan(ChannelName), 
-                WorkList(ChannelName)
-                );
-        }
- 
-        public void StartListening(Func<string, Task> onReceive)
-        {
-            
-            if (_redisQueue == null)
-                throw new InvalidOperationException("Must call Connect() before StartListening()");
-            _redisQueue.StartListening(( async msg => { await onReceive(msg); }));
         }
 
+        private RedisPubSubQueue CreateQueue(string channelName) =>
+            new RedisPubSubQueue(_redis, SubChan(channelName), 
+                WorkList(channelName));
+
+        // same scheduler can observe many channels
+        public void StartListening(string channelName, IDispatchJobs server)
+        {
+            var q = CreateQueue(channelName);
+            q.StartListening(msg => server.ReadAndDispatchJob(msg));
+        }
+
+        // it's totally safe to clear redis. stuff will be reissued from db
         public void Clear(string channel)
         {
             var db = Db();
@@ -79,13 +51,28 @@ namespace Bq
         }
 
         private static int SubCounter = 0;
-        public async Task SendAsync(string channel, string id)
+        public async Task NotifyJobAvailableToListeners(string channel, string id)
         {
             var db = _redis.GetDatabase();
             await db.ListLeftPushAsync(WorkList(channel), id);
-            // short for "read now" eh
             SubCounter++;
+            WriteLine($"Iss {id}");
             await db.PublishAsync(SubChan(channel), $"r{SubCounter}", CommandFlags.FireAndForget);
+        }
+        
+        // should be repeatedly executed as session leader only
+        public async Task ReadAndSendWork()
+        {
+            var jobs = await _repository.ReadAvailableWork();
+            foreach (var job in jobs)
+            {
+                if (_recentlySent.ContainsKey(job.Id))
+                {
+                    continue;
+                }
+                await NotifyJobAvailableToListeners(job.Channel, job.Id);
+                _recentlySent[job.Id] = true;
+            }
         }
     }
 }
