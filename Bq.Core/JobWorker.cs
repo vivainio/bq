@@ -5,6 +5,7 @@ using System.Diagnostics.Contracts;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Transactions;
 using System.Xml;
 using Bq.Jobs;
 using Google.Protobuf;
@@ -37,6 +38,7 @@ namespace Bq
 
         // get some number of db jobs, depends on repository how many
         Task<DbJob> ReadJobAsync(string id);
+        Task SetJobStatusAsync(string id, JobStatus status);
         Task DeleteJobAsync(string id);
     }
 
@@ -63,30 +65,6 @@ namespace Bq
         {
             var unpacked = context.Envelope.Msg.Unpack<T>();
             await HandleMessage(context, unpacked);
-        }
-    }
-
-
-    public class DbJobContext : IJobContext
-    {
-        private readonly IBqRepository _repo;
-
-        public DbJobContext(Envelope envelope, IBqRepository repo)
-        {
-            _repo = repo;
-            Envelope = envelope;
-        }
-
-        public Envelope Envelope { get; }
-
-        public Task CompleteToCursor(string cursor)
-        {
-            throw new NotImplementedException();
-        }
-
-        public async Task CompleteAsync()
-        {
-            await _repo.DeleteJobAsync(Envelope.Id);
         }
     }
 
@@ -155,7 +133,7 @@ namespace Bq
             return env;
         }
 
-        public async Task<DbJob> SendAsync(IMessage msg, string channel)
+        public async Task<DbJob> SendAsync(string channel, IMessage msg)
         {
             var env = CreateEnvelope(msg);
             var dbJob = CreateDbJob(env);
@@ -171,11 +149,39 @@ namespace Bq
             return env;
         }
 
+        private void Assert(bool value, string error)
+        {
+            if (!value)
+            {
+                throw new BqError("ASSERT", error);
+            }
+            
+        }
+
+        public void LogError(Exception ex)
+        {
+            Console.WriteLine("BqJobServer crash:", ex);
+            
+        }
+        
+        // this is the main dispatch entry point. Does the transactions etc
         public async Task ReadAndDispatchJob(string id)
         {
             var job = await _repository.ReadJobAsync(id);
+            Assert(job.State == JobStatus.Ready, $"Job {id} should be READY, is {job.State}");
             var env = CreateEnvelopeFromDbJob(job);
-            await DispatchToHandler(env);
+            await _repository.SetJobStatusAsync(id, JobStatus.Pending);
+            using var tx = new TransactionScope(TransactionScopeOption.Required);
+            try
+            {
+                await DispatchToHandler(env);
+                tx.Complete();
+            }
+            catch (Exception ex)
+            {
+                LogError(ex);
+                throw;
+            }
         }
     }
 }

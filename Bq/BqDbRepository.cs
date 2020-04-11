@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Data;
 using System.Data.Common;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Transactions;
 using Bq.Jobs;
 using Google.Protobuf;
 
@@ -81,6 +83,19 @@ namespace Bq
             var dbJob = new DbJob();
             Mapper.CopyReaderRowToObject(rd, dbJob);
             return dbJob;
+        }
+
+        // immediately set job status in own new transaction
+        public async Task SetJobStatusAsync(string id, JobStatus status)
+        {
+            using var conn = ConnectionFactory();
+            var query = $"update {TABLE_NAME} set STATE = :state where id = :id";
+            var cmd  = conn.SqlCommand(query);
+            cmd.AddParameter("state", DbType.Int32, (int) status);
+            cmd.AddParameter("id", DbType.String, id);
+            using var tx = new TransactionScope(TransactionScopeOption.RequiresNew);
+            await cmd.ExecuteNonQueryAsync();
+            tx.Complete();
         }
 
         public async Task DeleteJobAsync(string id)

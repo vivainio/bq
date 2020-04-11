@@ -30,6 +30,11 @@ namespace Bq.Tests
                 throw new NotImplementedException();
             }
 
+            public Task SetJobStatusAsync(string id, JobStatus status)
+            {
+                throw new NotImplementedException();
+            }
+
             public Task DeleteJobAsync(string id)
             {
                 throw new NotImplementedException();

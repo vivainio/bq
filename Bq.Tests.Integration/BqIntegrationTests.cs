@@ -23,6 +23,10 @@ namespace Bq.Tests.Integration
         protected override async Task HandleMessage(IJobContext context, DemoMessagePing message)
         {
             Console.WriteLine("handling job " + context.Envelope.Id);
+            if (message.Message == "error")
+            {
+                throw new Exception("Wanted to fail so here we go");
+            } 
             await context.CompleteAsync();
         }
     }
@@ -135,7 +139,11 @@ namespace Bq.Tests.Integration
             var pingHandler = new PingHandler();
             worker.AddHandler(pingHandler);
 
-            var dbjob = await worker.SendAsync(ping, "main");
+            await worker.SendAsync("main", ping);
+            await worker.SendAsync("main", new DemoMessagePing
+            {
+                Message = "error"
+            });
             var available = await repo.ReadAvailableWork();
             var scheduler = new BqRedisScheduler("main");
             await scheduler.ConnectAsync();
