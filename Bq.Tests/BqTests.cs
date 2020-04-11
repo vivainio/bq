@@ -10,24 +10,27 @@ namespace Bq.Tests
 {
     public class PingHandler: BqMessageHandler<DemoMessagePing>
     {
-        protected override Task HandleMessage(IJobContext context, DemoMessagePing message)
+        protected override async Task HandleMessage(IJobContext context, DemoMessagePing message)
         {
-            Console.WriteLine("handling job " + context.Envelope.Token);
-            context.Complete();
-            return Task.CompletedTask;
+            Console.WriteLine("handling job " + context.Envelope.Id);
+            await context.CompleteAsync();
         }
     }
     public class BqTests
     {
         class FakeRepository : IBqRepository
         {
-
-            public Task CreateJobAsync(DbJob job)
+            public Task<DbJob> CreateJobAsync(DbJob job)
             {
                 throw new NotImplementedException();
             }
 
             public Task<DbJob> ReadJobAsync(string id)
+            {
+                throw new NotImplementedException();
+            }
+
+            public Task DeleteJobAsync(string id)
             {
                 throw new NotImplementedException();
             }
@@ -53,5 +56,6 @@ namespace Bq.Tests
             hub.DispatchToHandler(env);
 
         }
+
     }
 }

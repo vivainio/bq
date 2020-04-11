@@ -12,6 +12,7 @@ namespace Bq.Tests.Integration
             TRunner.CrashHard = true;
             await TRunner.RunTestsAsync();
             TRunner.ReportAll();
+            Console.ReadLine();
         }
     }
 }

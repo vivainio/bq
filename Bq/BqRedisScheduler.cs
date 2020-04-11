@@ -35,18 +35,9 @@ namespace Bq
                 }
             );
         }
-
-        public void Send(RedisValue message)
-        {
-            var db = _redis.GetDatabase();
-            var chan = _redis.GetSubscriber();
-            db.ListLeftPush(_listName, message);
-            // short for "read now" eh
-            db.Publish(_subName, "r", CommandFlags.FireAndForget);
-        }
     }
     // create singleton instance of this
-    public class BqRedisScheduler
+    public class BqRedisScheduler : IBqScheduler
     {
         private const string WORKLIST_NAME = "bq_worklist";
         private const string SUB_CHANNEL_NAME = "bq_chan";
@@ -61,11 +52,16 @@ namespace Bq
         public string ChannelName { get; set; }
         
         private IDatabase Db() => _redis.GetDatabase();
+
+
+        private string SubChan(string channelName) => $"{SUB_CHANNEL_NAME}/{channelName}";
+        private string WorkList(string channelName) => $"{WORKLIST_NAME}/{ChannelName}";
         public async Task ConnectAsync()
         {
             _redis = await ConnectionMultiplexer.ConnectAsync("localhost:17005");
-            _redisQueue = new RedisPubSubQueue(_redis, $"{SUB_CHANNEL_NAME}/{ChannelName}", 
-                $"{WORKLIST_NAME}/{ChannelName}");
+            _redisQueue = new RedisPubSubQueue(_redis, SubChan(ChannelName), 
+                WorkList(ChannelName)
+                );
         }
  
         public void StartListening(Func<string, Task> onReceive)
@@ -76,9 +72,20 @@ namespace Bq
             _redisQueue.StartListening(( async msg => { await onReceive(msg); }));
         }
 
-        public void Send(string id)
+        public void Clear(string channel)
         {
-            _redisQueue.Send(id);
+            var db = Db();
+            db.ListTrim(WorkList(channel), 0, 0);
+        }
+
+        private static int SubCounter = 0;
+        public async Task SendAsync(string channel, string id)
+        {
+            var db = _redis.GetDatabase();
+            await db.ListLeftPushAsync(WorkList(channel), id);
+            // short for "read now" eh
+            SubCounter++;
+            await db.PublishAsync(SubChan(channel), $"r{SubCounter}", CommandFlags.FireAndForget);
         }
     }
 }

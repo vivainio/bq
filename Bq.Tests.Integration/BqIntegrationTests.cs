@@ -1,10 +1,12 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.ComponentModel.Design;
 using System.Data;
 using System.Data.Common;
 using System.Drawing.Drawing2D;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using System.Threading.Tasks;
 using AutoFixture;
 using Bq.Jobs;
@@ -15,6 +17,16 @@ using TrivialTestRunner;
 
 namespace Bq.Tests.Integration
 {
+    
+    public class PingHandler: BqMessageHandler<DemoMessagePing>
+    {
+        protected override async Task HandleMessage(IJobContext context, DemoMessagePing message)
+        {
+            Console.WriteLine("handling job " + context.Envelope.Id);
+            await context.CompleteAsync();
+        }
+    }
+
     class BqIntegrationTests
     {
         private Fixture _fixture;
@@ -42,8 +54,8 @@ namespace Bq.Tests.Integration
                 got.Add(id);
                 await Task.CompletedTask;
             });
-            rs.Send("11");
-            rs.Send("12");
+            await rs.SendAsync("main", "11");
+            await rs.SendAsync("main", "12");
             await Task.Delay(1000);
             Check.That(got).HasSize(2);
         }
@@ -97,7 +109,49 @@ namespace Bq.Tests.Integration
             var job = _fixture.Create<DbJob>();
             await repo.CreateJobAsync(job);
         }
+
+        private void Setup()
+        {
+            var repo = new BqDbRepository(OracleConnectionFactory);
+            repo.DangerouslyDropTable();
+            repo.CreateTable();
+            
+        }
+        [fCase]
+        public async Task TestSendToRepository()
+        {
+            Setup();
+            var repo = new BqDbRepository(OracleConnectionFactory);
+            var worker = new BqJobServer(repo);
+            var ping = new DemoMessagePing
+            {
+                Message = "ping"
+            };
+            var pong = new DemoMessagePong
+            {
+                Message = "heeoeoaeaoeoae"
+            };
+            
+            var pingHandler = new PingHandler();
+            worker.AddHandler(pingHandler);
+
+            var dbjob = await worker.SendAsync(ping, "main");
+            var available = await repo.ReadAvailableWork();
+            var scheduler = new BqRedisScheduler("main");
+            await scheduler.ConnectAsync();
+            scheduler.Clear("main");
+            var received = new List<string>();
+            scheduler.StartListening(  (async m =>
+            {
+                received.Add(m);
+                await worker.ReadAndDispatchJob(m);
+            }));
+            foreach (var job in available)
+            {
+                await scheduler.SendAsync(job.Channel, job.Id);
+            }
+            await Task.Delay(100);
+            Check.That(received).HasSize(1);
+        }
     }
-    
-    
 }

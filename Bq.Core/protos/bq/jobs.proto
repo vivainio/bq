@@ -2,6 +2,7 @@ syntax = "proto3";
 
 import "google/protobuf/any.proto";
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
 
 package bq.jobs;
 
@@ -9,7 +10,7 @@ package bq.jobs;
 message Envelope {
     google.protobuf.Any msg = 1;
     string id = 2;
-    string token = 3;
+    string correlation_id = 3;
     string cursor = 4;
 }
 
@@ -32,7 +33,7 @@ message DbJob {
     
     // This can be parsed to Envelope
     bytes envelope = 2;
-    string cursor = 4; // this will populate Envelope.cursor & is authority
+    google.protobuf.StringValue cursor = 4; // this will populate Envelope.cursor & is authority
     google.protobuf.Timestamp launch_at = 5;
     google.protobuf.Timestamp expires_at = 6;
     // descibes "channel" where message is. different workers can be picky about what channels they care about

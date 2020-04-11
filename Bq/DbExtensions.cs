@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Data;
 using System.Data.Common;
 using System.Linq;
 using System.Reflection;
@@ -11,17 +12,34 @@ namespace Bq
         
         public static DbDataReader ExecuteReader(this DbConnection db, string sql)
         {
-            var command = db.CreateCommand();
-            command.CommandText = sql;
+            var command = db.SqlCommand(sql);
             return command.ExecuteReader();
         }
 
         public static void ExecuteSql(this DbConnection db, string sql)
         {
-            var command = db.CreateCommand();
+            var command = db.SqlCommand(sql);
             command.CommandText = sql;
             command.ExecuteNonQuery();
         }
+
+        public static DbCommand SqlCommand(this DbConnection db, string sql)
+        {
+            var command = db.CreateCommand();
+            command.CommandText = sql;
+            return command;
+
+        }
+
+        public static void AddParameter(this DbCommand command, string name, DbType type, object value)
+        {
+            var param = command.CreateParameter();
+            param.ParameterName = name;
+            param.DbType = type;
+            param.Value = value;
+            command.Parameters.Add(param);
+        }
+        
         public static string CreationSql<T>()
         {
             var members = typeof(T).GetProperties(BindingFlags.Instance | BindingFlags.Public);
@@ -56,6 +74,5 @@ namespace Bq
             sb.Append(")");
             return sb.ToString();
         }
-
     }
 }

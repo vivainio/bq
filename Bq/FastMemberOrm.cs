@@ -47,8 +47,10 @@ namespace Bq
             switch (src)
             {
                 case DateTime dateTime when targetType == typeof(Timestamp):
-                    return Timestamp.FromDateTime(dateTime);
-                default:
+                    return Timestamp.FromDateTime(DateTime.SpecifyKind(dateTime, DateTimeKind.Utc));
+                case Decimal dec when targetType.IsEnum:
+                    return (object) (int) dec;
+                 default:
                     return src;
                      
             }
@@ -103,8 +105,15 @@ namespace Bq
                     
                 if (trivialMapperFound)
                 {
-                    
-                    _accessor[newObject, propData.Name] = value;
+                    var reboxed = ReboxToType(value, propData.Type);
+                    try
+                    {
+                        _accessor[newObject, propData.Name] = reboxed;
+                    }
+                    catch (InvalidCastException)
+                    {
+                        throw;
+                    }
                 }
                 else
                 {

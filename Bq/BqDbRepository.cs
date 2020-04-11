@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
@@ -41,7 +42,7 @@ namespace Bq
                     }
                 });
             InsertionSql = DbExtensions.InsertionSql(TABLE_NAME, 
-                Mapper.Props.Select(p => p.Name.ToUpperInvariant()).ToArray());
+                Mapper.Props.Select(p => p.Name.ToUpperInvariant()).Concat(new[] {"ENVELOPE" }).ToArray());
 
         }
 
@@ -50,14 +51,21 @@ namespace Bq
         private FastMemberOrm<DbJob> Mapper { get; set; }
 
 
-        public async Task CreateJobAsync(DbJob job)
+        public async Task<DbJob> CreateJobAsync(DbJob job)
         {
             using var conn = ConnectionFactory();
-            
+            job.Id = Guid.NewGuid().ToString("N");
             var cmd = conn.CreateCommand();
             cmd.CommandText = InsertionSql;
             Mapper.AddParamsToCommand(cmd, job);
+            var blobParam = cmd.CreateParameter();
+            blobParam.ParameterName = "ENVELOPE";
+            blobParam.DbType = DbType.Binary;
+            blobParam.Value = job.Envelope.ToByteArray();
+            cmd.Parameters.Add(blobParam);
             await cmd.ExecuteNonQueryAsync();
+            return job;
+
         }
 
         public async Task<DbJob> ReadJobAsync(string id)
@@ -75,6 +83,32 @@ namespace Bq
             return dbJob;
         }
 
+        public async Task DeleteJobAsync(string id)
+        {
+            var query = $"delete from {TABLE_NAME} where id = :id";
+            var conn = ConnectionFactory();
+            var cmd = conn.SqlCommand(query);
+            cmd.AddParameter("id", DbType.String, id);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        public async Task<IReadOnlyList<DbJob>> ReadAvailableWork()
+        {
+            using var conn = ConnectionFactory();
+            const int state = (int) Jobs.JobStatus.Ready;
+            var query = $"select ID, CHANNEL from {TABLE_NAME} where STATE = {state}";
+            var rd = conn.ExecuteReader(query);
+            var res = new List<DbJob>();
+            while (await rd.ReadAsync() )
+            {
+                var j = new DbJob();
+                Mapper.CopyReaderRowToObject(rd, j);
+                res.Add(j);
+            }
+
+            return res;
+        }
+
         public void DangerouslyDropTable()
         {
             using var conn = ConnectionFactory();
@@ -89,7 +123,5 @@ namespace Bq
             
             conn.ExecuteSql(full);
         }
-
-
     }
 }
