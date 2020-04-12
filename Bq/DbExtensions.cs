@@ -28,7 +28,6 @@ namespace Bq
             var command = db.SqlCommand(sql);
             command.CommandText = sql;
             command.ExecuteNonQuery();
-            Trace(sql);
         }
 
         public static void ExecuteSqlIgnoreError(this DbConnection db, string sql)
