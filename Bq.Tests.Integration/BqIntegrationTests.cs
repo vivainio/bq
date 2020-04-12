@@ -244,7 +244,7 @@ namespace Bq.Tests.Integration
             await t1;
         }
 
-        [fCase]
+        [Case]
         public async Task TestRedisLeader()
         {
             var redis = await BqRedisScheduler.DefaultRedis();
@@ -273,7 +273,18 @@ namespace Bq.Tests.Integration
             await Task.Delay(1000);
             e1.Stop();
             Thread.Sleep(20000);
-        }    
+        }
+
+        [fCase]
+        public async Task TestSchedulerAsLeader()
+        {
+            var scheduler = await CreateScheduler();
+            scheduler.StartAsLeader();
+            await scheduler.NotifyJobAvailableToLeader("12");
+            var s2 = await CreateScheduler();
+                        
+
+        }
         
     }
 }

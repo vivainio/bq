@@ -118,8 +118,6 @@ namespace Bq
                     Elect();
                     
                 }, this, _options.Wait.Milliseconds, Timeout.Infinite);
-                
-                
             }
         }
     }

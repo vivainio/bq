@@ -111,7 +111,8 @@ namespace Bq
         {
             using var conn = ConnectionFactory();
             const int state = (int) Jobs.JobStatus.Ready;
-            var query = $"select ID, CHANNEL from {TABLE_NAME} where STATE = {state}";
+            var query = $"select ID, CHANNEL from {TABLE_NAME} where STATE = {state} " +
+                        $"order by LAUNCHAT asc fetch first 100 rows only";
             var rd = conn.ExecuteReader(query);
             var res = new List<DbJob>();
             while (await rd.ReadAsync() )

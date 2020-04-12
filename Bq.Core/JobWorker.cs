@@ -28,6 +28,7 @@ namespace Bq
     public interface IBqScheduler
     {
         Task NotifyJobAvailableToListeners(string channel, string id);
+        Task NotifyJobAvailableToLeader(string id);
     }
 
     public class BqError : Exception
