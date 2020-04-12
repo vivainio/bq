@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using AutoFixture;
 using Bq.Jobs;
@@ -186,7 +187,7 @@ namespace Bq.Tests.Integration
             }
             await Task.Delay(5000);
         }
-        [fCase]
+        [Case]
         public async Task TestRoundTrip()
         {
             Setup();
@@ -242,6 +243,37 @@ namespace Bq.Tests.Integration
             var d = Task.Run(WorkAsStatsDumper);
             await t1;
         }
+
+        [fCase]
+        public async Task TestRedisLeader()
+        {
+            var redis = await BqRedisScheduler.DefaultRedis();
+
+            RedisLeaderElection MkElection()
+            {
+                var opt = new RedisLeaderOptions
+                {
+                    Ttl = TimeSpan.FromSeconds(1),
+                    Wait = TimeSpan.FromMilliseconds(100)
+                };
+                var le = new RedisLeaderElection(redis, opt);
+                le.RedisLeaderEvent += (o, a) =>
+                {
+                    Console.WriteLine($"leader event {a.Type}");
+                };
+
+                return le;
+
+            }
+            
+            var e1 = MkElection();
+            var e2 = MkElection();
+            e1.Elect();
+            e2.Elect();
+            await Task.Delay(1000);
+            e1.Stop();
+            Thread.Sleep(20000);
+        }    
         
     }
 }

@@ -14,6 +14,7 @@ namespace Bq
         private readonly IBqRepository _repository;
         private const string WORKLIST_NAME = "bq_worklist";
         private const string SUB_CHANNEL_NAME = "bq_chan";
+        private const string FLOW_CONTROL_PUBSUB = "bq_flow";
         private ConnectionMultiplexer _redis;
 
         private ConcurrentDictionary<string, object> _recentlySent = new ConcurrentDictionary<string, object>();
@@ -27,9 +28,15 @@ namespace Bq
 
         private string SubChan(string channelName) => $"{SUB_CHANNEL_NAME}/{channelName}";
         private string WorkList(string channelName) => $"{WORKLIST_NAME}/{channelName}";
+
+        public static async Task<ConnectionMultiplexer> DefaultRedis()
+        {
+            return await ConnectionMultiplexer.ConnectAsync("localhost:17005");
+            
+        }
         public async Task ConnectAsync()
         {
-            _redis = await ConnectionMultiplexer.ConnectAsync("localhost:17005");
+            _redis = await DefaultRedis();
         }
 
         private RedisPubSubQueue CreateQueue(string channelName) =>
