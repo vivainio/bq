@@ -40,6 +40,11 @@ namespace Bq.Tests
                 throw new NotImplementedException();
             }
 
+            public Task CompleteToCursorAsync(string id, string cursor)
+            {
+                throw new NotImplementedException();
+            }
+
             public Task<IReadOnlyList<DbJob>> ReadAvailableWork()
             {
                 throw new NotImplementedException();

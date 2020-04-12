@@ -1,15 +1,22 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace Bq
 {
     public static class DbExtensions
     {
-        
+
+        private static void Trace(string s)
+        {
+            Console.WriteLine(s);
+        }
         public static DbDataReader ExecuteReader(this DbConnection db, string sql)
         {
             var command = db.SqlCommand(sql);
@@ -21,12 +28,28 @@ namespace Bq
             var command = db.SqlCommand(sql);
             command.CommandText = sql;
             command.ExecuteNonQuery();
+            Trace(sql);
+        }
+
+        public static void ExecuteSqlIgnoreError(this DbConnection db, string sql)
+        {
+            try
+            {
+                db.ExecuteSql(sql);
+            }
+            catch (DbException ex)
+            {
+                Console.WriteLine("Ignoring error:");
+                Console.WriteLine(ex);
+            }
+            
         }
 
         public static DbCommand SqlCommand(this DbConnection db, string sql)
         {
             var command = db.CreateCommand();
             command.CommandText = sql;
+            Trace(sql);
             return command;
 
         }

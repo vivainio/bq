@@ -8,6 +8,5 @@ namespace Bq
             new TransactionScope(TransactionScopeOption.Required, TransactionScopeAsyncFlowOption.Enabled);
         public static TransactionScope TxNew() => 
             new TransactionScope(TransactionScopeOption.RequiresNew, TransactionScopeAsyncFlowOption.Enabled);
-
     }
 }

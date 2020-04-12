@@ -65,7 +65,7 @@ namespace Bq
             var dbJob = new DbJob
             {
                 Envelope = envelope.ToByteString(),
-                Cursor = "",
+                Cur = "",
                 Id = envelope.Id,
                 State = JobStatus.Ready,
                 LaunchAt = now,
@@ -89,13 +89,14 @@ namespace Bq
             var dbJob = CreateDbJob(env);
             dbJob.Channel = channel;
             return await _repository.CreateJobAsync(dbJob);
+            
         }
 
         public static Envelope CreateEnvelopeFromDbJob(DbJob job)
         {
             var env = Envelope.Parser.ParseFrom(job.Envelope);
             env.Id = job.Id;
-            env.Cursor = job.Cursor ?? "";
+            env.Cursor = job.Cur ?? "";
             return env;
         }
 
@@ -144,8 +145,6 @@ namespace Bq
                 await t;
                 tx.Complete();
                 Stats.Handled++;
-
-
             }
             catch (Exception ex)
             {

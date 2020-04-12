@@ -15,17 +15,24 @@ using static System.Console;
 namespace Bq.Tests.Integration
 {
     
-    public class PingHandler: BqMessageHandler<DemoMessagePing>
+    public class CursoredPingHandler: BqMessageHandler<DemoMessagePing>
     {
         protected override async Task HandleMessage(IJobContext context, DemoMessagePing message)
         {
-            Console.WriteLine($"handling job {context.Envelope.Id} = {message.Message}");
-            await Task.Delay(100);
+            var cursor = context.Envelope.Cursor;
+            var newCursor = string.IsNullOrEmpty(cursor) ? 1 : (Int32.Parse(cursor) + 1);
+            if (newCursor > 10)
+            {
+                await context.CompleteAsync();
+                return;
+            }
+            //await Task.Delay(100);
             if (message.Message == "error")
             {
                 throw new Exception("Wanted to fail so here we go");
-            } 
-            await context.CompleteAsync();
+            }
+            Console.WriteLine($"handling job {context.Envelope.Id} = {message.Message} cursor = {newCursor}");
+            await context.CompleteToCursorAsync(newCursor.ToString());
         }
     }
 
@@ -90,7 +97,7 @@ namespace Bq.Tests.Integration
         {
             var repo = new BqDbRepository(OracleConnectionFactory);
             repo.DangerouslyDropTable();
-            repo.CreateTable();
+            repo.CreateTables();
             
         }
         [Case]
@@ -114,9 +121,9 @@ namespace Bq.Tests.Integration
         private void Setup()
         {
             var repo = new BqDbRepository(OracleConnectionFactory);
-            repo.DangerouslyDropTable();
-            repo.CreateTable();
             
+            repo.DangerouslyDropTable();
+            repo.CreateTables();
         }
 
 
@@ -138,7 +145,7 @@ namespace Bq.Tests.Integration
             await scheduler.ConnectAsync();
             scheduler.Clear(channelName);
             scheduler.StartListening(channelName, worker);
-            var pingHandler = new PingHandler();
+            var pingHandler = new CursoredPingHandler();
             worker.AddHandler(pingHandler);
 
             return (worker, scheduler);
@@ -148,7 +155,7 @@ namespace Bq.Tests.Integration
             var repo = new BqDbRepository(OracleConnectionFactory);
             var worker = new BqJobServer(repo);
             worker.ResiliencePolicy = Policy.Handle<Exception>().RetryAsync(2);
-            var pingHandler = new PingHandler();
+            var pingHandler = new CursoredPingHandler();
             worker.AddHandler(pingHandler);
             scheduler.StartListening(channelName, worker);
             return worker;
@@ -165,7 +172,7 @@ namespace Bq.Tests.Integration
                 Message = "ping"
             };
             
-            var pingHandler = new PingHandler();
+            var pingHandler = new CursoredPingHandler();
 
             worker.ResiliencePolicy = Policy.Handle<Exception>().RetryAsync(2);
             worker.AddHandler(pingHandler);
@@ -187,7 +194,7 @@ namespace Bq.Tests.Integration
             }
             await Task.Delay(5000);
         }
-        [Case]
+        [fCase]
         public async Task TestRoundTrip()
         {
             Setup();
@@ -203,7 +210,7 @@ namespace Bq.Tests.Integration
             {
                 while (true)
                 {
-                    await Task.Delay(10);
+                    await Task.Delay(500);
                     await scheduler.ReadAndSendWork();
                 }
             }
@@ -216,7 +223,7 @@ namespace Bq.Tests.Integration
                 while (true)
                 {
                     
-                    await Task.Delay(1);
+                    await Task.Delay(100);
                     counter++;
                     await sendWorker.SendJobAsync(channel, new DemoMessagePing
                     {
@@ -229,7 +236,7 @@ namespace Bq.Tests.Integration
             {
                 while (true)
                 {
-                    await Task.Delay(100);
+                    await Task.Delay(500);
                     var stats = string.Join(", ", workers.Select(w => w.Stats.Handled));
                     
                     WriteLine($"*********** {stats}");
@@ -275,15 +282,13 @@ namespace Bq.Tests.Integration
             Thread.Sleep(20000);
         }
 
-        [fCase]
+        [Case]
         public async Task TestSchedulerAsLeader()
         {
             var scheduler = await CreateScheduler();
             scheduler.StartAsLeader();
             await scheduler.NotifyJobAvailableToLeader("12");
             var s2 = await CreateScheduler();
-                        
-
         }
         
     }

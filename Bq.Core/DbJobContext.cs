@@ -16,9 +16,10 @@ namespace Bq
 
         public Envelope Envelope { get; }
 
-        public Task CompleteToCursor(string cursor)
+        public async Task CompleteToCursorAsync(string cursor)
         {
-            throw new NotImplementedException();
+
+            await _repo.CompleteToCursorAsync(Envelope.Id, cursor);
         }
 
         public async Task CompleteAsync()

@@ -1,4 +1,5 @@
 ﻿using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using StackExchange.Redis;
@@ -61,12 +62,29 @@ namespace Bq
         private static int SubCounter = 0;
         private RedisSchedulerLeaderWork _leader;
 
+        public Task NotifyJobsAvailableToListeners(string channel, IReadOnlyList<string> ids)
+        {
+            var db = _redis.GetDatabase();
+            
+            var l = new List<Task<long>>();
+            var wl = WorkList(channel);
+            foreach (var id in ids)
+            {
+                db.ListLeftPush(wl, id, When.Always, CommandFlags.FireAndForget);
+            }
+
+            SubCounter++;
+            //WriteLine($"Iss {id}");
+            db.Publish(SubChan(channel), $"r{SubCounter}", CommandFlags.FireAndForget);
+            return Task.CompletedTask;
+        }
+
         public async Task NotifyJobAvailableToListeners(string channel, string id)
         {
             var db = _redis.GetDatabase();
             await db.ListLeftPushAsync(WorkList(channel), id);
             SubCounter++;
-            WriteLine($"Iss {id}");
+            //WriteLine($"Iss {id}");
             await db.PublishAsync(SubChan(channel), $"r{SubCounter}", CommandFlags.FireAndForget);
         }
 
@@ -85,7 +103,7 @@ namespace Bq
             {
                 if (_recentlySent.ContainsKey(job.Id))
                 {
-                    continue;
+                    _recentlySent.Clear();
                 }
                 await NotifyJobAvailableToListeners(job.Channel, job.Id);
                 _recentlySent[job.Id] = true;

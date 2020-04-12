@@ -27,11 +27,15 @@ namespace Bq
                 {
                     var jitterDelay = _random.Next(0, 20);
                     // we add some jitter to spread the load
-                    await Task.Delay(jitterDelay);
-                    RedisValue work = db.ListRightPop(_listName);
-                    if (!work.IsNull)
+                    while (true)
                     {
-                        WriteLine($"Pop {work}");
+                        await Task.Delay(jitterDelay);
+                        RedisValue work = db.ListRightPop(_listName);
+                        if (work.IsNull)
+                        {
+                            // no more stuff in queue
+                            break;
+                        }
                         await handler(work);
                     }
                 }

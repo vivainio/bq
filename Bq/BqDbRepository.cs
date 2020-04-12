@@ -1,10 +1,10 @@
 ﻿using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
 using System.Data.Common;
 using System.Linq;
+using System.Net.Security;
 using System.Threading.Tasks;
 using System.Transactions;
 using Bq.Jobs;
@@ -26,6 +26,12 @@ namespace Bq
     {
         private const string TABLE_NAME = "BQ_JOBS";
         private readonly Func<DbConnection> ConnectionFactory;
+
+
+        public BqDbRepository(DbConnection connection)
+        {
+            ConnectionFactory = () => connection;
+        }
 
         public BqDbRepository(Func<DbConnection> connectionFactory)
         {
@@ -56,10 +62,12 @@ namespace Bq
         public async Task<DbJob> CreateJobAsync(DbJob job)
         {
             using var conn = ConnectionFactory();
-            job.Id = Guid.NewGuid().ToString("N");
             var cmd = conn.CreateCommand();
-            cmd.CommandText = InsertionSql;
+            var ins = InsertionSql.Replace(":ID", "BQ_SEQ_ID.NEXTVAL");
+            cmd.CommandText = ins;
             Mapper.AddParamsToCommand(cmd, job);
+            // removing ID because it's coming from sequence now
+            cmd.Parameters.RemoveAt("ID");
             var blobParam = cmd.CreateParameter();
             blobParam.ParameterName = "ENVELOPE";
             blobParam.DbType = DbType.Binary;
@@ -93,7 +101,7 @@ namespace Bq
             var cmd  = conn.SqlCommand(query);
             cmd.AddParameter("state", DbType.Int32, (int) status);
             cmd.AddParameter("id", DbType.String, id);
-            using var tx = new TransactionScope(TransactionScopeOption.RequiresNew);
+            using var tx = BqUtil.TxNew();
             await cmd.ExecuteNonQueryAsync();
             tx.Complete();
         }
@@ -103,6 +111,19 @@ namespace Bq
             var query = $"delete from {TABLE_NAME} where id = :id";
             using var conn = ConnectionFactory();
             var cmd = conn.SqlCommand(query);
+            cmd.AddParameter("id", DbType.String, id);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        public async Task CompleteToCursorAsync(string id, string cursor)
+        {
+            var query = $"update {TABLE_NAME} set CUR = :cursor, STATE = {(int)JobStatus.Ready}, " +
+                        $"LAUNCHAT = :launchat where ID = :id";
+            Console.WriteLine($"Cur {id} = '{cursor}'");
+            using var conn = ConnectionFactory();
+            var cmd = conn.SqlCommand(query);
+            cmd.AddParameter("cursor", DbType.String, cursor);
+            cmd.AddParameter("launchat", DbType.DateTime, DateTime.UtcNow.AddSeconds(5));
             cmd.AddParameter("id", DbType.String, id);
             await cmd.ExecuteNonQueryAsync();
         }
@@ -128,15 +149,16 @@ namespace Bq
         public void DangerouslyDropTable()
         {
             using var conn = ConnectionFactory();
-            conn.ExecuteSql("drop table BQ_JOBS");
-
+            
+            conn.ExecuteSqlIgnoreError("drop table BQ_JOBS");
+            conn.ExecuteSqlIgnoreError("drop sequence BQ_SEQ_ID");
         }
-        public void CreateTable()
+        public void CreateTables()
         {
             var sql = DbExtensions.CreationSql<DbJob>();
             var full = "create table BQ_JOBS " + sql;
             using var conn = ConnectionFactory();
-            
+            conn.ExecuteSql("create sequence BQ_SEQ_ID");
             conn.ExecuteSql(full);
         }
     }
