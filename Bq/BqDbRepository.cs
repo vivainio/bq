@@ -101,7 +101,7 @@ namespace Bq
         public async Task DeleteJobAsync(string id)
         {
             var query = $"delete from {TABLE_NAME} where id = :id";
-            var conn = ConnectionFactory();
+            using var conn = ConnectionFactory();
             var cmd = conn.SqlCommand(query);
             cmd.AddParameter("id", DbType.String, id);
             await cmd.ExecuteNonQueryAsync();

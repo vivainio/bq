@@ -1,13 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel.Design;
-using System.Data;
 using System.Data.Common;
-using System.Drawing.Drawing2D;
 using System.Linq;
-using System.Reflection;
-using System.Security.Policy;
-using System.Threading;
 using System.Threading.Tasks;
 using AutoFixture;
 using Bq.Jobs;
@@ -16,7 +10,7 @@ using NFluent;
 using Oracle.ManagedDataAccess.Client;
 using Polly;
 using TrivialTestRunner;
-
+using static System.Console;
 namespace Bq.Tests.Integration
 {
     
@@ -124,6 +118,16 @@ namespace Bq.Tests.Integration
             
         }
 
+
+        async Task<BqRedisScheduler> CreateScheduler()
+        {
+            var repo = new BqDbRepository(OracleConnectionFactory);
+            var scheduler = new BqRedisScheduler(repo);
+            await scheduler.ConnectAsync();
+            return scheduler;
+        }
+
+        
         async Task<(BqJobServer worker, BqRedisScheduler scheduler)> CreateWorker(string channelName)
         {
             var repo = new BqDbRepository(OracleConnectionFactory);
@@ -133,7 +137,20 @@ namespace Bq.Tests.Integration
             await scheduler.ConnectAsync();
             scheduler.Clear(channelName);
             scheduler.StartListening(channelName, worker);
+            var pingHandler = new PingHandler();
+            worker.AddHandler(pingHandler);
+
             return (worker, scheduler);
+        }
+        BqJobServer CreateAndConnectWorker(string channelName, BqRedisScheduler scheduler)
+        {
+            var repo = new BqDbRepository(OracleConnectionFactory);
+            var worker = new BqJobServer(repo);
+            worker.ResiliencePolicy = Policy.Handle<Exception>().RetryAsync(2);
+            var pingHandler = new PingHandler();
+            worker.AddHandler(pingHandler);
+            scheduler.StartListening(channelName, worker);
+            return worker;
         }
         
         [Case]
@@ -173,17 +190,14 @@ namespace Bq.Tests.Integration
         public async Task TestRoundTrip()
         {
             Setup();
-            var (worker, scheduler) = await CreateWorker("main");
+            var scheduler = await CreateScheduler();
             scheduler.Clear("main");
-            var pingHandler = new PingHandler();
-            worker.AddHandler(pingHandler);
-            worker.ResiliencePolicy = Policy.BulkheadAsync(2);
-            
-            var ping = new DemoMessagePing
-            {
-                Message = "ping"
-            };
 
+            var workers = Enumerable.Range(0, 100).Select(i =>
+                CreateAndConnectWorker("main", scheduler)).ToArray();
+
+            // use random worker for send?
+            var sendWorker = workers[0];
             async Task WorkAsLeader()
             {
                 while (true)
@@ -194,6 +208,7 @@ namespace Bq.Tests.Integration
             }
 
 
+            // send out tasks
             async Task WorkAsProducer(string channel, string name)
             {
                 int counter = 0;
@@ -202,16 +217,29 @@ namespace Bq.Tests.Integration
                     
                     await Task.Delay(1);
                     counter++;
-                    await worker.SendJobAsync(channel, new DemoMessagePing
+                    await sendWorker.SendJobAsync(channel, new DemoMessagePing
                     {
                         Message = $"{name}:{counter}"
                     });
                 }
             }
-            
+
+            async Task WorkAsStatsDumper()
+            {
+                while (true)
+                {
+                    await Task.Delay(100);
+                    var stats = string.Join(", ", workers.Select(w => w.Stats.Handled));
+                    
+                    WriteLine($"*********** {stats}");
+                }
+                
+            }
             
             var t1 = Task.Run(WorkAsLeader);
-            var prod = Task.Run(() => WorkAsProducer("main", "a"));
+            var p1 = Task.Run(() => WorkAsProducer("main", "a"));
+            var p2 = Task.Run(() => WorkAsProducer("main", "b"));
+            var d = Task.Run(WorkAsStatsDumper);
             await t1;
         }
         
