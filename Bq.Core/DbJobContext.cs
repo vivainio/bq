@@ -16,10 +16,10 @@ namespace Bq
 
         public Envelope Envelope { get; }
 
-        public async Task CompleteToCursorAsync(string cursor)
+        public async Task CompleteToCursorAsync(string cursor, int delaySec)
         {
 
-            await _repo.CompleteToCursorAsync(Envelope.Id, cursor);
+            await _repo.CompleteToCursorAsync(Envelope.Id, cursor, delaySec);
         }
 
         public async Task CompleteAsync()

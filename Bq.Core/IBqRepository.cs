@@ -13,7 +13,7 @@ namespace Bq
         Task<DbJob> ReadJobAsync(string id);
         Task SetJobStatusAsync(string id, JobStatus status);
         Task DeleteJobAsync(string id);
-        Task CompleteToCursorAsync(string id, string cursor);
+        Task CompleteToCursorAsync(string id, string cursor, int delaySec);
         Task<IReadOnlyList<DbJob>> ReadAvailableWork();
 
     }

@@ -40,6 +40,11 @@ namespace Bq.Tests
                 throw new NotImplementedException();
             }
 
+            public Task CompleteToCursorAsync(string id, string cursor, int delaySec)
+            {
+                throw new NotImplementedException();
+            }
+
             public Task CompleteToCursorAsync(string id, string cursor)
             {
                 throw new NotImplementedException();

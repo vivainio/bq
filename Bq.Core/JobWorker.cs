@@ -13,7 +13,7 @@ namespace Bq
         Envelope Envelope { get; }
 
         // these are not async because outer layer will commit the transaction
-        Task CompleteToCursorAsync(string cursor);
+        Task CompleteToCursorAsync(string cursor, int delaySec);
         Task CompleteAsync();
     }
 

@@ -32,7 +32,7 @@ namespace Bq.Tests.Integration
                 throw new Exception("Wanted to fail so here we go");
             }
             Console.WriteLine($"handling job {context.Envelope.Id} = {message.Message} cursor = {newCursor}");
-            await context.CompleteToCursorAsync(newCursor.ToString());
+            await context.CompleteToCursorAsync(newCursor.ToString(), 120);
         }
     }
 

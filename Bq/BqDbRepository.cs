@@ -115,7 +115,7 @@ namespace Bq
             await cmd.ExecuteNonQueryAsync();
         }
 
-        public async Task CompleteToCursorAsync(string id, string cursor)
+        public async Task CompleteToCursorAsync(string id, string cursor, int delaySec)
         {
             var query = $"update {TABLE_NAME} set CUR = :cursor, STATE = {(int)JobStatus.Ready}, " +
                         $"LAUNCHAT = :launchat where ID = :id";
@@ -123,7 +123,7 @@ namespace Bq
             using var conn = ConnectionFactory();
             var cmd = conn.SqlCommand(query);
             cmd.AddParameter("cursor", DbType.String, cursor);
-            cmd.AddParameter("launchat", DbType.DateTime, DateTime.UtcNow.AddSeconds(5));
+            cmd.AddParameter("launchat", DbType.DateTime, DateTime.UtcNow.AddSeconds(delaySec));
             cmd.AddParameter("id", DbType.String, id);
             await cmd.ExecuteNonQueryAsync();
         }
@@ -133,7 +133,7 @@ namespace Bq
             using var conn = ConnectionFactory();
             const int state = (int) Jobs.JobStatus.Ready;
             var query = $"select ID, CHANNEL from {TABLE_NAME} where STATE = {state} " +
-                        $"order by LAUNCHAT asc fetch first 100 rows only";
+                        $"order by LAUNCHAT asc fetch first 200 rows only";
             var rd = conn.ExecuteReader(query);
             var res = new List<DbJob>();
             while (await rd.ReadAsync() )
@@ -155,11 +155,13 @@ namespace Bq
         }
         public void CreateTables()
         {
-            var sql = DbExtensions.CreationSql<DbJob>();
-            var full = "create table BQ_JOBS " + sql;
             using var conn = ConnectionFactory();
             conn.ExecuteSql("create sequence BQ_SEQ_ID");
-            conn.ExecuteSql(full);
+            var sql = DbExtensions.CreationSql<DbJob>();
+            conn.ExecuteSql("create table BQ_JOBS " + sql);
+            conn.ExecuteSql("create index BQ_IDX_STATE_DATA on BQ_JOBS(STATE, LAUNCHAT)" );
+            conn.ExecuteSql("create index BQ_IDX_ID on BQ_JOBS(ID)" );
+
         }
     }
 }
