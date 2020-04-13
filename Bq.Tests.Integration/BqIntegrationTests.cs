@@ -32,7 +32,7 @@ namespace Bq.Tests.Integration
                 throw new Exception("Wanted to fail so here we go");
             }
             Console.WriteLine($"handling job {context.Envelope.Id} = {message.Message} cursor = {newCursor}");
-            await context.CompleteToCursorAsync(newCursor.ToString(), 120);
+            await context.CompleteToCursorAsync(newCursor.ToString(), 1);
         }
     }
 
@@ -136,24 +136,10 @@ namespace Bq.Tests.Integration
         }
 
         
-        async Task<(BqJobServer worker, BqRedisScheduler scheduler)> CreateWorker(string channelName)
-        {
-            var repo = new BqDbRepository(OracleConnectionFactory);
-            var worker = new BqJobServer(repo);
-            worker.ResiliencePolicy = Policy.Handle<Exception>().RetryAsync(2);
-            var scheduler = new BqRedisScheduler(repo);
-            await scheduler.ConnectAsync();
-            scheduler.Clear(channelName);
-            scheduler.StartListening(channelName, worker);
-            var pingHandler = new CursoredPingHandler();
-            worker.AddHandler(pingHandler);
-
-            return (worker, scheduler);
-        }
         BqJobServer CreateAndConnectWorker(string channelName, BqRedisScheduler scheduler)
         {
             var repo = new BqDbRepository(OracleConnectionFactory);
-            var worker = new BqJobServer(repo);
+            var worker = new BqJobServer(repo, scheduler);
             worker.ResiliencePolicy = Policy.Handle<Exception>().RetryAsync(2);
             var pingHandler = new CursoredPingHandler();
             worker.AddHandler(pingHandler);
@@ -166,7 +152,7 @@ namespace Bq.Tests.Integration
         {
             Setup();
             var repo = new BqDbRepository(OracleConnectionFactory);
-            var worker = new BqJobServer(repo);
+            var worker = new BqJobServer(repo, null);
             var ping = new DemoMessagePing
             {
                 Message = "ping"
@@ -199,6 +185,7 @@ namespace Bq.Tests.Integration
         {
             Setup();
             var scheduler = await CreateScheduler();
+            scheduler.StartAsLeader();
             scheduler.Clear("main");
 
             var workers = Enumerable.Range(0, 100).Select(i =>
@@ -206,6 +193,7 @@ namespace Bq.Tests.Integration
 
             // use random worker for send?
             var sendWorker = workers[0];
+            /*
             async Task WorkAsLeader()
             {
                 while (true)
@@ -214,6 +202,7 @@ namespace Bq.Tests.Integration
                     await scheduler.ReadAndSendWork();
                 }
             }
+            */
 
 
             // send out tasks
@@ -244,11 +233,12 @@ namespace Bq.Tests.Integration
                 
             }
             
-            var t1 = Task.Run(WorkAsLeader);
+            //var t1 = Task.Run(WorkAsLeader);
             var p1 = Task.Run(() => WorkAsProducer("main", "a"));
             var p2 = Task.Run(() => WorkAsProducer("main", "b"));
             var d = Task.Run(WorkAsStatsDumper);
-            await t1;
+            
+            await d;
         }
 
         [Case]
@@ -287,7 +277,7 @@ namespace Bq.Tests.Integration
         {
             var scheduler = await CreateScheduler();
             scheduler.StartAsLeader();
-            await scheduler.NotifyJobAvailableToLeader("12");
+            await scheduler.NotifyJobAvailableToLeader();
             var s2 = await CreateScheduler();
         }
         

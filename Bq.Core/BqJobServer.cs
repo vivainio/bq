@@ -15,6 +15,7 @@ namespace Bq
     public class BqJobServer : IDispatchJobs
     {
         private readonly IBqRepository _repository;
+        private readonly IBqScheduler _scheduler;
 
         public BqStats Stats { get; } = new BqStats();
 
@@ -22,9 +23,10 @@ namespace Bq
             new ConcurrentDictionary<string, IJobHandler>();
 
         
-        public BqJobServer(IBqRepository repository)
+        public BqJobServer(IBqRepository repository, IBqScheduler scheduler)
         {
             _repository = repository;
+            _scheduler = scheduler;
         }
 
         public AsyncPolicy ResiliencePolicy { get; set; } = Policy.NoOpAsync();
@@ -83,13 +85,14 @@ namespace Bq
             return env;
         }
 
-        public async Task<DbJob> SendJobAsync(string channel, IMessage msg)
+        public async Task SendJobAsync(string channel, IMessage msg)
         {
             var env = CreateEnvelope(msg);
             var dbJob = CreateDbJob(env);
             dbJob.Channel = channel;
-            return await _repository.CreateJobAsync(dbJob);
             
+            await _repository.CreateJobAsync(dbJob);
+            await _scheduler.NotifyJobAvailableToLeader();
         }
 
         public static Envelope CreateEnvelopeFromDbJob(DbJob job)

@@ -1,8 +1,11 @@
-﻿using System.Collections.Concurrent;
+﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using StackExchange.Redis;
+using StackExchange.Redis.KeyspaceIsolation;
 using static System.Console;
 namespace Bq
 {
@@ -17,7 +20,7 @@ namespace Bq
 
         private ConnectionMultiplexer _redis;
 
-        private ConcurrentDictionary<string, object> _recentlySent = new ConcurrentDictionary<string, object>();
+        private ShiftOutDict<string, object> _recentlySent = new ShiftOutDict<string, object>();
         
         public BqRedisScheduler(IBqRepository repository)
         {
@@ -61,6 +64,7 @@ namespace Bq
 
         private static int SubCounter = 0;
         private RedisSchedulerLeaderWork _leader;
+        private long _previousMinute;
 
         public Task NotifyJobsAvailableToListeners(string channel, IReadOnlyList<string> ids)
         {
@@ -88,28 +92,58 @@ namespace Bq
             await db.PublishAsync(SubChan(channel), $"r{SubCounter}", CommandFlags.FireAndForget);
         }
 
-        public Task NotifyJobAvailableToLeader(string id)
+        public Task NotifyJobAvailableToLeader()
         {
             var db = _redis.GetDatabase();
-            db.Publish(KEY_LEADER_SUB, "n" + id);
+            db.Publish(KEY_LEADER_SUB, "CREATED");
             return Task.CompletedTask;
         }
 
+        public bool RotateNeeded()
+        {
+            
+            var currentMinute = DateTimeOffset.UtcNow.ToUnixTimeSeconds() / 10;
+            if (currentMinute == _previousMinute)
+            {
+                return false;
+            }
+            _previousMinute = currentMinute;
+            return true;
+        }
         // should be repeatedly executed as session leader only
         public async Task ReadAndSendWork()
         {
             var jobs = await _repository.ReadAvailableWork();
+            // capacity based rotation. Time based rotation would work as well?
+            if (RotateNeeded())
+            {
+                _recentlySent.Shift();
+            }
+
+            var l = new List<(string Channel, string Id)>();
             foreach (var job in jobs)
             {
-                if (_recentlySent.ContainsKey(job.Id))
+                var id = job.Id;
+                var (dupe, _) = _recentlySent.TryGet(id);
+                if (dupe)
                 {
-                    _recentlySent.Clear();
+                    continue;
                 }
-                await NotifyJobAvailableToListeners(job.Channel, job.Id);
-                _recentlySent[job.Id] = true;
+
+                l.Add((job.Channel, job.Id));
+
+                _recentlySent.New[job.Id] = null;
+            }
+
+            var byChan = l.GroupBy(p => p.Channel);
+            foreach (var grouping in byChan)
+            {
+                var ids = grouping.Select(it => it.Id).ToList();
+                await NotifyJobsAvailableToListeners(grouping.Key, ids);
+                
             }
         }
-
+    
         public void StartAsLeader()
         {
             this._leader = new RedisSchedulerLeaderWork(this);

@@ -133,8 +133,10 @@ namespace Bq
             using var conn = ConnectionFactory();
             const int state = (int) Jobs.JobStatus.Ready;
             var query = $"select ID, CHANNEL from {TABLE_NAME} where STATE = {state} " +
-                        $"order by LAUNCHAT asc fetch first 200 rows only";
-            var rd = conn.ExecuteReader(query);
+                        $"and LAUNCHAT < :now order by LAUNCHAT asc fetch first 200 rows only";
+            var cmd = conn.SqlCommand(query);
+            cmd.AddParameter("now", DbType.DateTime, DateTime.UtcNow);
+            var rd = cmd.ExecuteReader();
             var res = new List<DbJob>();
             while (await rd.ReadAsync() )
             {
