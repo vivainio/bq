@@ -62,6 +62,7 @@ namespace Bq.Messaging
         public static RabbitEndpoint Start(EndpointConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            if (configuration.HasSagas && configuration.Persistence == null) throw new InvalidOperationException("Saga handling requires persistence.");
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));
             return new RabbitEndpoint(configuration);
         }
@@ -170,7 +171,7 @@ namespace Bq.Messaging
             }
             connection.Dispose();
         }
-        sealed class HandlerContext : IMessageHandlerContext
+        internal sealed class HandlerContext : IMessageHandlerContext
         {
             readonly RabbitEndpoint endpoint;
             readonly string replyTo;
@@ -195,6 +196,11 @@ namespace Bq.Messaging
             }
             public Task Publish<T>(T message) => PersistenceSession == null ? endpoint.PublishCore(message, CorrelationId) :
                 PersistenceSession.StoreOutgoing(endpoint.Prepare(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false));
+            internal Task ScheduleSagaTimeout(SagaTimeoutMessage timeout, DateTime dueUtc)
+            {
+                if (PersistenceSession == null) throw new InvalidOperationException("Saga timeouts require persistence.");
+                return PersistenceSession.StoreTimeout(endpoint.Prepare(timeout, "", endpoint.configuration.Name, CorrelationId, true), dueUtc);
+            }
             public Task Reply<T>(T message)
             {
                 if (string.IsNullOrEmpty(replyTo)) throw new InvalidOperationException("Message has no reply address.");

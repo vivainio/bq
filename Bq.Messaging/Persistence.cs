@@ -24,6 +24,7 @@ namespace Bq.Messaging
         DbTransaction Transaction { get; }
         Task<bool> TryClaimMessage(string endpoint, string messageId);
         Task StoreOutgoing(OutgoingMessage message);
+        Task StoreTimeout(OutgoingMessage message, DateTime dueUtc);
         Task<SagaRecord> LoadSaga(string sagaType, string sagaId);
         Task SaveSaga(string sagaType, string sagaId, byte[] data, long? expectedVersion);
         Task DeleteSaga(string sagaType, string sagaId, long expectedVersion);

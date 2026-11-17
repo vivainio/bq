@@ -29,6 +29,8 @@ namespace Bq.Persistence.Sqlite
             {
                 cmd.CommandText = @"CREATE TABLE IF NOT EXISTS bq_inbox (endpoint TEXT NOT NULL, message_id TEXT NOT NULL, PRIMARY KEY(endpoint,message_id));
 CREATE TABLE IF NOT EXISTS bq_outbox (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY(endpoint,id));
+CREATE TABLE IF NOT EXISTS bq_saga_timeout (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, due_ticks INTEGER NOT NULL, PRIMARY KEY(endpoint,id));
+CREATE INDEX IF NOT EXISTS bq_saga_timeout_due ON bq_saga_timeout(endpoint,due_ticks);
 CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT NULL, saga_id TEXT NOT NULL, version INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(endpoint,saga_type,saga_id));";
                 await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
@@ -53,7 +55,7 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
         {
             CheckEndpoint(name);
             using (var c = await Open().ConfigureAwait(false))
-            using (var cmd = Command(c, null, "SELECT id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body FROM bq_outbox WHERE endpoint=@e ORDER BY rowid LIMIT 1", "@e", endpoint))
+            using (var cmd = Command(c, null, "SELECT id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body FROM bq_saga_timeout WHERE endpoint=@e AND due_ticks<=@now UNION ALL SELECT id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body FROM bq_outbox WHERE endpoint=@e LIMIT 1", "@e", endpoint, "@now", DateTime.UtcNow.Ticks))
             using (var r = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
             {
                 if (!await r.ReadAsync().ConfigureAwait(false)) return null;
@@ -64,7 +66,7 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
         {
             CheckEndpoint(name);
             using (var c = await Open().ConfigureAwait(false))
-            using (var cmd = Command(c, null, "DELETE FROM bq_outbox WHERE endpoint=@e AND id=@id", "@e", endpoint, "@id", id)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+            using (var cmd = Command(c, null, "DELETE FROM bq_outbox WHERE endpoint=@e AND id=@id; DELETE FROM bq_saga_timeout WHERE endpoint=@e AND id=@id", "@e", endpoint, "@id", id)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         sealed class Session : IPersistenceSession
         {
@@ -81,6 +83,11 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             public async Task StoreOutgoing(OutgoingMessage m)
             {
                 using (var cmd = Command(Connection, Transaction, "INSERT INTO bq_outbox(endpoint,id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body) VALUES(@e,@id,@c,@r,@t,@x,@k,@m,@b)", "@e", endpoint, "@id", m.Id, "@c", m.CorrelationId, "@r", m.ReplyTo, "@t", m.Type, "@x", m.Exchange, "@k", m.RoutingKey, "@m", m.Mandatory ? 1 : 0, "@b", m.Body)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
+            public async Task StoreTimeout(OutgoingMessage m, DateTime dueUtc)
+            {
+                if (dueUtc.Kind != DateTimeKind.Utc) throw new ArgumentException("Timeout must use UTC.", nameof(dueUtc));
+                using (var cmd = Command(Connection, Transaction, "INSERT INTO bq_saga_timeout(endpoint,id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,due_ticks) VALUES(@e,@id,@c,@r,@t,@x,@k,@m,@b,@due)", "@e", endpoint, "@id", m.Id, "@c", m.CorrelationId, "@r", m.ReplyTo, "@t", m.Type, "@x", m.Exchange, "@k", m.RoutingKey, "@m", m.Mandatory ? 1 : 0, "@b", m.Body, "@due", dueUtc.Ticks)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             public async Task<SagaRecord> LoadSaga(string type, string id)
             {

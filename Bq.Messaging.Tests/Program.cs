@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using System.Threading;
 using System.Data.Common;
 using System.IO;
 using Bq.Persistence.Sqlite;
@@ -17,6 +18,32 @@ namespace Bq.Messaging.Tests
     public class OldContract { public string Text { get; set; } }
     public class NewContract { public string Text { get; set; } public int Added { get; set; } }
     public class OrderSaga { public string Status { get; set; } }
+    public class StartOrder { public string OrderId { get; set; } public int DelayMs { get; set; } public bool FailFirst { get; set; } }
+    public class ChangeOrder { public string OrderId { get; set; } public bool Complete { get; set; } }
+    public class OrderTimeout { public string OrderId { get; set; } }
+    public class OrderState { public string Status { get; set; } public int TimeoutCount { get; set; } }
+    public class OrderWorkflow : Saga<OrderState>, IAmStartedByMessages<StartOrder>, IHandleMessages<ChangeOrder>, IHandleTimeouts<OrderTimeout>
+    {
+        public static int StartAttempts;
+        public static int TimeoutCalls;
+        public async Task Handle(StartOrder message, IMessageHandlerContext context)
+        {
+            Data.Status = "started";
+            if (message.DelayMs > 0) await RequestTimeout(TimeSpan.FromMilliseconds(message.DelayMs), new OrderTimeout { OrderId = message.OrderId });
+            if (message.FailFirst && Interlocked.Increment(ref StartAttempts) == 1) throw new Exception("simulate rollback");
+        }
+        public Task Handle(ChangeOrder message, IMessageHandlerContext context)
+        {
+            if (message.Complete) MarkAsComplete(); else Data.Status = "changed";
+            return Task.CompletedTask;
+        }
+        public Task Timeout(OrderTimeout message, IMessageHandlerContext context)
+        {
+            Interlocked.Increment(ref TimeoutCalls);
+            Data.TimeoutCount++;
+            return Task.CompletedTask;
+        }
+    }
     class Handler<T> : IHandleMessages<T>
     {
         readonly Func<T, IMessageHandlerContext, Task> action;
@@ -38,6 +65,7 @@ namespace Bq.Messaging.Tests
             var uri = Environment.GetEnvironmentVariable("BQ_RABBITMQ_URI");
             if (string.IsNullOrEmpty(uri)) { Console.WriteLine("RabbitMQ tests skipped: set BQ_RABBITMQ_URI."); return; }
             await BrokerTests(new Uri(uri));
+            await SagaTests(new Uri(uri));
         }
         static DbConnection Sqlite(string path)
         {
@@ -154,6 +182,87 @@ namespace Bq.Messaging.Tests
                 using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                 using (var channel = connection.CreateModel())
                     foreach (var name in new[] { senderName, receiverName, subscriberName }) { channel.QueueDelete(name); channel.QueueDelete(name + ".error"); }
+            }
+        }
+        static async Task<SagaStoredState<OrderState>> ReadOrder(SqlitePersistence store, string id)
+        {
+            using (var session = await store.OpenSession())
+            {
+                var record = await session.LoadSaga(typeof(OrderWorkflow).FullName, id);
+                if (record == null) return null;
+                var options = MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
+                return MessagePackSerializer.Deserialize<SagaStoredState<OrderState>>(record.Data, options);
+            }
+        }
+        static async Task WaitFor(Func<Task<bool>> condition, string description)
+        {
+            for (var i = 0; i < 150; i++) { if (await condition()) return; await Task.Delay(100); }
+            throw new Exception("Timed out: " + description);
+        }
+        static async Task SagaTests(Uri uri)
+        {
+            var suffix = Guid.NewGuid().ToString("N");
+            var endpointName = "bq.test.saga." + suffix;
+            var senderName = "bq.test.saga.sender." + suffix;
+            var path = Path.Combine(Path.GetTempPath(), "bq-saga-" + suffix + ".db");
+            var store = new SqlitePersistence(() => Sqlite(path), endpointName);
+            await store.Initialize();
+            var missingCount = 0;
+            var otherHandlerCount = 0;
+            var config = new EndpointConfiguration(endpointName, uri) { Persistence = store };
+            config.SagaNotFound = (sagaType, key, message, context) => { if (key == "missing") Interlocked.Increment(ref missingCount); return Task.CompletedTask; };
+            config.Handle(() => new Handler<ChangeOrder>((message, context) => { Interlocked.Increment(ref otherHandlerCount); return Task.CompletedTask; }));
+            config.RegisterSaga<OrderWorkflow, OrderState>(() => new OrderWorkflow(), mappings =>
+            {
+                mappings.Start<StartOrder>(m => m.OrderId);
+                mappings.Handle<ChangeOrder>(m => m.OrderId);
+                mappings.Timeout<OrderTimeout>();
+            });
+            var sender = new EndpointConfiguration(senderName, uri);
+            sender.Route<StartOrder>(endpointName);
+            sender.Route<ChangeOrder>(endpointName);
+            try
+            {
+                using (var a = RabbitEndpoint.Start(sender))
+                {
+                    using (var sagaEndpoint = RabbitEndpoint.Start(config))
+                    {
+                        await a.Send(new ChangeOrder { OrderId = "missing" });
+                        await a.Send(new StartOrder { OrderId = "restart", DelayMs = 3000, FailFirst = true });
+                        await WaitFor(async () => await ReadOrder(store, "restart") != null, "start saga");
+                        Assert(OrderWorkflow.StartAttempts == 2, "handler retry starts new transaction");
+                        Assert(await ReadOrder(store, "missing") == null && missingCount == 1, "non-start message invokes not-found callback");
+                        Assert(otherHandlerCount == 1, "ordinary handler and saga share message");
+                    }
+                    // Timeout is stored in SQLite and is still due after endpoint restart.
+                    using (var sagaEndpoint = RabbitEndpoint.Start(config))
+                    {
+                        await WaitFor(async () => (await ReadOrder(store, "restart"))?.Data.TimeoutCount == 1, "timeout after restart");
+                        await Task.Delay(1500);
+                        Assert((await ReadOrder(store, "restart")).Data.TimeoutCount == 1, "failed attempt did not leave an extra timeout");
+                        await a.Send(new ChangeOrder { OrderId = "restart" });
+                        await WaitFor(async () => (await ReadOrder(store, "restart"))?.Data.Status == "changed", "correlated update");
+                        await a.Send(new StartOrder { OrderId = "reuse", DelayMs = 3500 });
+                        await WaitFor(async () => await ReadOrder(store, "reuse") != null, "start old instance");
+                        var original = (await ReadOrder(store, "reuse")).InstanceId;
+                        await a.Send(new ChangeOrder { OrderId = "reuse", Complete = true });
+                        await WaitFor(async () => await ReadOrder(store, "reuse") == null, "complete saga");
+                        await a.Send(new StartOrder { OrderId = "reuse" });
+                        await WaitFor(async () => { var state = await ReadOrder(store, "reuse"); return state != null && state.InstanceId != original; }, "start replacement instance");
+                        await Task.Delay(5000);
+                        var replacement = await ReadOrder(store, "reuse");
+                        Assert(replacement != null && replacement.Data.TimeoutCount == 0, "old timeout ignored by replacement");
+                        Assert(OrderWorkflow.TimeoutCalls == 1, "only committed valid timeout invoked");
+                    }
+                }
+                Console.WriteLine("Saga lifecycle and durable timeout tests passed.");
+            }
+            finally
+            {
+                if (File.Exists(path)) File.Delete(path);
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var channel = connection.CreateModel())
+                    foreach (var name in new[] { senderName, endpointName }) { channel.QueueDelete(name); channel.QueueDelete(name + ".error"); }
             }
         }
         static async Task<T> Within<T>(Task<T> task)
