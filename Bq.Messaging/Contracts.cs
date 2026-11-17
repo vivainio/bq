@@ -15,6 +15,7 @@ namespace Bq.Messaging
         string MessageId { get; }
         string CorrelationId { get; }
         IReadOnlyDictionary<string, object> Headers { get; }
+        IPersistenceSession PersistenceSession { get; }
         Task Send<T>(T message);
         Task Publish<T>(T message);
         Task Reply<T>(T message);
@@ -34,6 +35,8 @@ namespace Bq.Messaging
         public Uri RabbitMqUri { get; }
         // Immediate retries are per delivery; broker redelivery starts a new attempt sequence.
         public int ImmediateRetries { get; set; } = 2;
+        // Optional; when supplied, incoming processing uses a local database transaction.
+        public IPersistenceProvider Persistence { get; set; }
         public void Route<T>(string endpoint) => Routes[typeof(T)] = endpoint;
         public void Handle<T>(Func<IHandleMessages<T>> factory, bool subscribe = false)
         {
