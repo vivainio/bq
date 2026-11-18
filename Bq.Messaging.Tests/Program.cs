@@ -302,13 +302,37 @@ namespace Bq.Messaging.Tests
                             Assert((string)await sql.ExecuteScalarAsync() == "committed", "application transaction commits business data");
                         }
                     }
-                    await a.PublishAt(new Event { Text = "event" }, DateTimeOffset.UtcNow.AddSeconds(1));
+                    var producerName = "bq.test.producer." + suffix;
+                    var producerStore = new SqlitePersistence(() => Sqlite(senderPath), producerName);
+                    var producerConfig = new EndpointConfiguration(producerName, uri) { Persistence = producerStore };
+                    producerConfig.SendOnly();
+                    using (var producer = RabbitEndpoint.Start(producerConfig))
+                    {
+                        var rejected = false;
+                        try { await producer.SendLocal(new Event()); }
+                        catch (InvalidOperationException) { rejected = true; }
+                        Assert(rejected, "send-only endpoint rejects local send");
+                        using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                        using (var probe = connection.CreateModel())
+                        {
+                            var missing = false;
+                            try { probe.QueueDeclarePassive(producerName); }
+                            catch (RabbitMQ.Client.Exceptions.OperationInterruptedException ex) when (ex.ShutdownReason.ReplyCode == 404)
+                            {
+                                missing = true;
+                            }
+                            Assert(missing, "send-only endpoint has no input queue");
+                        }
+                        await producer.PublishAt(new Event { Text = "event" }, DateTimeOffset.UtcNow.AddSeconds(1));
+                        Assert(await Within(gotEvent1.Task) == "event" && await Within(gotEvent2.Task) == "event",
+                            "send-only endpoint dispatches durable events");
+                        await producer.StopAsync();
+                    }
                     await a.Send(new Failed());
                     Assert(await Within(gotCommand.Task) == "command", "command");
                     Assert(DateTimeOffset.UtcNow >= dueAt, "scheduled command delivered after due time");
                     Assert(await Within(gotReply.Task) == "command", "reply");
                     Assert(await Within(gotLocal.Task) == "command", "send local");
-                    Assert(await Within(gotEvent1.Task) == "event" && await Within(gotEvent2.Task) == "event", "event fanout");
                     using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                     using (var channel = connection.CreateModel())
                     {

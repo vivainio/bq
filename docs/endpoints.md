@@ -41,3 +41,9 @@ Use `await endpoint.SendAt("billing", message, dueAt)` with a `DateTimeOffset` t
 Handlers and application transaction callbacks can call `session.SendAt(destination, message, dueAt)` on their context or transactional session. The schedule commits with their other database work and disappears on rollback. The SQLite backlog totals labeled timeouts also include scheduled sends. Use `DispatchKind.ScheduledSend` to inspect ordinary scheduled messages separately.
 
 Use `PublishAt(event, dueAt)` to schedule an event for all subscribers bound when RabbitMQ routes the publish. This is available on the endpoint, handler context, and application transactional session. Like immediate publish, a scheduled event can have no subscribers.
+
+## Send-only endpoints
+
+Call `config.SendOnly()` before starting a producer that only sends or publishes. Bq starts the publisher and durable outbox dispatcher without declaring an input queue or starting a consumer. Initialize persistence as usual. Register routes for outgoing commands and omit handlers and sagas.
+
+Send-only messages carry no reply address. `SendLocal` rejects calls because there is no local input queue. Use an explicit receiving endpoint for scheduled sends.

@@ -20,6 +20,7 @@ namespace Bq.Messaging
         static readonly MessagePackSerializerOptions SerializerOptions = MessagePackSerializerOptions.Standard
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly EndpointConfiguration configuration;
+        readonly bool sendOnly;
         readonly TimeSpan dispatchPollInterval;
         readonly TimeSpan publisherConfirmTimeout;
         readonly IConnection connection;
@@ -44,6 +45,7 @@ namespace Bq.Messaging
         RabbitEndpoint(EndpointConfiguration configuration)
         {
             this.configuration = configuration;
+            sendOnly = configuration.IsSendOnly;
             dispatchPollInterval = configuration.DispatchPollInterval;
             publisherConfirmTimeout = configuration.PublisherConfirmTimeout;
             var factory = new ConnectionFactory
@@ -56,29 +58,31 @@ namespace Bq.Messaging
             connection = factory.CreateConnection();
             try
             {
-                consumerChannel = connection.CreateModel();
                 publisherChannel = connection.CreateModel();
-                consumerChannel.ExchangeDeclare(EventsExchange, ExchangeType.Topic, true);
-                consumerChannel.ExchangeDeclare(ErrorExchange, ExchangeType.Direct, true);
-                var errorQueue = configuration.Recoverability.ErrorQueue ?? configuration.Name + ".error";
-                consumerChannel.QueueDeclare(errorQueue, true, false, false);
-                consumerChannel.QueueBind(errorQueue, ErrorExchange, configuration.Name);
-                consumerChannel.QueueDeclare(configuration.Name, true, false, false, new Dictionary<string, object>
-                {
-                    ["x-dead-letter-exchange"] = ErrorExchange,
-                    ["x-dead-letter-routing-key"] = configuration.Name
-                });
-                foreach (var entry in configuration.Handlers.Where(x => x.Value.Subscribe))
-                    consumerChannel.QueueBind(configuration.Name, EventsExchange, entry.Key);
-                consumerChannel.BasicQos(0, configuration.MaxConcurrency, false);
+                publisherChannel.ExchangeDeclare(EventsExchange, ExchangeType.Topic, true);
                 publisherChannel.ConfirmSelect();
                 publisherChannel.BasicReturn += (sender, args) => { returned = true; };
-                var consumer = new AsyncEventingBasicConsumer(consumerChannel);
-                consumer.Received += OnReceived;
-                consumerTag = consumerChannel.BasicConsume(configuration.Name, false, consumer);
-                dispatcher = Task.WhenAll(
-                    Task.Run(() => DispatchPending(true, stopping.Token)),
-                    Task.Run(() => DispatchPending(false, stopping.Token)));
+                if (!sendOnly)
+                {
+                    consumerChannel = connection.CreateModel();
+                    consumerChannel.ExchangeDeclare(ErrorExchange, ExchangeType.Direct, true);
+                    var errorQueue = configuration.Recoverability.ErrorQueue ?? configuration.Name + ".error";
+                    consumerChannel.QueueDeclare(errorQueue, true, false, false);
+                    consumerChannel.QueueBind(errorQueue, ErrorExchange, configuration.Name);
+                    consumerChannel.QueueDeclare(configuration.Name, true, false, false, new Dictionary<string, object>
+                    {
+                        ["x-dead-letter-exchange"] = ErrorExchange,
+                        ["x-dead-letter-routing-key"] = configuration.Name
+                    });
+                    foreach (var entry in configuration.Handlers.Where(x => x.Value.Subscribe))
+                        consumerChannel.QueueBind(configuration.Name, EventsExchange, entry.Key);
+                    consumerChannel.BasicQos(0, configuration.MaxConcurrency, false);
+                    var consumer = new AsyncEventingBasicConsumer(consumerChannel);
+                    consumer.Received += OnReceived;
+                    consumerTag = consumerChannel.BasicConsume(configuration.Name, false, consumer);
+                }
+                var outbox = Task.Run(() => DispatchPending(false, stopping.Token));
+                dispatcher = sendOnly ? outbox : Task.WhenAll(outbox, Task.Run(() => DispatchPending(true, stopping.Token)));
             }
             catch { connection.Dispose(); throw; }
         }
@@ -86,6 +90,8 @@ namespace Bq.Messaging
         public static RabbitEndpoint Start(EndpointConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            if (configuration.IsSendOnly && (configuration.Handlers.Count > 0 || configuration.HasSagas))
+                throw new InvalidOperationException("A send-only endpoint cannot register message handlers or sagas.");
             if (configuration.Persistence == null || !(configuration.Persistence is IRecoveryPersistence)) throw new InvalidOperationException("Transactional persistence with recovery support is required.");
             if (configuration.Recoverability.DelayedRetries == null || configuration.Recoverability.DelayedRetries.Any(delay => delay < TimeSpan.Zero || delay > TimeSpan.FromDays(24))) throw new ArgumentException("Delayed retry intervals must be between zero and 24 days.");
             if (configuration.Recoverability.ErrorQueue != null && string.IsNullOrWhiteSpace(configuration.Recoverability.ErrorQueue)) throw new ArgumentException("Error queue cannot be empty.");
@@ -167,7 +173,7 @@ namespace Bq.Messaging
             }
             public Task Send<T>(string destination, T message) =>
                 ActivePersistence.StoreOutgoing(endpoint.Prepare(message, "", RequireDestination(destination), null, true));
-            public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
+            public Task SendLocal<T>(T message) => Send(endpoint.LocalDestination(), message);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
                 endpoint.StoreScheduled(ActivePersistence, destination, message, dueAt.UtcDateTime, null);
             public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
@@ -196,7 +202,12 @@ namespace Bq.Messaging
             if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("A destination queue is required.", nameof(destination));
             return destination;
         }
-        public Task SendLocal<T>(T message) => SendCore(message, null, configuration.Name);
+        string LocalDestination()
+        {
+            if (sendOnly) throw new InvalidOperationException("A send-only endpoint has no local input queue.");
+            return configuration.Name;
+        }
+        public Task SendLocal<T>(T message) => SendCore(message, null, LocalDestination());
         public Task Publish<T>(T message) => PublishCore(message, null);
         internal Task SendCore<T>(T message, string correlationId, string destination)
         {
@@ -210,7 +221,7 @@ namespace Bq.Messaging
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
             var id = Guid.NewGuid().ToString("N");
-            return new OutgoingMessage { Id = id, CorrelationId = correlationId ?? id, ReplyTo = configuration.Name,
+            return new OutgoingMessage { Id = id, CorrelationId = correlationId ?? id, ReplyTo = sendOnly ? null : configuration.Name,
                 Type = EndpointConfiguration.MessageType(typeof(T)), Exchange = exchange, RoutingKey = routingKey,
                 Mandatory = mandatory, Body = MessagePackSerializer.Serialize(typeof(T), message, SerializerOptions) };
         }
@@ -460,7 +471,7 @@ namespace Bq.Messaging
             try
             {
                 // BasicCancel is synchronous in the netstandard2.0 RabbitMQ client.
-                var cancel = Task.Run(() => { lock (consumerLock) { if (consumerChannel.IsOpen) consumerChannel.BasicCancel(consumerTag); } });
+                var cancel = Task.Run(() => { lock (consumerLock) { if (consumerChannel?.IsOpen == true) consumerChannel.BasicCancel(consumerTag); } });
                 await WaitFor(cancel, cancellationToken).ConfigureAwait(false);
                 await WaitFor(drained.Task, cancellationToken).ConfigureAwait(false);
                 stopping.Cancel();

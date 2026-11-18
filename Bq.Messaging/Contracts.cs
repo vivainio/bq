@@ -52,6 +52,8 @@ namespace Bq.Messaging
         internal readonly Dictionary<string, Registration> Handlers = new Dictionary<string, Registration>();
         internal readonly Dictionary<string, Func<SagaTimeoutMessage, IMessageHandlerContext, Task>> SagaTimeouts = new Dictionary<string, Func<SagaTimeoutMessage, IMessageHandlerContext, Task>>();
         internal bool HasSagas;
+        internal bool IsSendOnly { get; private set; }
+        public void SendOnly() => IsSendOnly = true;
         public EndpointConfiguration(string name, Uri rabbitMqUri)
         {
             if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("An endpoint name is required.", nameof(name));
