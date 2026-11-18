@@ -122,19 +122,26 @@ namespace Bq.Messaging
                 return new UniformSession(this, scope);
             }
         }
-        public Task ExecuteTransaction(Func<ITransactionalSession, Task> action)
+        public Task ExecuteTransaction(Func<ITransactionalSession, Task> action) =>
+            ExecuteTransaction(action, CancellationToken.None);
+
+        public Task ExecuteTransaction(Func<ITransactionalSession, Task> action, CancellationToken cancellationToken)
         {
             if (action == null) throw new ArgumentNullException(nameof(action));
             return ExecuteTransaction(async session =>
             {
                 await action(session).ConfigureAwait(false);
                 return true;
-            });
+            }, cancellationToken);
         }
 
-        public async Task<TResult> ExecuteTransaction<TResult>(Func<ITransactionalSession, Task<TResult>> action)
+        public Task<TResult> ExecuteTransaction<TResult>(Func<ITransactionalSession, Task<TResult>> action) =>
+            ExecuteTransaction(action, CancellationToken.None);
+
+        public async Task<TResult> ExecuteTransaction<TResult>(Func<ITransactionalSession, Task<TResult>> action, CancellationToken cancellationToken)
         {
             if (action == null) throw new ArgumentNullException(nameof(action));
+            cancellationToken.ThrowIfCancellationRequested();
             if (uniformScope.Value != null || externalTransaction.Value != null)
                 throw new InvalidOperationException("Use the existing session inside a messaging transaction.");
             lock (lifecycleLock)
@@ -144,9 +151,11 @@ namespace Bq.Messaging
             }
             try
             {
+                using (var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, forceStop.Token))
                 using (var persistence = await configuration.Persistence.OpenSession().ConfigureAwait(false))
                 {
-                    var session = new TransactionalSession(this, persistence);
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    var session = new TransactionalSession(this, persistence, cancellation.Token);
                     externalTransaction.Value = session;
                     TResult result;
                     try { result = await action(session).ConfigureAwait(false); }
@@ -155,7 +164,7 @@ namespace Bq.Messaging
                         session.End();
                         externalTransaction.Value = null;
                     }
-                    forceStop.Token.ThrowIfCancellationRequested();
+                    cancellation.Token.ThrowIfCancellationRequested();
                     persistence.Commit();
                     return result;
                 }
@@ -169,14 +178,16 @@ namespace Bq.Messaging
             readonly IPersistenceSession persistence;
             volatile bool ended;
 
-            public TransactionalSession(RabbitEndpoint endpoint, IPersistenceSession persistence)
+            public TransactionalSession(RabbitEndpoint endpoint, IPersistenceSession persistence, CancellationToken cancellationToken)
             {
                 this.endpoint = endpoint;
                 this.persistence = persistence;
+                CancellationToken = cancellationToken;
             }
 
             IPersistenceSession ActivePersistence => !ended && ReferenceEquals(endpoint.externalTransaction.Value, this)
                 ? persistence : throw new InvalidOperationException("The transactional session is outside its active scope.");
+            public CancellationToken CancellationToken { get; }
             public System.Data.Common.DbConnection Connection => ActivePersistence.Connection;
             public System.Data.Common.DbTransaction Transaction => ActivePersistence.Transaction;
             public Task Send<T>(T message)

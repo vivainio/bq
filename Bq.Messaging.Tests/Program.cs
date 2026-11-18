@@ -287,6 +287,22 @@ namespace Bq.Messaging.Tests
                     catch (InvalidOperationException ex) when (ReferenceEquals(ex, rollback)) { }
                     Assert((await senderStore.ListPendingDispatches()).Count == 0, "rollback discards uniform-session outbox message");
 
+                    using (var cancellation = new CancellationTokenSource())
+                    {
+                        try
+                        {
+                            await a.ExecuteTransaction(async session =>
+                            {
+                                await session.Send(receiverName, new Command { Text = "canceled" });
+                                cancellation.Cancel();
+                                Assert(session.CancellationToken.IsCancellationRequested, "session observes request cancellation");
+                            }, cancellation.Token);
+                            throw new Exception("Expected application transaction cancellation");
+                        }
+                        catch (OperationCanceledException) { }
+                    }
+                    Assert((await senderStore.ListPendingDispatches()).Count == 0, "cancellation discards outgoing message");
+
                     var dueAt = DateTimeOffset.UtcNow.AddSeconds(2);
                     var transactionResult = await a.ExecuteTransaction(async session =>
                     {

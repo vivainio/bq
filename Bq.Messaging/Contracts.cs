@@ -27,6 +27,7 @@ namespace Bq.Messaging
 
     public interface ITransactionalSession : IUniformSession
     {
+        CancellationToken CancellationToken { get; }
         System.Data.Common.DbConnection Connection { get; }
         System.Data.Common.DbTransaction Transaction { get; }
     }
