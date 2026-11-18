@@ -175,6 +175,19 @@ namespace Bq.Messaging.Tests
                 await store.MarkDispatched("test", "sent");
                 Assert(await store.NextOutgoing("test") == null, "outbox dispatch");
                 Assert((await store.GetDispatchBacklog()).Outgoing == 0, "dispatched item leaves backlog");
+                using (var session = await store.OpenSession())
+                {
+                    await session.StoreOutgoing(new OutgoingMessage { Id = "ordinary", Type = "t",
+                        Exchange = "", RoutingKey = "q", Body = new byte[] { 1 } });
+                    await session.StoreTimeout(new OutgoingMessage { Id = "timeout", Type = "t",
+                        Exchange = "", RoutingKey = "q", Body = new byte[] { 1 } }, DateTime.UtcNow.AddSeconds(-1));
+                    session.Commit();
+                }
+                Assert((await store.NextOutgoing("test")).Id == "timeout" &&
+                    (await store.NextOutgoing("test")).Id == "ordinary",
+                    "outgoing polls alternate between due timeouts and ordinary messages");
+                await store.MarkDispatched("test", "ordinary");
+                await store.MarkDispatched("test", "timeout");
                 var failedAt = DateTime.UtcNow;
                 using (var session = await store.OpenSession())
                 {

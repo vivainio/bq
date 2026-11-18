@@ -11,6 +11,7 @@ namespace Bq.Persistence.Sqlite
     {
         readonly Func<DbConnection> factory;
         readonly string endpoint;
+        int outgoingPoll;
         public SqlitePersistence(Func<DbConnection> factory, string endpoint)
         {
             this.factory = factory ?? throw new ArgumentNullException(nameof(factory));
@@ -109,8 +110,20 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
         public async Task<OutgoingMessage> NextOutgoing(string name)
         {
             CheckEndpoint(name);
+            // Alternate preference so a sustained backlog or an unroutable head in one
+            // category does not prevent attempts in the other category.
+            var preferTimeout = System.Threading.Interlocked.Increment(ref outgoingPoll) & 1;
+            const string fields = "id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body";
+            var sql = "SELECT " + fields + @" FROM (
+    SELECT * FROM (SELECT " + fields + @", 1 AS category FROM bq_saga_timeout
+        WHERE endpoint=@e AND due_ticks<=@now ORDER BY due_ticks,id LIMIT 1)
+    UNION ALL
+    SELECT * FROM (SELECT " + fields + @", 0 AS category FROM bq_outbox
+        WHERE endpoint=@e ORDER BY rowid LIMIT 1)
+) ORDER BY (category=@preferred) DESC LIMIT 1";
             using (var c = await Open().ConfigureAwait(false))
-            using (var cmd = Command(c, null, "SELECT id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body FROM bq_saga_timeout WHERE endpoint=@e AND due_ticks<=@now UNION ALL SELECT id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body FROM bq_outbox WHERE endpoint=@e LIMIT 1", "@e", endpoint, "@now", DateTime.UtcNow.Ticks))
+            using (var cmd = Command(c, null, sql, "@e", endpoint, "@now", DateTime.UtcNow.Ticks,
+                "@preferred", preferTimeout))
             using (var r = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
             {
                 if (!await r.ReadAsync().ConfigureAwait(false)) return null;
