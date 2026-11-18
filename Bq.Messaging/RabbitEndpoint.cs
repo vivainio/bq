@@ -21,6 +21,7 @@ namespace Bq.Messaging
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly EndpointConfiguration configuration;
         readonly TimeSpan dispatchPollInterval;
+        readonly TimeSpan publisherConfirmTimeout;
         readonly IConnection connection;
         readonly IModel consumerChannel;
         readonly IModel publisherChannel;
@@ -43,6 +44,7 @@ namespace Bq.Messaging
         {
             this.configuration = configuration;
             dispatchPollInterval = configuration.DispatchPollInterval;
+            publisherConfirmTimeout = configuration.PublisherConfirmTimeout;
             var factory = new ConnectionFactory { Uri = configuration.RabbitMqUri, DispatchConsumersAsync = true, ConsumerDispatchConcurrency = configuration.MaxConcurrency };
             connection = factory.CreateConnection();
             try
@@ -84,6 +86,9 @@ namespace Bq.Messaging
             if (configuration.DispatchPollInterval < TimeSpan.FromMilliseconds(1) ||
                 configuration.DispatchPollInterval > TimeSpan.FromMilliseconds(int.MaxValue))
                 throw new ArgumentOutOfRangeException(nameof(configuration.DispatchPollInterval));
+            if (configuration.PublisherConfirmTimeout < TimeSpan.FromMilliseconds(1) ||
+                configuration.PublisherConfirmTimeout > TimeSpan.FromMilliseconds(int.MaxValue))
+                throw new ArgumentOutOfRangeException(nameof(configuration.PublisherConfirmTimeout));
             if (configuration.MaxConcurrency == 0) throw new ArgumentOutOfRangeException(nameof(configuration.MaxConcurrency));
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));
             return new RabbitEndpoint(configuration);
@@ -143,7 +148,7 @@ namespace Bq.Messaging
                 props.ContentType = ContentType;
                 returned = false;
                 publisherChannel.BasicPublish(message.Exchange, message.RoutingKey, message.Mandatory, props, message.Body);
-                if (!publisherChannel.WaitForConfirms(TimeSpan.FromSeconds(10))) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
+                if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
                 if (returned) throw new InvalidOperationException("Message was unroutable: " + message.RoutingKey);
             }
         }
@@ -199,7 +204,7 @@ namespace Bq.Messaging
                 props.Persistent = true;
                 returned = false;
                 publisherChannel.BasicPublish("", record.IsError ? record.ErrorQueue : configuration.Name, true, props, envelope.Body);
-                if (!publisherChannel.WaitForConfirms(TimeSpan.FromSeconds(10))) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
+                if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
                 if (returned) throw new InvalidOperationException("Recovery message was unroutable.");
             }
         }
