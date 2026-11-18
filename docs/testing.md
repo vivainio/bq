@@ -11,3 +11,7 @@ The last command also exercises command delivery, replies, event fan-out, saga t
 ```sh
 podman run -d --name bq-rabbitmq -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672 docker.io/library/rabbitmq:3.13-management
 ```
+
+## Broker restart test
+
+Run the complete suite with `./scripts/test-rabbitmq.sh`. It requires the .NET SDK, Mono, and a running Podman machine or native Podman. The runner starts its own RabbitMQ container on an available localhost port, restarts it during a scheduled retry, and removes the container on exit.
