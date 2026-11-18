@@ -35,9 +35,10 @@ namespace Bq.Messaging
         }
         public string Name { get; }
         public Uri RabbitMqUri { get; }
-        // Immediate retries are per delivery; broker redelivery starts a new attempt sequence.
-        public int ImmediateRetries { get; set; } = 2;
-        // Optional; when supplied, incoming processing uses a local database transaction.
+        public RecoverabilityOptions Recoverability { get; } = new RecoverabilityOptions();
+        // Retained for existing applications.
+        public int ImmediateRetries { get => Recoverability.ImmediateRetries; set => Recoverability.ImmediateRetries = value; }
+        // Every endpoint requires transactional persistence.
         public IPersistenceProvider Persistence { get; set; }
         // Called for non-starting messages that do not match an active saga.
         public Func<Type, string, object, IMessageHandlerContext, Task> SagaNotFound { get; set; }

@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading.Tasks;
 using MessagePack;
 using MessagePack.Resolvers;
@@ -39,8 +41,9 @@ namespace Bq.Messaging
                 publisherChannel = connection.CreateModel();
                 consumerChannel.ExchangeDeclare(EventsExchange, ExchangeType.Topic, true);
                 consumerChannel.ExchangeDeclare(ErrorExchange, ExchangeType.Direct, true);
-                consumerChannel.QueueDeclare(configuration.Name + ".error", true, false, false);
-                consumerChannel.QueueBind(configuration.Name + ".error", ErrorExchange, configuration.Name);
+                var errorQueue = configuration.Recoverability.ErrorQueue ?? configuration.Name + ".error";
+                consumerChannel.QueueDeclare(errorQueue, true, false, false);
+                consumerChannel.QueueBind(errorQueue, ErrorExchange, configuration.Name);
                 consumerChannel.QueueDeclare(configuration.Name, true, false, false, new Dictionary<string, object>
                 {
                     ["x-dead-letter-exchange"] = ErrorExchange,
@@ -62,7 +65,10 @@ namespace Bq.Messaging
         public static RabbitEndpoint Start(EndpointConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
-            if (configuration.HasSagas && configuration.Persistence == null) throw new InvalidOperationException("Saga handling requires persistence.");
+            if (configuration.Persistence == null || !(configuration.Persistence is IRecoveryPersistence)) throw new InvalidOperationException("Transactional persistence with recovery support is required.");
+            if (configuration.Recoverability.DelayedRetries == null || configuration.Recoverability.DelayedRetries.Any(delay => delay < TimeSpan.Zero || delay > TimeSpan.FromDays(24))) throw new ArgumentException("Delayed retry intervals must be between zero and 24 days.");
+            if (configuration.Recoverability.ErrorQueue != null && string.IsNullOrWhiteSpace(configuration.Recoverability.ErrorQueue)) throw new ArgumentException("Error queue cannot be empty.");
+            if (configuration.Recoverability.ErrorQueue == configuration.Name) throw new ArgumentException("Error queue must differ from the endpoint queue.");
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));
             return new RabbitEndpoint(configuration);
         }
@@ -103,7 +109,7 @@ namespace Bq.Messaging
                 props.ContentType = ContentType;
                 returned = false;
                 publisherChannel.BasicPublish(message.Exchange, message.RoutingKey, message.Mandatory, props, message.Body);
-                publisherChannel.WaitForConfirmsOrDie(TimeSpan.FromSeconds(10));
+                if (!publisherChannel.WaitForConfirms(TimeSpan.FromSeconds(10))) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
                 if (returned) throw new InvalidOperationException("Message was unroutable: " + message.RoutingKey);
             }
         }
@@ -113,6 +119,13 @@ namespace Bq.Messaging
             {
                 try
                 {
+                    var recovery = await ((IRecoveryPersistence)configuration.Persistence).NextRecovery(configuration.Name).ConfigureAwait(false);
+                    if (recovery != null)
+                    {
+                        PublishRecovery(recovery);
+                        await ((IRecoveryPersistence)configuration.Persistence).MarkRecoveryDispatched(configuration.Name, recovery.RecoveryId).ConfigureAwait(false);
+                        continue;
+                    }
                     var message = await configuration.Persistence.NextOutgoing(configuration.Name).ConfigureAwait(false);
                     if (message != null)
                     {
@@ -126,39 +139,115 @@ namespace Bq.Messaging
                 catch (OperationCanceledException) { break; }
             }
         }
+        static string RecoveryId(string messageId, int cycle)
+        {
+            using (var sha = SHA256.Create())
+            {
+                var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(messageId + "\n" + cycle.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                return BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
+            }
+        }
+        void PublishRecovery(RecoveryRecord record)
+        {
+            var envelope = RecoveryWire.Decode(record.Payload);
+            lock (publishLock)
+            {
+                if (disposed) throw new ObjectDisposedException(nameof(RabbitEndpoint));
+                var props = publisherChannel.CreateBasicProperties();
+                RecoveryWire.Apply(envelope, props);
+                props.Persistent = true;
+                returned = false;
+                publisherChannel.BasicPublish("", record.IsError ? record.ErrorQueue : configuration.Name, true, props, envelope.Body);
+                if (!publisherChannel.WaitForConfirms(TimeSpan.FromSeconds(10))) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
+                if (returned) throw new InvalidOperationException("Recovery message was unroutable.");
+            }
+        }
+        public Task<IReadOnlyList<RecoveryRecord>> ListErrors(int limit = 100) => ((IRecoveryPersistence)configuration.Persistence).ListErrors(configuration.Name, limit);
+        public async Task<bool> ReplayError(string recoveryId)
+        {
+            if (string.IsNullOrEmpty(recoveryId)) throw new ArgumentException("Recovery ID is required.", nameof(recoveryId));
+            // Look up a specific record independently of the inspection page limit.
+            var original = await ((IRecoveryPersistence)configuration.Persistence).GetError(configuration.Name, recoveryId).ConfigureAwait(false);
+            if (original == null) return false;
+            var envelope = RecoveryWire.Decode(original.Payload);
+            RecoveryWire.SetOriginalId(envelope, original.MessageId);
+            envelope.MessageId = Guid.NewGuid().ToString("N");
+            var replay = new RecoveryRecord { RecoveryId = "replay-" + Guid.NewGuid().ToString("N"), MessageId = envelope.MessageId,
+                Cycle = 0, FailedAtUtc = DateTime.UtcNow, DueAtUtc = DateTime.UtcNow, Payload = RecoveryWire.Encode(envelope) };
+            return await ((IRecoveryPersistence)configuration.Persistence).ReplayError(configuration.Name, recoveryId, replay).ConfigureAwait(false);
+        }
         async Task OnReceived(object sender, BasicDeliverEventArgs delivery)
         {
+            var props = delivery.BasicProperties;
+            var cycle = 0;
+            var currentId = props.MessageId;
+            Exception failure = null;
+            var unrecoverable = false;
             try
             {
-                var props = delivery.BasicProperties;
+                try { cycle = RecoveryWire.Cycle(props); }
+                catch { unrecoverable = true; throw; }
+                if (string.IsNullOrEmpty(currentId)) throw new InvalidOperationException("Message ID is required.");
                 if (props.ContentType != ContentType || props.Type == null || !configuration.Handlers.TryGetValue(props.Type, out var registration))
-                    throw new InvalidOperationException("Unknown message type or content type.");
+                { unrecoverable = true; throw new InvalidOperationException("Unknown message type or content type."); }
+                object message;
+                try { message = MessagePackSerializer.Deserialize(registration.Type, delivery.Body, SerializerOptions); }
+                catch (Exception ex) { unrecoverable = true; throw new InvalidOperationException("Message deserialization failed.", ex); }
                 for (var attempt = 0; ; attempt++)
                 {
                     try
                     {
-                        var message = MessagePackSerializer.Deserialize(registration.Type, delivery.Body, SerializerOptions);
-                        if (configuration.Persistence == null)
-                            await registration.Invoke(message, new HandlerContext(this, props, null)).ConfigureAwait(false);
-                        else
+                        using (var session = await configuration.Persistence.OpenSession().ConfigureAwait(false))
                         {
-                            using (var session = await configuration.Persistence.OpenSession().ConfigureAwait(false))
-                            {
-                                if (await session.TryClaimMessage(configuration.Name, props.MessageId).ConfigureAwait(false))
-                                    await registration.Invoke(message, new HandlerContext(this, props, session)).ConfigureAwait(false);
-                                session.Commit();
-                            }
+                            var recovery = session as IRecoverySession ?? throw new InvalidOperationException("Persistence session does not support recovery.");
+                            if (!await recovery.HasRecovery(configuration.Name, RecoveryId(currentId, cycle)).ConfigureAwait(false) &&
+                                await session.TryClaimMessage(configuration.Name, currentId).ConfigureAwait(false))
+                                await registration.Invoke(message, new HandlerContext(this, props, session)).ConfigureAwait(false);
+                            session.Commit();
                         }
                         break;
                     }
-                    catch when (attempt < configuration.ImmediateRetries) { }
+                    catch (Exception ex) when (attempt < configuration.ImmediateRetries && !(configuration.Recoverability.IsUnrecoverable?.Invoke(ex) ?? false))
+                    {
+                        System.Diagnostics.Trace.TraceWarning("Immediate retry {0} for message {1}: {2}", attempt + 1, currentId, ex);
+                        // Every attempt must deserialize afresh, since a failed handler may mutate the object.
+                        message = MessagePackSerializer.Deserialize(registration.Type, delivery.Body, SerializerOptions);
+                    }
                 }
                 lock (consumerLock) { if (!disposed) consumerChannel.BasicAck(delivery.DeliveryTag, false); }
+                return;
             }
-            catch (Exception ex)
+            catch (Exception ex) { failure = ex; }
+            try
             {
-                System.Diagnostics.Trace.TraceError("Message processing failed: {0}", ex);
-                lock (consumerLock) { if (!disposed && consumerChannel.IsOpen) consumerChannel.BasicNack(delivery.DeliveryTag, false, false); }
+                var options = configuration.Recoverability;
+                unrecoverable |= options.IsUnrecoverable?.Invoke(failure) ?? false;
+                var isError = unrecoverable || cycle >= options.DelayedRetries.Length;
+                var envelope = RecoveryWire.Capture(props, delivery.Body);
+                // A missing message ID cannot be deduplicated across redelivery, but the
+                // failed message can still be persisted without losing its body.
+                if (string.IsNullOrEmpty(currentId)) { currentId = Guid.NewGuid().ToString("N"); envelope.MessageId = currentId; isError = true; }
+                RecoveryWire.SetFailure(envelope, failure, cycle, configuration.Name);
+                if (!isError) RecoveryWire.SetCycle(envelope, checked(cycle + 1));
+                var now = DateTime.UtcNow;
+                var record = new RecoveryRecord { RecoveryId = RecoveryId(currentId, cycle), MessageId = currentId, Cycle = cycle,
+                    IsError = isError, ErrorQueue = options.ErrorQueue ?? configuration.Name + ".error", ExceptionType = failure.GetType().FullName,
+                    ExceptionMessage = failure.Message, ExceptionDetail = failure.ToString(), FailedAtUtc = now,
+                    DueAtUtc = isError ? now : now.Add(options.DelayedRetries[cycle]), Payload = RecoveryWire.Encode(envelope) };
+                using (var session = await configuration.Persistence.OpenSession().ConfigureAwait(false))
+                {
+                    var recovery = session as IRecoverySession ?? throw new InvalidOperationException("Persistence session does not support recovery.");
+                    await recovery.StoreRecovery(configuration.Name, record).ConfigureAwait(false);
+                    session.Commit();
+                }
+                System.Diagnostics.Trace.TraceError("Message {0} failed; {1}: {2}", currentId, isError ? "error queue" : "delayed retry", failure);
+                lock (consumerLock) { if (!disposed) consumerChannel.BasicAck(delivery.DeliveryTag, false); }
+            }
+            catch (Exception handoffError)
+            {
+                System.Diagnostics.Trace.TraceError("Failed to persist recovery for message {0}; requeuing: {1}", currentId, handoffError);
+                await Task.Delay(1000).ConfigureAwait(false);
+                lock (consumerLock) { if (!disposed && consumerChannel.IsOpen) consumerChannel.BasicNack(delivery.DeliveryTag, false, true); }
             }
         }
         public void Dispose()

@@ -15,6 +15,8 @@ namespace Bq.Messaging.Tests
     public class Event { public string Text { get; set; } }
     public class Response { public string Text { get; set; } }
     public class Failed { public string Text { get; set; } }
+    public class RecoverCommand { public string Text { get; set; } }
+    public class FatalFailureException : Exception { public FatalFailureException(string text) : base(text) { } }
     public class OldContract { public string Text { get; set; } }
     public class NewContract { public string Text { get; set; } public int Added { get; set; } }
     public class OrderSaga { public string Status { get; set; } }
@@ -50,6 +52,41 @@ namespace Bq.Messaging.Tests
         public Handler(Func<T, IMessageHandlerContext, Task> action) { this.action = action; }
         public Task Handle(T value, IMessageHandlerContext context) => action(value, context);
     }
+    class FaultPersistence : IPersistenceProvider, IRecoveryPersistence
+    {
+        readonly SqlitePersistence inner;
+        public int FailNextStore;
+        public FaultPersistence(SqlitePersistence inner) { this.inner = inner; }
+        public async Task<IPersistenceSession> OpenSession() => new FaultSession(await inner.OpenSession(), this);
+        public Task<OutgoingMessage> NextOutgoing(string endpoint) => inner.NextOutgoing(endpoint);
+        public Task MarkDispatched(string endpoint, string id) => inner.MarkDispatched(endpoint, id);
+        public Task<RecoveryRecord> NextRecovery(string endpoint) => inner.NextRecovery(endpoint);
+        public Task MarkRecoveryDispatched(string endpoint, string id) => inner.MarkRecoveryDispatched(endpoint, id);
+        public Task<RecoveryRecord> GetError(string endpoint, string id) => inner.GetError(endpoint, id);
+        public Task<System.Collections.Generic.IReadOnlyList<RecoveryRecord>> ListErrors(string endpoint, int limit) => inner.ListErrors(endpoint, limit);
+        public Task<bool> ReplayError(string endpoint, string id, RecoveryRecord record) => inner.ReplayError(endpoint, id, record);
+        sealed class FaultSession : IPersistenceSession, IRecoverySession
+        {
+            readonly IPersistenceSession session; readonly FaultPersistence owner;
+            public FaultSession(IPersistenceSession session, FaultPersistence owner) { this.session = session; this.owner = owner; }
+            public DbConnection Connection => session.Connection;
+            public DbTransaction Transaction => session.Transaction;
+            public Task<bool> TryClaimMessage(string endpoint, string id) => session.TryClaimMessage(endpoint, id);
+            public Task StoreOutgoing(OutgoingMessage message) => session.StoreOutgoing(message);
+            public Task StoreTimeout(OutgoingMessage message, DateTime due) => session.StoreTimeout(message, due);
+            public Task<SagaRecord> LoadSaga(string type, string id) => session.LoadSaga(type, id);
+            public Task SaveSaga(string type, string id, byte[] data, long? version) => session.SaveSaga(type, id, data, version);
+            public Task DeleteSaga(string type, string id, long version) => session.DeleteSaga(type, id, version);
+            public Task<bool> HasRecovery(string endpoint, string id) => ((IRecoverySession)session).HasRecovery(endpoint, id);
+            public Task StoreRecovery(string endpoint, RecoveryRecord record)
+            {
+                if (Interlocked.Exchange(ref owner.FailNextStore, 0) == 1) throw new Exception("simulated storage outage");
+                return ((IRecoverySession)session).StoreRecovery(endpoint, record);
+            }
+            public void Commit() => session.Commit();
+            public void Dispose() => session.Dispose();
+        }
+    }
     class Program
     {
         static async Task Main()
@@ -66,6 +103,9 @@ namespace Bq.Messaging.Tests
             if (string.IsNullOrEmpty(uri)) { Console.WriteLine("RabbitMQ tests skipped: set BQ_RABBITMQ_URI."); return; }
             await BrokerTests(new Uri(uri));
             await SagaTests(new Uri(uri));
+            await RecoverabilityTests(new Uri(uri));
+            var outageDirectory = Environment.GetEnvironmentVariable("BQ_BROKER_OUTAGE_DIR");
+            if (!string.IsNullOrEmpty(outageDirectory)) await BrokerOutageTest(new Uri(uri), outageDirectory);
         }
         static DbConnection Sqlite(string path)
         {
@@ -141,7 +181,11 @@ namespace Bq.Messaging.Tests
             var gotEvent2 = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var gotReply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var attempts = 0;
-            var sender = new EndpointConfiguration(senderName, uri);
+            var senderPath = Path.Combine(Path.GetTempPath(), "bq-sender-" + suffix + ".db");
+            var senderStore = new SqlitePersistence(() => Sqlite(senderPath), senderName); await senderStore.Initialize();
+            var subscriberPath = Path.Combine(Path.GetTempPath(), "bq-subscriber-" + suffix + ".db");
+            var subscriberStore = new SqlitePersistence(() => Sqlite(subscriberPath), subscriberName); await subscriberStore.Initialize();
+            var sender = new EndpointConfiguration(senderName, uri) { Persistence = senderStore };
             sender.Route<Command>(receiverName);
             sender.Route<Failed>(receiverName);
             sender.Handle(() => new Handler<Response>((m, c) => { gotReply.TrySetResult(m.Text); return Task.CompletedTask; }));
@@ -151,8 +195,9 @@ namespace Bq.Messaging.Tests
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = store };
             receiver.Handle(() => new Handler<Command>(async (m, c) => { gotCommand.TrySetResult(m.Text); await c.Reply(new Response { Text = m.Text }); }));
             receiver.Handle(() => new Handler<Event>((m, c) => { gotEvent1.TrySetResult(m.Text); return Task.CompletedTask; }), true);
+            receiver.Recoverability.DelayedRetries = new TimeSpan[0];
             receiver.Handle(() => new Handler<Failed>((m, c) => { attempts++; throw new Exception("expected"); }));
-            var subscriber = new EndpointConfiguration(subscriberName, uri);
+            var subscriber = new EndpointConfiguration(subscriberName, uri) { Persistence = subscriberStore };
             subscriber.Handle(() => new Handler<Event>((m, c) => { gotEvent2.TrySetResult(m.Text); return Task.CompletedTask; }), true);
             try
             {
@@ -179,6 +224,8 @@ namespace Bq.Messaging.Tests
             finally
             {
                 if (File.Exists(dbPath)) File.Delete(dbPath);
+                if (File.Exists(senderPath)) File.Delete(senderPath);
+                if (File.Exists(subscriberPath)) File.Delete(subscriberPath);
                 using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                 using (var channel = connection.CreateModel())
                     foreach (var name in new[] { senderName, receiverName, subscriberName }) { channel.QueueDelete(name); channel.QueueDelete(name + ".error"); }
@@ -218,7 +265,9 @@ namespace Bq.Messaging.Tests
                 mappings.Handle<ChangeOrder>(m => m.OrderId);
                 mappings.Timeout<OrderTimeout>();
             });
-            var sender = new EndpointConfiguration(senderName, uri);
+            var senderPath = Path.Combine(Path.GetTempPath(), "bq-saga-sender-" + suffix + ".db");
+            var senderStore = new SqlitePersistence(() => Sqlite(senderPath), senderName); await senderStore.Initialize();
+            var sender = new EndpointConfiguration(senderName, uri) { Persistence = senderStore };
             sender.Route<StartOrder>(endpointName);
             sender.Route<ChangeOrder>(endpointName);
             try
@@ -260,9 +309,154 @@ namespace Bq.Messaging.Tests
             finally
             {
                 if (File.Exists(path)) File.Delete(path);
+                if (File.Exists(senderPath)) File.Delete(senderPath);
                 using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                 using (var channel = connection.CreateModel())
                     foreach (var name in new[] { senderName, endpointName }) { channel.QueueDelete(name); channel.QueueDelete(name + ".error"); }
+            }
+        }
+        static async Task RecoverabilityTests(Uri uri)
+        {
+            var suffix = Guid.NewGuid().ToString("N");
+            var name = "bq.test.recover." + suffix;
+            var errorName = name + ".custom-error";
+            var path = Path.Combine(Path.GetTempPath(), "bq-recover-" + suffix + ".db");
+            var store = new SqlitePersistence(() => Sqlite(path), name);
+            await store.Initialize();
+            var faultStore = new FaultPersistence(store);
+            var config = new EndpointConfiguration(name, uri) { Persistence = faultStore };
+            config.ImmediateRetries = 0;
+            config.Recoverability.DelayedRetries = new[] { TimeSpan.FromSeconds(3) };
+            config.Recoverability.ErrorQueue = errorName;
+            config.Recoverability.IsUnrecoverable = ex => ex is FatalFailureException;
+            var attempts = 0;
+            var successes = 0;
+            var replayAllowed = false;
+            var handoffAttempts = 0;
+            var exhaustedAttempts = 0;
+            string seenId = null, seenCorrelation = null, seenHeader = null;
+            config.Handle(() => new Handler<RecoverCommand>((m, context) =>
+            {
+                Interlocked.Increment(ref attempts);
+                if (m.Text == "retry" && Volatile.Read(ref attempts) == 1) throw new Exception("temporary failure");
+                if (m.Text == "fatal" && !replayAllowed) throw new FatalFailureException("permanent failure");
+                if (m.Text == "exhaust") { Interlocked.Increment(ref exhaustedAttempts); throw new Exception("persistent failure"); }
+                if (m.Text == "handoff" && Interlocked.Increment(ref handoffAttempts) == 1) throw new Exception("recoverability storage unavailable");
+                seenId = context.MessageId; seenCorrelation = context.CorrelationId;
+                if (context.Headers.TryGetValue("custom", out var h)) seenHeader = System.Text.Encoding.UTF8.GetString((byte[])h);
+                Interlocked.Increment(ref successes);
+                return Task.CompletedTask;
+            }));
+            var options = MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
+            try
+            {
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var channel = connection.CreateModel())
+                {
+                    var body = MessagePackSerializer.Serialize(new RecoverCommand { Text = "retry" }, options);
+                    var props = channel.CreateBasicProperties();
+                    props.MessageId = "retry-" + suffix; props.Type = typeof(RecoverCommand).FullName; props.ContentType = "application/x-msgpack";
+                    props.CorrelationId = "correlation"; props.Headers = new System.Collections.Generic.Dictionary<string, object> { ["custom"] = "hello" };
+                    using (var endpoint = RabbitEndpoint.Start(config))
+                    {
+                        channel.BasicPublish("", name, props, body);
+                        await WaitFor(async () => { using (var c = Sqlite(path)) { await c.OpenAsync(); using (var cmd = c.CreateCommand()) { cmd.CommandText = "SELECT COUNT(*) FROM bq_recovery WHERE cycle=0"; return Convert.ToInt32(await cmd.ExecuteScalarAsync()) == 1; } } }, "retry persisted");
+                        // Duplicate the same delivery after the decision has committed. It must not run again.
+                        channel.BasicPublish("", name, props, body);
+                        await Task.Delay(400);
+                        Assert(attempts == 1, "duplicate original skipped after retry decision");
+                    }
+                    await Task.Delay(3200);
+                    using (var endpoint = RabbitEndpoint.Start(config))
+                    {
+                        await WaitFor(() => Task.FromResult(Volatile.Read(ref successes) == 1), "retry after restart");
+                        Assert(attempts == 2 && seenId == props.MessageId && seenCorrelation == "correlation" && seenHeader == "hello", "retry retains identity and headers");
+                        var fatalProps = channel.CreateBasicProperties();
+                        fatalProps.MessageId = "fatal-" + suffix; fatalProps.Type = typeof(RecoverCommand).FullName; fatalProps.ContentType = "application/x-msgpack";
+                        channel.BasicPublish("", name, fatalProps, MessagePackSerializer.Serialize(new RecoverCommand { Text = "fatal" }, options));
+                        await WaitFor(async () => (await endpoint.ListErrors()).Count == 1, "error recorded");
+                        var errors = await endpoint.ListErrors();
+                        Assert(errors[0].MessageId == fatalProps.MessageId && errors[0].ExceptionType.Contains("FatalFailureException"), "error metadata");
+                        Assert(attempts == 3, "unrecoverable failure bypasses retries");
+                        BasicGetResult error = null;
+                        await WaitFor(() => { error = channel.BasicGet(errorName, true); return Task.FromResult(error != null); }, "error queue delivery");
+                        Assert(error.BasicProperties.MessageId == fatalProps.MessageId, "error queue identity");
+                        Assert(error.BasicProperties.Headers.ContainsKey("x-bq-failure-detail"), "error queue failure metadata");
+                        replayAllowed = true;
+                        Assert(await endpoint.ReplayError(errors[0].RecoveryId), "error replay scheduled");
+                        Assert(!await endpoint.ReplayError(errors[0].RecoveryId), "error replay idempotent");
+                        await WaitFor(() => Task.FromResult(Volatile.Read(ref successes) == 2), "error replay processed");
+                        Assert(seenId != fatalProps.MessageId, "replay has fresh message ID");
+                        faultStore.FailNextStore = 1;
+                        var handoff = channel.CreateBasicProperties(); handoff.MessageId = "handoff-" + suffix; handoff.Type = typeof(RecoverCommand).FullName; handoff.ContentType = "application/x-msgpack";
+                        channel.BasicPublish("", name, handoff, MessagePackSerializer.Serialize(new RecoverCommand { Text = "handoff" }, options));
+                        await WaitFor(() => Task.FromResult(Volatile.Read(ref successes) == 3), "failed recovery handoff requeued");
+                        Assert(handoffAttempts == 2, "storage failure did not acknowledge delivery");
+                        // An unavailable error queue must leave the database handoff pending.
+                        replayAllowed = false;
+                        channel.QueueDelete(errorName);
+                        var missingError = channel.CreateBasicProperties(); missingError.MessageId = "missing-error-" + suffix; missingError.Type = typeof(RecoverCommand).FullName; missingError.ContentType = "application/x-msgpack";
+                        channel.BasicPublish("", name, missingError, MessagePackSerializer.Serialize(new RecoverCommand { Text = "fatal" }, options));
+                        await WaitFor(async () => (await endpoint.ListErrors()).Count == 1, "error retained while destination unavailable");
+                        await Task.Delay(1500);
+                        Assert(await store.NextRecovery(name) != null, "unroutable error remains pending");
+                        channel.QueueDeclare(errorName, true, false, false);
+                        BasicGetResult restored = null;
+                        await WaitFor(() => { restored = channel.BasicGet(errorName, true); return Task.FromResult(restored != null); }, "pending error delivered after destination restored");
+                        Assert(restored.BasicProperties.MessageId == missingError.MessageId, "restored error retains identity");
+                        var exhausted = channel.CreateBasicProperties(); exhausted.MessageId = "exhaust-" + suffix; exhausted.Type = typeof(RecoverCommand).FullName; exhausted.ContentType = "application/x-msgpack";
+                        channel.BasicPublish("", name, exhausted, MessagePackSerializer.Serialize(new RecoverCommand { Text = "exhaust" }, options));
+                        await WaitFor(async () => (await endpoint.ListErrors()).Count == 2, "delayed retries exhausted");
+                        Assert(exhaustedAttempts == 2, "one immediate cycle plus one delayed cycle");
+                    }
+                }
+                Console.WriteLine("Durable recoverability and replay tests passed.");
+            }
+            finally
+            {
+                if (File.Exists(path)) File.Delete(path);
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var channel = connection.CreateModel()) { channel.QueueDelete(name); channel.QueueDelete(errorName); }
+            }
+        }
+        static async Task BrokerOutageTest(Uri uri, string directory)
+        {
+            var suffix = Guid.NewGuid().ToString("N");
+            var name = "bq.test.outage." + suffix;
+            var path = Path.Combine(Path.GetTempPath(), "bq-outage-" + suffix + ".db");
+            var store = new SqlitePersistence(() => Sqlite(path), name);
+            await store.Initialize();
+            var config = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
+            config.Recoverability.DelayedRetries = new[] { TimeSpan.FromSeconds(3) };
+            var calls = 0;
+            config.Handle(() => new Handler<RecoverCommand>((message, context) =>
+            {
+                if (Interlocked.Increment(ref calls) == 1) throw new Exception("test broker interruption");
+                return Task.CompletedTask;
+            }));
+            var options = MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
+            try
+            {
+                using (var endpoint = RabbitEndpoint.Start(config))
+                {
+                    using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    using (var channel = connection.CreateModel())
+                    {
+                        var props = channel.CreateBasicProperties(); props.MessageId = suffix; props.Type = typeof(RecoverCommand).FullName; props.ContentType = "application/x-msgpack";
+                        channel.BasicPublish("", name, props, MessagePackSerializer.Serialize(new RecoverCommand { Text = "outage" }, options));
+                    }
+                    await WaitFor(async () => { using (var c = Sqlite(path)) { await c.OpenAsync(); using (var cmd = c.CreateCommand()) { cmd.CommandText = "SELECT COUNT(*) FROM bq_recovery"; return Convert.ToInt32(await cmd.ExecuteScalarAsync()) == 1; } } }, "outage retry scheduled");
+                    File.WriteAllText(Path.Combine(directory, "ready"), "ready");
+                    await WaitFor(() => Task.FromResult(File.Exists(Path.Combine(directory, "restarted"))), "broker restart");
+                    await WaitFor(() => Task.FromResult(Volatile.Read(ref calls) == 2), "retry after broker restart");
+                }
+                Console.WriteLine("Broker interruption test passed.");
+            }
+            finally
+            {
+                if (File.Exists(path)) File.Delete(path);
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var channel = connection.CreateModel()) { channel.QueueDelete(name); channel.QueueDelete(name + ".error"); }
             }
         }
         static async Task<T> Within<T>(Task<T> task)

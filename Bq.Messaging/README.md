@@ -6,6 +6,7 @@ RabbitMQ endpoints with contractless MessagePack messages, targeting .NET Standa
 using System;
 using System.Threading.Tasks;
 using Bq.Messaging;
+using Bq.Persistence.Sqlite;
 
 public class PlaceOrder { public string OrderId { get; set; } }
 public class OrderPlaced { public string OrderId { get; set; } }
@@ -18,6 +19,9 @@ public class Handler : IHandleMessages<PlaceOrder>
 // Configure before starting. Each registration creates a handler per attempt.
 var config = new EndpointConfiguration("orders", new Uri("amqp://guest:guest@localhost:5672/"));
 config.Handle(() => new Handler());
+var store = new SqlitePersistence(() => CreateSqliteConnection(), "orders");
+await store.Initialize();
+config.Persistence = store;
 using (var endpoint = RabbitEndpoint.Start(config))
 {
     // Keep the process running until shutdown.
@@ -26,9 +30,39 @@ using (var endpoint = RabbitEndpoint.Start(config))
 
 Register event handlers with `config.Handle(() => new EventHandler(), subscribe: true)`. Configure command destinations with `config.Route<PlaceOrder>("orders")`, then call `await endpoint.Send(command)`; `endpoint.Publish(evt)` broadcasts to registered subscribers. Handlers can send, publish and reply through their context. Message types use their full .NET type name on the wire; receivers must explicitly register each type. Renaming types or properties changes the contract. Avoid polymorphic `object` properties; test schema changes with both versions.
 
-The endpoint declares a durable queue named after the endpoint, an error queue named `<endpoint>.error`, and durable `bq.events` / `bq.errors` exchanges. Multiple instances with the same endpoint name compete for messages and should use the same registrations. A send requires an existing destination queue; unroutable commands and failed publisher confirms throw. Published events without subscribers are discarded. Messages are persistent and acknowledged after the handler finishes. Exceptions are retried immediately twice by default, then dead-lettered to the error queue. Retry counts are in-memory per delivery and reset after redelivery. The error queue needs operational monitoring and a replay process.
+Every endpoint requires a configured persistence provider implementing both `IPersistenceProvider` and `IRecoveryPersistence`, with each session implementing `IRecoverySession`. Initialize its schema before starting the endpoint. All instances of the same endpoint must share the same database and compatible configuration.
 
-Delivery is at least once, not exactly once. Without persistence, outgoing messages are published immediately, including during failed attempts, and are not atomic with handler side effects or the incoming acknowledgment. Make handlers idempotent. `Dispose` closes the connection; in-flight messages may be redelivered. This prototype does not yet provide delayed retries, graceful draining, or full NServiceBus API/wire compatibility. Broker queues and exchanges persist after shutdown.
+The endpoint declares a durable input queue and a configurable error queue (default `<endpoint>.error`). A send requires an existing destination queue; unroutable commands and failed publisher confirms throw. Published events without subscribers are discarded. Messages are persistent. Handler-generated sends are committed to the outbox with business and saga data. Sending directly through an endpoint is outside the handler transaction.
+
+## Recoverability
+
+```csharp
+config.Recoverability.ImmediateRetries = 3;
+config.Recoverability.DelayedRetries = new[] {
+    TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(1)
+};
+config.Recoverability.ErrorQueue = "orders.errors";
+config.Recoverability.IsUnrecoverable = ex => ex is InvalidOperationException;
+```
+
+Each delivery gets the configured immediate retries (default two), then each configured delay (default 10, 20 and 30 seconds) starts a new immediate-retry cycle. Handler failures roll back their database transaction. Unknown message types, unsupported content types and deserialization failures skip retries. The optional predicate can mark more exceptions unrecoverable. An empty delay array disables delayed retries.
+
+Before acknowledging a failed delivery, Bq commits its recovery decision and a snapshot of the original AMQP properties, headers and body to the database. The dispatcher publishes due retries to the input queue and errors to the configured error queue using publisher confirms and mandatory routing. A storage failure requeues the original. A crash after the decision commits but before acknowledgment can cause redelivery; the persisted message-ID-and-cycle decision makes that delivery a no-op. Publishing a recovery record can itself occur more than once; retries retain their message ID so the inbox suppresses duplicate successful processing. Error queue copies may be duplicated. The message ID is required for deduplication; a failed message without one is assigned an ID and moved to error, but its original redelivery cannot be deduplicated.
+
+Failures are retained in the database for inspection and contain type, message, stack, timestamps, cycle and encoded original message. Error queue copies also carry `x-bq-failure-*` headers. Inspect and replay using:
+
+```csharp
+var errors = await endpoint.ListErrors(limit: 100);
+foreach (var error in errors)
+{
+    Console.WriteLine(error.MessageId + ": " + error.ExceptionMessage);
+    // Once the cause is corrected: await endpoint.ReplayError(error.RecoveryId);
+}
+```
+
+Replay is an atomic database operation and can be requested once per error record. It creates a fresh message ID so the old retry decisions and inbox entry do not suppress it; the original ID is retained in `x-bq-original-message-id`. Replay does not remove an already-published copy from the RabbitMQ error queue. Consumption directly from that queue is separate from Bq's inspection and replay API. Retry and error records are retained indefinitely; monitor and back up the database. An unavailable error queue leaves its database record pending, and can block other dispatch until restored. Delivery remains at least once; external side effects still need idempotency.
+
+`Dispose` closes the connection and in-flight messages may be redelivered. This is an early Bq API inspired by NServiceBus, not a replacement for its assemblies or its RabbitMQ wire protocol.
 
 ## Tests
 
@@ -38,7 +72,7 @@ mono Bq.Messaging.Tests/bin/Debug/net472/Bq.Messaging.Tests.exe
 BQ_RABBITMQ_URI=amqp://guest:guest@localhost:5672/ mono Bq.Messaging.Tests/bin/Debug/net472/Bq.Messaging.Tests.exe
 ```
 
-The last command also exercises command delivery, replies, event fan-out, and error routing against a local RabbitMQ broker. For example, with Podman:
+The last command also exercises command delivery, replies, event fan-out, saga timeouts, delayed retry, replay, and failure handling against a local RabbitMQ broker. For example, with Podman:
 
 ```sh
 podman run -d --name bq-rabbitmq -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672 docker.io/library/rabbitmq:3.13-management
@@ -101,4 +135,4 @@ Saga registrations require persistence. The selector returns a nonempty, stable 
 
 Timeouts are stored in SQLite and polled by the endpoint's outbox dispatcher, including after restart. Their actual delivery can be later than requested; clock adjustments and a blocked dispatcher affect timing. Delivery is at least once and duplicate suppression uses the persistent inbox. Completion does not proactively delete outstanding timeout records; they are discarded when delivered. Keep the inbox, timeout and saga data for as long as messages can be redelivered. Saga type names, correlation keys, timeout types and MessagePack property names are persisted contracts. The lower-level `IPersistenceSession` saga methods remain available for manual state management; they use their own type keys and do not automatically manage the saga lifecycle.
 
-The inbox currently has no retention cleanup, and the outbox has no operator tools or dead-letter policy: a persistently unroutable command blocks later records for that endpoint until fixed. The SQLite provider is a first implementation intended for local or low-concurrency use, not a claim that SQLite supports distributed multi-host deployment. Run the provider against the exact filesystem, SQLite driver and Mono version used in production. Handler external effects, other databases, and sends made outside the handler context are not part of the transaction. `PersistenceSession` is null when persistence is disabled.
+The inbox and recovery ledger currently have no retention cleanup, and the outbox has no operator tools or dead-letter policy: a persistently unroutable command blocks later records for that endpoint until fixed. The SQLite provider is a first implementation intended for local or low-concurrency use, not a claim that SQLite supports distributed multi-host deployment. Run the provider against the exact filesystem, SQLite driver and Mono version used in production. Handler external effects, other databases, and sends made outside the handler context are not part of the transaction.

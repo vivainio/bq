@@ -7,7 +7,7 @@ using Bq.Messaging;
 namespace Bq.Persistence.Sqlite
 {
     // Accepts an ADO.NET SQLite connection factory; the host selects the driver.
-    public sealed class SqlitePersistence : IPersistenceProvider
+    public sealed class SqlitePersistence : IPersistenceProvider, IRecoveryPersistence
     {
         readonly Func<DbConnection> factory;
         readonly string endpoint;
@@ -31,6 +31,8 @@ namespace Bq.Persistence.Sqlite
 CREATE TABLE IF NOT EXISTS bq_outbox (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY(endpoint,id));
 CREATE TABLE IF NOT EXISTS bq_saga_timeout (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, due_ticks INTEGER NOT NULL, PRIMARY KEY(endpoint,id));
 CREATE INDEX IF NOT EXISTS bq_saga_timeout_due ON bq_saga_timeout(endpoint,due_ticks);
+CREATE TABLE IF NOT EXISTS bq_recovery (endpoint TEXT NOT NULL, recovery_id TEXT NOT NULL, message_id TEXT NOT NULL, cycle INTEGER NOT NULL, is_error INTEGER NOT NULL, error_queue TEXT, exception_type TEXT, exception_message TEXT, exception_detail TEXT, failed_ticks INTEGER NOT NULL, due_ticks INTEGER NOT NULL, payload BLOB NOT NULL, dispatched INTEGER NOT NULL DEFAULT 0, replayed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(endpoint,recovery_id));
+CREATE INDEX IF NOT EXISTS bq_recovery_due ON bq_recovery(endpoint,dispatched,due_ticks);
 CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT NULL, saga_id TEXT NOT NULL, version INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(endpoint,saga_type,saga_id));";
                 await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
@@ -68,12 +70,81 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             using (var c = await Open().ConfigureAwait(false))
             using (var cmd = Command(c, null, "DELETE FROM bq_outbox WHERE endpoint=@e AND id=@id; DELETE FROM bq_saga_timeout WHERE endpoint=@e AND id=@id", "@e", endpoint, "@id", id)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
-        sealed class Session : IPersistenceSession
+        static RecoveryRecord ReadRecovery(DbDataReader r) => new RecoveryRecord
+        {
+            RecoveryId = r.GetString(0), MessageId = r.GetString(1), Cycle = Convert.ToInt32(r.GetValue(2)), IsError = Convert.ToInt32(r.GetValue(3)) != 0,
+            ErrorQueue = r.IsDBNull(4) ? null : r.GetString(4), ExceptionType = r.IsDBNull(5) ? null : r.GetString(5),
+            ExceptionMessage = r.IsDBNull(6) ? null : r.GetString(6), ExceptionDetail = r.IsDBNull(7) ? null : r.GetString(7),
+            FailedAtUtc = new DateTime(Convert.ToInt64(r.GetValue(8)), DateTimeKind.Utc), DueAtUtc = new DateTime(Convert.ToInt64(r.GetValue(9)), DateTimeKind.Utc), Payload = (byte[])r.GetValue(10)
+        };
+        const string RecoveryColumns = "recovery_id,message_id,cycle,is_error,error_queue,exception_type,exception_message,exception_detail,failed_ticks,due_ticks,payload";
+        static DbCommand InsertRecovery(DbConnection c, DbTransaction tx, string endpoint, RecoveryRecord r) => Command(c, tx,
+            "INSERT OR IGNORE INTO bq_recovery(endpoint,recovery_id,message_id,cycle,is_error,error_queue,exception_type,exception_message,exception_detail,failed_ticks,due_ticks,payload) VALUES(@e,@r,@id,@cycle,@error,@queue,@type,@message,@detail,@failed,@due,@payload)",
+            "@e", endpoint, "@r", r.RecoveryId, "@id", r.MessageId, "@cycle", r.Cycle, "@error", r.IsError ? 1 : 0, "@queue", r.ErrorQueue,
+            "@type", r.ExceptionType, "@message", r.ExceptionMessage, "@detail", r.ExceptionDetail, "@failed", r.FailedAtUtc.Ticks, "@due", r.DueAtUtc.Ticks, "@payload", r.Payload);
+        public async Task<RecoveryRecord> NextRecovery(string name)
+        {
+            CheckEndpoint(name);
+            using (var c = await Open().ConfigureAwait(false))
+            using (var cmd = Command(c, null, "SELECT " + RecoveryColumns + " FROM bq_recovery WHERE endpoint=@e AND dispatched=0 AND due_ticks<=@now ORDER BY due_ticks,recovery_id LIMIT 1", "@e", endpoint, "@now", DateTime.UtcNow.Ticks))
+            using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
+                return await reader.ReadAsync().ConfigureAwait(false) ? ReadRecovery(reader) : null;
+        }
+        public async Task MarkRecoveryDispatched(string name, string id)
+        {
+            CheckEndpoint(name);
+            using (var c = await Open().ConfigureAwait(false))
+            using (var cmd = Command(c, null, "UPDATE bq_recovery SET dispatched=1 WHERE endpoint=@e AND recovery_id=@id", "@e", endpoint, "@id", id)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        public async Task<RecoveryRecord> GetError(string name, string id)
+        {
+            CheckEndpoint(name);
+            using (var c = await Open().ConfigureAwait(false))
+            using (var cmd = Command(c, null, "SELECT " + RecoveryColumns + " FROM bq_recovery WHERE endpoint=@e AND recovery_id=@id AND is_error=1 AND replayed=0", "@e", endpoint, "@id", id))
+            using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
+                return await reader.ReadAsync().ConfigureAwait(false) ? ReadRecovery(reader) : null;
+        }
+        public async Task<System.Collections.Generic.IReadOnlyList<RecoveryRecord>> ListErrors(string name, int limit)
+        {
+            CheckEndpoint(name);
+            if (limit <= 0) throw new ArgumentOutOfRangeException(nameof(limit));
+            var result = new System.Collections.Generic.List<RecoveryRecord>();
+            using (var c = await Open().ConfigureAwait(false))
+            using (var cmd = Command(c, null, "SELECT " + RecoveryColumns + " FROM bq_recovery WHERE endpoint=@e AND is_error=1 AND replayed=0 ORDER BY failed_ticks DESC LIMIT @limit", "@e", endpoint, "@limit", limit))
+            using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
+                while (await reader.ReadAsync().ConfigureAwait(false)) result.Add(ReadRecovery(reader));
+            return result;
+        }
+        public async Task<bool> ReplayError(string name, string id, RecoveryRecord replay)
+        {
+            CheckEndpoint(name);
+            using (var c = await Open().ConfigureAwait(false))
+            using (var tx = c.BeginTransaction(IsolationLevel.Serializable))
+            {
+                using (var cmd = Command(c, tx, "UPDATE bq_recovery SET replayed=1 WHERE endpoint=@e AND recovery_id=@id AND is_error=1 AND replayed=0", "@e", endpoint, "@id", id))
+                    if (await cmd.ExecuteNonQueryAsync().ConfigureAwait(false) != 1) return false;
+                using (var cmd = InsertRecovery(c, tx, endpoint, replay)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+                tx.Commit();
+                return true;
+            }
+        }
+        sealed class Session : IPersistenceSession, IRecoverySession
         {
             readonly string endpoint;
             public Session(DbConnection c, DbTransaction tx, string endpoint) { Connection = c; Transaction = tx; this.endpoint = endpoint; }
             public DbConnection Connection { get; }
             public DbTransaction Transaction { get; }
+            public async Task<bool> HasRecovery(string name, string id)
+            {
+                if (name != endpoint) throw new InvalidOperationException("Persistence endpoint mismatch.");
+                using (var cmd = Command(Connection, Transaction, "SELECT COUNT(*) FROM bq_recovery WHERE endpoint=@e AND recovery_id=@id", "@e", endpoint, "@id", id))
+                    return Convert.ToInt32(await cmd.ExecuteScalarAsync().ConfigureAwait(false)) != 0;
+            }
+            public async Task StoreRecovery(string name, RecoveryRecord record)
+            {
+                if (name != endpoint) throw new InvalidOperationException("Persistence endpoint mismatch.");
+                using (var cmd = InsertRecovery(Connection, Transaction, endpoint, record)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+            }
             public async Task<bool> TryClaimMessage(string name, string id)
             {
                 if (name != endpoint) throw new InvalidOperationException("Persistence endpoint mismatch.");
