@@ -2,7 +2,7 @@ using System;
 
 namespace Bq.Persistence.Sqlite
 {
-    public enum DispatchKind { Outbox, SagaTimeout, Recovery, Error }
+    public enum DispatchKind { Outbox, SagaTimeout, Recovery, Error, ScheduledSend }
 
     public sealed class PendingDispatch
     {

@@ -92,14 +92,14 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             using (var command = Command(connection, null, @"SELECT id, kind, destination, due_ticks, exchange_name FROM (
     SELECT id, 'Outbox' AS kind, routing_key AS destination, NULL AS due_ticks, exchange_name FROM bq_outbox WHERE endpoint=@e
     UNION ALL
-    SELECT id, 'SagaTimeout', routing_key, due_ticks, exchange_name FROM bq_saga_timeout WHERE endpoint=@e
+    SELECT id, CASE WHEN type=@saga THEN 'SagaTimeout' ELSE 'ScheduledSend' END, routing_key, due_ticks, exchange_name FROM bq_saga_timeout WHERE endpoint=@e
     UNION ALL
     SELECT message_id, CASE WHEN is_error=1 THEN 'Error' ELSE 'Recovery' END,
         CASE WHEN is_error=1 THEN error_queue ELSE endpoint END, due_ticks, ''
         FROM bq_recovery WHERE endpoint=@e AND dispatched=0
 ) WHERE (@kind IS NULL OR kind=@kind) AND (@dueBy IS NULL OR due_ticks IS NULL OR due_ticks<=@dueBy)
 ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
-                "@e", endpoint, "@limit", limit, "@kind", kind?.ToString(), "@dueBy", dueBy))
+                "@e", endpoint, "@limit", limit, "@kind", kind?.ToString(), "@dueBy", dueBy, "@saga", typeof(SagaTimeoutMessage).FullName))
             using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
             {
                 while (await reader.ReadAsync().ConfigureAwait(false))

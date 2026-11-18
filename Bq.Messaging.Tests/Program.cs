@@ -190,7 +190,7 @@ namespace Bq.Messaging.Tests
                 await store.MarkDispatched("test", "timeout");
                 using (var session = await store.OpenSession())
                 {
-                    await session.StoreTimeout(new OutgoingMessage { Id = "later", Type = "t",
+                    await session.StoreTimeout(new OutgoingMessage { Id = "later", Type = typeof(SagaTimeoutMessage).FullName,
                         Exchange = "", RoutingKey = "q", Body = new byte[] { 1 } }, DateTime.UtcNow.AddHours(1));
                     session.Commit();
                 }
@@ -274,14 +274,15 @@ namespace Bq.Messaging.Tests
                                 sql.CommandText = "CREATE TABLE transaction_probe(value TEXT)";
                                 await sql.ExecuteNonQueryAsync();
                             }
-                            await session.Send(receiverName, new Command { Text = "rolled back" });
+                            await session.SendAt(receiverName, new Command { Text = "rolled back" }, DateTimeOffset.UtcNow);
                             throw rollback;
                         });
                         throw new Exception("Expected application transaction to fail");
                     }
                     catch (InvalidOperationException ex) when (ReferenceEquals(ex, rollback)) { }
-                    Assert((await senderStore.GetDispatchBacklog()).Outgoing == 0, "rollback discards outgoing message");
+                    Assert((await senderStore.ListPendingDispatches()).Count == 0, "rollback discards scheduled message");
 
+                    var dueAt = DateTimeOffset.UtcNow.AddSeconds(2);
                     await a.ExecuteTransaction(async session =>
                     {
                         using (var sql = session.Connection.CreateCommand())
@@ -290,7 +291,7 @@ namespace Bq.Messaging.Tests
                             sql.CommandText = "CREATE TABLE transaction_probe(value TEXT); INSERT INTO transaction_probe VALUES ('committed')";
                             await sql.ExecuteNonQueryAsync();
                         }
-                        await session.Send(receiverName, new Command { Text = "command" });
+                        await session.SendAt(receiverName, new Command { Text = "command" }, dueAt);
                     });
                     using (var db = Sqlite(senderPath))
                     {
@@ -304,6 +305,7 @@ namespace Bq.Messaging.Tests
                     await a.Publish(new Event { Text = "event" });
                     await a.Send(new Failed());
                     Assert(await Within(gotCommand.Task) == "command", "command");
+                    Assert(DateTimeOffset.UtcNow >= dueAt, "scheduled command delivered after due time");
                     Assert(await Within(gotReply.Task) == "command", "reply");
                     Assert(await Within(gotLocal.Task) == "command", "send local");
                     Assert(await Within(gotEvent1.Task) == "event" && await Within(gotEvent2.Task) == "event", "event fanout");

@@ -168,10 +168,18 @@ namespace Bq.Messaging
             public Task Send<T>(string destination, T message) =>
                 ActivePersistence.StoreOutgoing(endpoint.Prepare(message, "", RequireDestination(destination), null, true));
             public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
+            public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
+                endpoint.StoreScheduled(ActivePersistence, destination, message, dueAt.UtcDateTime, null);
             public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
                 message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), null, false));
             public void End() => ended = true;
         }
+
+        public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
+            ExecuteTransaction(session => session.SendAt(destination, message, dueAt));
+
+        Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId) =>
+            session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true), dueUtc);
 
         public Task Send<T>(T message) => SendCore(message, null, null);
         public Task Send<T>(string destination, T message) => SendCore(message, null, RequireDestination(destination));
@@ -556,10 +564,13 @@ namespace Bq.Messaging
             public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
             public Task Publish<T>(T message) => PersistenceSession == null ? endpoint.PublishCore(message, CorrelationId) :
                 PersistenceSession.StoreOutgoing(endpoint.Prepare(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false));
+            public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
+                endpoint.StoreScheduled(PersistenceSession, destination, message, dueAt.UtcDateTime, CorrelationId);
+
             internal Task ScheduleSagaTimeout(SagaTimeoutMessage timeout, DateTime dueUtc)
             {
                 if (PersistenceSession == null) throw new InvalidOperationException("Saga timeouts require persistence.");
-                return PersistenceSession.StoreTimeout(endpoint.Prepare(timeout, "", endpoint.configuration.Name, CorrelationId, true), dueUtc);
+                return endpoint.StoreScheduled(PersistenceSession, endpoint.configuration.Name, timeout, dueUtc, CorrelationId);
             }
             public Task Reply<T>(T message)
             {
