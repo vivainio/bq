@@ -105,7 +105,7 @@ namespace Bq.Messaging.Tests
                     {
                         entered.TrySetResult(true);
                         var completed = Signal();
-                        using (c.CancellationToken.Register(() => { cancelled.TrySetResult(true); completed.TrySetCanceled(); }))
+                        using (c.CancellationToken.Register(() => { cancelled.TrySetResult(true); completed.TrySetResult(true); }))
                             await completed.Task;
                     }));
                     var forcedEndpoint = RabbitEndpoint.Start(forced);
@@ -122,7 +122,7 @@ namespace Bq.Messaging.Tests
                     restart.Handle(() => new Handler<Command>((m, c) => { deliveredAgain.TrySetResult(true); return Task.CompletedTask; }));
                     using (var restarted = RabbitEndpoint.Start(restart))
                     {
-                        await Within(deliveredAgain.Task, "unfinished delivery is redelivered");
+                        await Within(deliveredAgain.Task, "handler that returns after forced cancellation is redelivered");
                         await restarted.StopAsync();
                     }
                 }

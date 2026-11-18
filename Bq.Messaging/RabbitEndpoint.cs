@@ -274,11 +274,12 @@ namespace Bq.Messaging
                                 try { await registration.Invoke(message, context).ConfigureAwait(false); }
                                 finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; }
                             }
+                            forceStop.Token.ThrowIfCancellationRequested();
                             session.Commit();
                         }
                         break;
                     }
-                    catch (Exception ex) when (attempt < configuration.ImmediateRetries && !(configuration.Recoverability.IsUnrecoverable?.Invoke(ex) ?? false))
+                    catch (Exception ex) when (!forceStop.IsCancellationRequested && attempt < configuration.ImmediateRetries && !(configuration.Recoverability.IsUnrecoverable?.Invoke(ex) ?? false))
                     {
                         System.Diagnostics.Trace.TraceWarning("Immediate retry {0} for message {1}: {2}", attempt + 1, currentId, ex);
                         // Every attempt must deserialize afresh, since a failed handler may mutate the object.
