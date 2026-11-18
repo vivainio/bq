@@ -288,7 +288,7 @@ namespace Bq.Messaging
                         }
                         break;
                     }
-                    catch (Exception ex) when (!forceStop.IsCancellationRequested && attempt < configuration.ImmediateRetries && !(configuration.Recoverability.IsUnrecoverable?.Invoke(ex) ?? false))
+                    catch (Exception ex) when (!forceStop.IsCancellationRequested && attempt < configuration.ImmediateRetries && !IsUnrecoverable(ex))
                     {
                         System.Diagnostics.Trace.TraceWarning("Immediate retry {0} for message {1}: {2}", attempt + 1, currentId, ex);
                         // Every attempt must deserialize afresh, since a failed handler may mutate the object.
@@ -303,7 +303,7 @@ namespace Bq.Messaging
             try
             {
                 var options = configuration.Recoverability;
-                unrecoverable |= options.IsUnrecoverable?.Invoke(failure) ?? false;
+                unrecoverable = unrecoverable || IsUnrecoverable(failure);
                 var isError = unrecoverable || cycle >= options.DelayedRetries.Length;
                 var envelope = RecoveryWire.Capture(props, delivery.Body);
                 // A missing message ID cannot be deduplicated across redelivery, but the
@@ -333,6 +333,19 @@ namespace Bq.Messaging
                 return;
             }
             AcknowledgeCommittedDelivery(delivery.DeliveryTag);
+        }
+
+        bool IsUnrecoverable(Exception failure)
+        {
+            try
+            {
+                return configuration.Recoverability.IsUnrecoverable?.Invoke(failure) ?? false;
+            }
+            catch (Exception policyError)
+            {
+                System.Diagnostics.Trace.TraceError("Unrecoverable exception classifier failed: {0}", policyError);
+                return false;
+            }
         }
 
         void AcknowledgeCommittedDelivery(ulong deliveryTag)

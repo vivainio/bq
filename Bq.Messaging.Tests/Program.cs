@@ -375,7 +375,11 @@ namespace Bq.Messaging.Tests
             config.ImmediateRetries = 0;
             config.Recoverability.DelayedRetries = new[] { TimeSpan.FromSeconds(3) };
             config.Recoverability.ErrorQueue = errorName;
-            config.Recoverability.IsUnrecoverable = ex => ex is FatalFailureException;
+            config.Recoverability.IsUnrecoverable = ex =>
+            {
+                if (ex.Message == "persistent failure") throw new InvalidOperationException("test classifier failure");
+                return ex is FatalFailureException;
+            };
             var attempts = 0;
             var successes = 0;
             var replayAllowed = false;
@@ -468,7 +472,7 @@ namespace Bq.Messaging.Tests
                         Assert(restored.BasicProperties.MessageId == missingError.MessageId, "restored error retains identity");
                         var exhausted = channel.CreateBasicProperties(); exhausted.MessageId = "exhaust-" + suffix; exhausted.Type = typeof(RecoverCommand).FullName; exhausted.ContentType = "application/x-msgpack";
                         channel.BasicPublish("", name, exhausted, MessagePackSerializer.Serialize(new RecoverCommand { Text = "exhaust" }, options));
-                        await WaitFor(async () => (await endpoint.ListErrors()).Count == 2, "delayed retries exhausted");
+                        await WaitFor(async () => (await endpoint.ListErrors()).Count == 2, "delayed retries exhaust even when the classifier throws");
                         Assert(exhaustedAttempts == 2, "one immediate cycle plus one delayed cycle");
                     }
                 }
