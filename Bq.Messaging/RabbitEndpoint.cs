@@ -173,7 +173,7 @@ namespace Bq.Messaging
             }
             public Task Send<T>(string destination, T message) =>
                 ActivePersistence.StoreOutgoing(endpoint.Prepare(message, "", RequireDestination(destination), null, true));
-            public Task SendLocal<T>(T message) => Send(endpoint.LocalDestination(), message);
+            public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
                 endpoint.StoreScheduled(ActivePersistence, destination, message, dueAt.UtcDateTime, null);
             public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
@@ -202,12 +202,7 @@ namespace Bq.Messaging
             if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("A destination queue is required.", nameof(destination));
             return destination;
         }
-        string LocalDestination()
-        {
-            if (sendOnly) throw new InvalidOperationException("A send-only endpoint has no local input queue.");
-            return configuration.Name;
-        }
-        public Task SendLocal<T>(T message) => SendCore(message, null, LocalDestination());
+        public Task SendLocal<T>(T message) => SendCore(message, null, configuration.Name);
         public Task Publish<T>(T message) => PublishCore(message, null);
         internal Task SendCore<T>(T message, string correlationId, string destination)
         {

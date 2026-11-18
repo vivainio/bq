@@ -46,4 +46,4 @@ Use `PublishAt(event, dueAt)` to schedule an event for all subscribers bound whe
 
 Call `config.SendOnly()` before starting a producer that only sends or publishes. Bq starts the publisher and durable outbox dispatcher without declaring an input queue or starting a consumer. Initialize persistence as usual. Register routes for outgoing commands and omit handlers and sagas.
 
-Send-only messages carry no reply address. `SendLocal` rejects calls because there is no local input queue. Use an explicit receiving endpoint for scheduled sends.
+Send-only messages carry no reply address. `SendLocal` targets the configured endpoint name. A receiving endpoint or provisioning step must create that queue before the send. Use an explicit receiving endpoint for scheduled sends.

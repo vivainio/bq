@@ -308,10 +308,6 @@ namespace Bq.Messaging.Tests
                     producerConfig.SendOnly();
                     using (var producer = RabbitEndpoint.Start(producerConfig))
                     {
-                        var rejected = false;
-                        try { await producer.SendLocal(new Event()); }
-                        catch (InvalidOperationException) { rejected = true; }
-                        Assert(rejected, "send-only endpoint rejects local send");
                         using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                         using (var probe = connection.CreateModel())
                         {
@@ -322,6 +318,18 @@ namespace Bq.Messaging.Tests
                                 missing = true;
                             }
                             Assert(missing, "send-only endpoint has no input queue");
+                        }
+                        using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                        using (var queueOwner = connection.CreateModel())
+                        {
+                            queueOwner.QueueDeclare(producerName, true, false, false);
+                            try
+                            {
+                                await producer.SendLocal(new LocalMessage { Text = "shared endpoint" });
+                                Assert(queueOwner.BasicGet(producerName, true) != null,
+                                    "send-only local send reaches the existing named queue");
+                            }
+                            finally { queueOwner.QueueDelete(producerName); }
                         }
                         await producer.PublishAt(new Event { Text = "event" }, DateTimeOffset.UtcNow.AddSeconds(1));
                         Assert(await Within(gotEvent1.Task) == "event" && await Within(gotEvent2.Task) == "event",
