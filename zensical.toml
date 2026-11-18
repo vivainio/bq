@@ -16,6 +16,7 @@ nav = [
     { "Persistence and outbox" = "persistence.md" },
     { "Sagas and timeouts" = "sagas.md" },
     { "Retries and replay" = "recoverability.md" },
+    { "Troubleshooting" = "troubleshooting.md" },
   ] },
   { "Examples and development" = [
     { "Castle Windsor example" = "windsor.md" },
