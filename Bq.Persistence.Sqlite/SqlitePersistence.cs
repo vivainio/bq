@@ -71,6 +71,33 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             }
         }
 
+        public async Task<System.Collections.Generic.IReadOnlyList<PendingDispatch>> ListPendingDispatches(int limit = 100)
+        {
+            if (limit <= 0) throw new ArgumentOutOfRangeException(nameof(limit));
+            var result = new System.Collections.Generic.List<PendingDispatch>();
+            using (var connection = await Open().ConfigureAwait(false))
+            using (var command = Command(connection, null, @"SELECT id, kind, destination, due_ticks FROM (
+    SELECT id, 'Outbox' AS kind, routing_key AS destination, NULL AS due_ticks FROM bq_outbox WHERE endpoint=@e
+    UNION ALL
+    SELECT id, 'SagaTimeout', routing_key, due_ticks FROM bq_saga_timeout WHERE endpoint=@e
+    UNION ALL
+    SELECT message_id, CASE WHEN is_error=1 THEN 'Error' ELSE 'Recovery' END,
+        CASE WHEN is_error=1 THEN error_queue ELSE endpoint END, due_ticks
+        FROM bq_recovery WHERE endpoint=@e AND dispatched=0
+) ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit", "@e", endpoint, "@limit", limit))
+            using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
+            {
+                while (await reader.ReadAsync().ConfigureAwait(false))
+                {
+                    var due = reader.IsDBNull(3) ? (DateTime?)null : new DateTime(reader.GetInt64(3), DateTimeKind.Utc);
+                    result.Add(new PendingDispatch(reader.GetString(0),
+                        (DispatchKind)Enum.Parse(typeof(DispatchKind), reader.GetString(1)),
+                        reader.IsDBNull(2) ? null : reader.GetString(2), due));
+                }
+            }
+            return result;
+        }
+
         public async Task<OutgoingMessage> NextOutgoing(string name)
         {
             CheckEndpoint(name);

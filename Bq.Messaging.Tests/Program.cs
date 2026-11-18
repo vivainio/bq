@@ -167,6 +167,10 @@ namespace Bq.Messaging.Tests
                     session.Commit();
                 }
                 Assert((await store.GetDispatchBacklog()).Outgoing == 1, "only committed outgoing message is pending");
+                var pending = await store.ListPendingDispatches(1);
+                Assert(pending.Count == 1 && pending[0].MessageId == "sent" &&
+                    pending[0].Kind == DispatchKind.Outbox && pending[0].RoutingKey == "q",
+                    "pending dispatch lists committed message metadata");
                 Assert((await store.NextOutgoing("test")).Id == "sent", "outbox commit and rollback");
                 await store.MarkDispatched("test", "sent");
                 Assert(await store.NextOutgoing("test") == null, "outbox dispatch");
