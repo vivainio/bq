@@ -62,7 +62,12 @@ namespace Bq.Messaging
         public IPersistenceProvider Persistence { get; set; }
         // Called for non-starting messages that do not match an active saga.
         public Func<Type, string, object, IMessageHandlerContext, Task> SagaNotFound { get; set; }
-        public void Route<T>(string endpoint) => Routes[typeof(T)] = endpoint;
+        public void Route<T>(string endpoint)
+        {
+            if (string.IsNullOrWhiteSpace(endpoint))
+                throw new ArgumentException("A destination queue is required.", nameof(endpoint));
+            Routes[typeof(T)] = endpoint;
+        }
         public void Handle<T>(Func<IHandleMessages<T>> factory, bool subscribe = false)
         {
             if (factory == null) throw new ArgumentNullException(nameof(factory));
