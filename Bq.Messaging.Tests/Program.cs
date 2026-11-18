@@ -175,6 +175,23 @@ namespace Bq.Messaging.Tests
                 await store.MarkDispatched("test", "sent");
                 Assert(await store.NextOutgoing("test") == null, "outbox dispatch");
                 Assert((await store.GetDispatchBacklog()).Outgoing == 0, "dispatched item leaves backlog");
+                var failedAt = DateTime.UtcNow;
+                using (var session = await store.OpenSession())
+                {
+                    foreach (var id in new[] { "a", "b", "c" })
+                        await ((IRecoverySession)session).StoreRecovery("test", new RecoveryRecord
+                        {
+                            RecoveryId = id, MessageId = id, IsError = true, ErrorQueue = "test.error",
+                            FailedAtUtc = failedAt, DueAtUtc = failedAt, Payload = new byte[] { 1 }
+                        });
+                    session.Commit();
+                }
+                var firstPage = await store.ListErrors("test", 2);
+                Assert(firstPage.Count == 2 && firstPage[0].RecoveryId == "c" &&
+                    firstPage[1].RecoveryId == "b", "errors with matching timestamps have stable order");
+                var secondPage = await store.ListErrors("test", 2, firstPage[1]);
+                Assert(secondPage.Count == 1 && secondPage[0].RecoveryId == "a",
+                    "error cursor reaches remaining older records without overlap");
                 Console.WriteLine("SQLite transaction and saga tests passed.");
             }
             finally { if (File.Exists(path)) File.Delete(path); }

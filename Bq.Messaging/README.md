@@ -84,6 +84,8 @@ foreach (var error in errors)
 }
 ```
 
+SQLite users can page through errors with `store.ListErrors(endpointName, limit, after)`. Pass the last record from the previous page as `after`. An empty page ends the scan.
+
 Replay is an atomic database operation and can be requested once per error record. It creates a fresh message ID so the old retry decisions and inbox entry do not suppress it; the original ID is retained in `x-bq-original-message-id`. Replay does not remove an already-published copy from the RabbitMQ error queue. Consumption directly from that queue is separate from Bq's inspection and replay API. Retry and error records are retained indefinitely; monitor and back up the database. An unavailable error queue leaves its database record pending, and can block subsequent recovery records until restored. Ordinary outbox messages and saga timeouts use a separate polling loop. Delivery remains at least once; external side effects still need idempotency.
 
 This is an early Bq API inspired by NServiceBus, not a replacement for its assemblies or its RabbitMQ wire protocol.

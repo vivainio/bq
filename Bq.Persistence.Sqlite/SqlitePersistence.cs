@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS bq_outbox (endpoint TEXT NOT NULL, id TEXT NOT NULL, 
 CREATE TABLE IF NOT EXISTS bq_saga_timeout (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, due_ticks INTEGER NOT NULL, PRIMARY KEY(endpoint,id));
 CREATE INDEX IF NOT EXISTS bq_saga_timeout_due ON bq_saga_timeout(endpoint,due_ticks);
 CREATE TABLE IF NOT EXISTS bq_recovery (endpoint TEXT NOT NULL, recovery_id TEXT NOT NULL, message_id TEXT NOT NULL, cycle INTEGER NOT NULL, is_error INTEGER NOT NULL, error_queue TEXT, exception_type TEXT, exception_message TEXT, exception_detail TEXT, failed_ticks INTEGER NOT NULL, due_ticks INTEGER NOT NULL, payload BLOB NOT NULL, dispatched INTEGER NOT NULL DEFAULT 0, replayed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(endpoint,recovery_id));
+CREATE INDEX IF NOT EXISTS bq_recovery_errors ON bq_recovery(endpoint,is_error,replayed,failed_ticks DESC,recovery_id DESC);
 CREATE INDEX IF NOT EXISTS bq_recovery_due ON bq_recovery(endpoint,dispatched,due_ticks);
 CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT NULL, saga_id TEXT NOT NULL, version INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(endpoint,saga_type,saga_id));";
                 await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
@@ -149,13 +150,20 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
                 return await reader.ReadAsync().ConfigureAwait(false) ? ReadRecovery(reader) : null;
         }
-        public async Task<System.Collections.Generic.IReadOnlyList<RecoveryRecord>> ListErrors(string name, int limit)
+        public Task<System.Collections.Generic.IReadOnlyList<RecoveryRecord>> ListErrors(string name, int limit) =>
+            ListErrors(name, limit, null);
+
+        // Pass the last record from the previous page to continue the scan.
+        public async Task<System.Collections.Generic.IReadOnlyList<RecoveryRecord>> ListErrors(string name, int limit, RecoveryRecord after)
         {
             CheckEndpoint(name);
             if (limit <= 0) throw new ArgumentOutOfRangeException(nameof(limit));
             var result = new System.Collections.Generic.List<RecoveryRecord>();
             using (var c = await Open().ConfigureAwait(false))
-            using (var cmd = Command(c, null, "SELECT " + RecoveryColumns + " FROM bq_recovery WHERE endpoint=@e AND is_error=1 AND replayed=0 ORDER BY failed_ticks DESC LIMIT @limit", "@e", endpoint, "@limit", limit))
+            using (var cmd = Command(c, null, "SELECT " + RecoveryColumns + " FROM bq_recovery WHERE endpoint=@e AND is_error=1 AND replayed=0 " +
+                "AND (@ticks IS NULL OR failed_ticks<@ticks OR (failed_ticks=@ticks AND recovery_id<@after)) " +
+                "ORDER BY failed_ticks DESC,recovery_id DESC LIMIT @limit",
+                "@e", endpoint, "@limit", limit, "@ticks", after?.FailedAtUtc.Ticks, "@after", after?.RecoveryId))
             using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
                 while (await reader.ReadAsync().ConfigureAwait(false)) result.Add(ReadRecovery(reader));
             return result;
