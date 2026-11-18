@@ -11,6 +11,14 @@ using (var endpoint = RabbitEndpoint.Start(config)) { /* host the endpoint */ }
 
 Within a handler, `context.PersistenceSession.Connection` and `.Transaction` are the same connection and local transaction used by the inbox, saga and outbox stores. Application commands must use both. Bq records the incoming message ID in a unique inbox key, invokes the handler, records context-generated sends/publishes/replies in the outbox, commits, and then acknowledges RabbitMQ. On failure the transaction is disposed without commit. Each immediate retry creates a new session and transaction. A dispatcher polls committed outbox records; it deletes a record only after a broker confirmation. Publisher-confirm uncertainty and multiple dispatchers can produce duplicates, with the same outgoing message ID.
 
+## Message bodies and payload references
+
+The outbox stores serialized message bodies so handlers can commit their outgoing messages with their business changes. The dispatcher publishes the body plus routing and correlation metadata to RabbitMQ. After publisher confirmation, SQLite can delete the staging row. A receiver can then consume the body even when the sender or its database is offline.
+
+For a large payload, your application can store the payload separately and send a small message containing a stable reference. Make the payload durable before the reference can be dispatched. Give consumers access to the referenced version and keep it available for the full lifetime of queued deliveries, retries, and operator replays. A missing payload becomes a handler failure. With event fan-out, one subscriber finishing does not imply that all subscribers are done.
+
+Bq serializes the reference like any other message property. Your application owns payload storage, access, and cleanup. Pointing a message at its outbox row would only work if you changed the row's lifetime and gave receivers access to the sender's database.
+
 ## Dispatch inspection
 
 `config.DispatchPollInterval` sets the wait after an empty or failed dispatch poll. It defaults to one second, and both the outbox and recovery loops use it. Shorter intervals reduce idle pickup latency and increase database polling. `config.PublisherConfirmTimeout` controls how long direct sends and both background dispatchers wait for publisher confirmation. It defaults to ten seconds. After a failed confirmation, durable records remain pending for another attempt.
