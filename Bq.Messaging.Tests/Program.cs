@@ -426,13 +426,17 @@ namespace Bq.Messaging.Tests
                     {
                         await WaitFor(() => Task.FromResult(Volatile.Read(ref successes) == 1), "retry after restart");
                         Assert(attempts == 2 && seenId == props.MessageId && seenCorrelation == "correlation" && seenHeader == "hello", "retry retains identity and headers");
+                        // Replay the successful retry cycle. Only the inbox can suppress this
+                        // delivery, because this cycle did not create a recovery decision.
+                        props.Headers["x-bq-retry-cycle"] = 1;
+                        channel.BasicPublish("", name, props, body);
                         var fatalProps = channel.CreateBasicProperties();
                         fatalProps.MessageId = "fatal-" + suffix; fatalProps.Type = typeof(RecoverCommand).FullName; fatalProps.ContentType = "application/x-msgpack";
                         channel.BasicPublish("", name, fatalProps, MessagePackSerializer.Serialize(new RecoverCommand { Text = "fatal" }, options));
                         await WaitFor(async () => (await endpoint.ListErrors()).Count == 1, "error recorded");
                         var errors = await endpoint.ListErrors();
                         Assert(errors[0].MessageId == fatalProps.MessageId && errors[0].ExceptionType.Contains("FatalFailureException"), "error metadata");
-                        Assert(attempts == 3, "unrecoverable failure bypasses retries");
+                        Assert(attempts == 3, "committed duplicate is skipped and fatal failure runs once");
                         BasicGetResult error = null;
                         await WaitFor(() => { error = channel.BasicGet(errorName, true); return Task.FromResult(error != null); }, "error queue delivery");
                         Assert(error.BasicProperties.MessageId == fatalProps.MessageId, "error queue identity");
