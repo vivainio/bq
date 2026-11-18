@@ -288,7 +288,7 @@ namespace Bq.Messaging.Tests
                     Assert((await senderStore.ListPendingDispatches()).Count == 0, "rollback discards uniform-session outbox message");
 
                     var dueAt = DateTimeOffset.UtcNow.AddSeconds(2);
-                    await a.ExecuteTransaction(async session =>
+                    var transactionResult = await a.ExecuteTransaction(async session =>
                     {
                         using (var sql = session.Connection.CreateCommand())
                         {
@@ -297,6 +297,7 @@ namespace Bq.Messaging.Tests
                             await sql.ExecuteNonQueryAsync();
                         }
                         await a.CreateUniformSession().SendAt(new Command { Text = "command" }, dueAt);
+                        return "committed";
                     });
                     using (var db = Sqlite(senderPath))
                     {
@@ -304,7 +305,7 @@ namespace Bq.Messaging.Tests
                         using (var sql = db.CreateCommand())
                         {
                             sql.CommandText = "SELECT value FROM transaction_probe";
-                            Assert((string)await sql.ExecuteScalarAsync() == "committed", "application transaction commits business data");
+                            Assert((string)await sql.ExecuteScalarAsync() == transactionResult, "application transaction returns committed business data");
                         }
                     }
                     var producerName = "bq.test.producer." + suffix;

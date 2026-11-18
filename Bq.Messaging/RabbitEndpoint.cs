@@ -122,7 +122,17 @@ namespace Bq.Messaging
                 return new UniformSession(this, scope);
             }
         }
-        public async Task ExecuteTransaction(Func<ITransactionalSession, Task> action)
+        public Task ExecuteTransaction(Func<ITransactionalSession, Task> action)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+            return ExecuteTransaction(async session =>
+            {
+                await action(session).ConfigureAwait(false);
+                return true;
+            });
+        }
+
+        public async Task<TResult> ExecuteTransaction<TResult>(Func<ITransactionalSession, Task<TResult>> action)
         {
             if (action == null) throw new ArgumentNullException(nameof(action));
             if (uniformScope.Value != null || externalTransaction.Value != null)
@@ -138,7 +148,8 @@ namespace Bq.Messaging
                 {
                     var session = new TransactionalSession(this, persistence);
                     externalTransaction.Value = session;
-                    try { await action(session).ConfigureAwait(false); }
+                    TResult result;
+                    try { result = await action(session).ConfigureAwait(false); }
                     finally
                     {
                         session.End();
@@ -146,6 +157,7 @@ namespace Bq.Messaging
                     }
                     forceStop.Token.ThrowIfCancellationRequested();
                     persistence.Commit();
+                    return result;
                 }
             }
             finally { CompleteActiveWork(); }

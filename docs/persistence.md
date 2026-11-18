@@ -23,7 +23,7 @@ await endpoint.ExecuteTransaction(async session =>
 });
 ```
 
-Bq commits when the callback returns successfully and rolls back if it throws. Use the supplied connection and transaction on every participating command. Await operations before leaving the callback and use its session for messaging. Calls on the endpoint itself publish directly. A successful return means Bq committed the database transaction. The dispatcher publishes the message separately.
+Bq commits when the callback returns successfully and rolls back if it throws. Use the supplied connection and transaction on every participating command. Await operations before leaving the callback and use its session for messaging. Calls on the endpoint itself publish directly. A successful return means Bq committed the database transaction. Return a value from the callback to use the generic overload and receive that value after commit. The dispatcher publishes the message separately.
 
 Use the handler context for work that already runs inside a handler. A transactional session cannot be nested. Graceful shutdown waits for active application transactions. If forced cancellation is observed before commit, Bq rolls back.
 
