@@ -46,7 +46,7 @@ namespace Bq.Messaging.Tests
                     catch (InvalidOperationException) { rejected = true; }
                     Assert(rejected, "outside session rejected within handler");
                     await Task.Yield();
-                    await session.SendLocal(new UniformWork { Text = "committed" });
+                    await session.SendLocalAt(new UniformWork { Text = "committed" }, DateTimeOffset.UtcNow.AddMilliseconds(100));
                     if (message.Fail) { errorAttempted.TrySetResult(true); throw new Exception("rollback"); }
                 });
             });
@@ -62,7 +62,7 @@ namespace Bq.Messaging.Tests
                 using (endpoint)
                 {
                     cachedFromOutside = endpoint.CreateUniformSession();
-                    await cachedFromOutside.SendLocal(new UniformStart());
+                    await cachedFromOutside.SendLocalAt(new UniformStart(), DateTimeOffset.UtcNow);
                     await Within(processed.Task, "uniform SendLocal delivery");
                     Assert(await processed.Task == parentCorrelation, "uniform session preserves handler correlation");
                     bool rejected = false;

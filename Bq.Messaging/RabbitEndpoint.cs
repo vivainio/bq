@@ -552,6 +552,26 @@ namespace Bq.Messaging
             }
             public Task SendLocal<T>(T message) { var context = Validate(); return context == null ? endpoint.SendLocal(message) : context.SendLocal(message); }
             public Task Publish<T>(T message) { var context = Validate(); return context == null ? endpoint.Publish(message) : context.Publish(message); }
+            public Task SendAt<T>(T message, DateTimeOffset dueAt)
+            {
+                var context = Validate();
+                return context == null ? endpoint.SendAt(message, dueAt) : context.SendAt(message, dueAt);
+            }
+            public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt)
+            {
+                var context = Validate();
+                return context == null ? endpoint.SendAt(destination, message, dueAt) : context.SendAt(destination, message, dueAt);
+            }
+            public Task SendLocalAt<T>(T message, DateTimeOffset dueAt)
+            {
+                var context = Validate();
+                return context == null ? endpoint.SendLocalAt(message, dueAt) : context.SendLocalAt(message, dueAt);
+            }
+            public Task PublishAt<T>(T message, DateTimeOffset dueAt)
+            {
+                var context = Validate();
+                return context == null ? endpoint.PublishAt(message, dueAt) : context.PublishAt(message, dueAt);
+            }
         }
         internal sealed class HandlerContext : IMessageHandlerContext
         {
