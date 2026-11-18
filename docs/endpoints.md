@@ -29,3 +29,7 @@ Call `await endpoint.StopAsync(cancellationToken)` to stop accepting deliveries 
 Every endpoint requires a configured persistence provider implementing both `IPersistenceProvider` and `IRecoveryPersistence`, with each session implementing `IRecoverySession`. Initialize its schema before starting the endpoint. All instances of the same endpoint must share the same database and compatible configuration.
 
 The endpoint declares a durable input queue and a configurable error queue (default `<endpoint>.error`). A send requires an existing destination queue; unroutable commands and failed publisher confirms throw. Published events without subscribers are discarded. Messages are persistent. Handler-generated sends are committed to the outbox with business and saga data. Sending directly through an endpoint is outside the handler transaction.
+
+## Broker reconnects
+
+Set `config.NetworkRecoveryInterval` to tune the delay between RabbitMQ client reconnection attempts after losing an established connection. It defaults to five seconds. The initial call to `RabbitEndpoint.Start` still requires an available broker.

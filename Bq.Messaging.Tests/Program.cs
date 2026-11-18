@@ -489,6 +489,7 @@ namespace Bq.Messaging.Tests
             var store = new SqlitePersistence(() => Sqlite(path), name);
             await store.Initialize();
             var config = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
+            config.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(250);
             config.Recoverability.DelayedRetries = new[] { TimeSpan.FromSeconds(3) };
             var calls = 0;
             config.Handle(() => new Handler<RecoverCommand>((message, context) =>

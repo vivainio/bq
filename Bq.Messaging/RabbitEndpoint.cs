@@ -45,7 +45,13 @@ namespace Bq.Messaging
             this.configuration = configuration;
             dispatchPollInterval = configuration.DispatchPollInterval;
             publisherConfirmTimeout = configuration.PublisherConfirmTimeout;
-            var factory = new ConnectionFactory { Uri = configuration.RabbitMqUri, DispatchConsumersAsync = true, ConsumerDispatchConcurrency = configuration.MaxConcurrency };
+            var factory = new ConnectionFactory
+            {
+                Uri = configuration.RabbitMqUri,
+                DispatchConsumersAsync = true,
+                ConsumerDispatchConcurrency = configuration.MaxConcurrency,
+                NetworkRecoveryInterval = configuration.NetworkRecoveryInterval
+            };
             connection = factory.CreateConnection();
             try
             {
@@ -89,6 +95,9 @@ namespace Bq.Messaging
             if (configuration.PublisherConfirmTimeout < TimeSpan.FromMilliseconds(1) ||
                 configuration.PublisherConfirmTimeout > TimeSpan.FromMilliseconds(int.MaxValue))
                 throw new ArgumentOutOfRangeException(nameof(configuration.PublisherConfirmTimeout));
+            if (configuration.NetworkRecoveryInterval < TimeSpan.FromMilliseconds(1) ||
+                configuration.NetworkRecoveryInterval > TimeSpan.FromMilliseconds(int.MaxValue))
+                throw new ArgumentOutOfRangeException(nameof(configuration.NetworkRecoveryInterval));
             if (configuration.MaxConcurrency == 0) throw new ArgumentOutOfRangeException(nameof(configuration.MaxConcurrency));
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));
             return new RabbitEndpoint(configuration);

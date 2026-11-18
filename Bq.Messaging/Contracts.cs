@@ -54,6 +54,7 @@ namespace Bq.Messaging
         public ushort MaxConcurrency { get; set; } = 1;
         // Wait after an empty or failed dispatch poll.
         public TimeSpan DispatchPollInterval { get; set; } = TimeSpan.FromSeconds(1);
+        public TimeSpan NetworkRecoveryInterval { get; set; } = TimeSpan.FromSeconds(5);
         public TimeSpan PublisherConfirmTimeout { get; set; } = TimeSpan.FromSeconds(10);
         public RecoverabilityOptions Recoverability { get; } = new RecoverabilityOptions();
         // Retained for existing applications.
