@@ -19,6 +19,14 @@ For a large payload, your application can store the payload separately and send 
 
 Bq serializes the reference like any other message property. Your application owns payload storage, access, and cleanup. Pointing a message at its outbox row would only work if you changed the row's lifetime and gave receivers access to the sender's database.
 
+### When both endpoints share a database
+
+A shared database can hold an immutable message body and one delivery row per receiving endpoint. The sender inserts both alongside its business writes in the same transaction. Each receiver claims its own delivery and commits completion with its handler writes. If a receiver crashes before committing, the delivery remains available for another attempt.
+
+In that design, RabbitMQ can send an ID as a wake-up signal. Periodic database polling still discovers committed deliveries when a notification is missed. If multiple endpoints consume a message, track their delivery states separately and keep the body until all deliveries finish and any replay window ends.
+
+This is an alternative transport design. Sharing a database in the current RabbitMQ transport still uses the same outbox and publish flow at the top of this section.
+
 ## Dispatch inspection
 
 `config.DispatchPollInterval` sets the wait after an empty or failed dispatch poll. It defaults to one second, and both the outbox and recovery loops use it. Shorter intervals reduce idle pickup latency and increase database polling. `config.PublisherConfirmTimeout` controls how long direct sends and both background dispatchers wait for publisher confirmation. It defaults to ten seconds. After a failed confirmation, durable records remain pending for another attempt.
