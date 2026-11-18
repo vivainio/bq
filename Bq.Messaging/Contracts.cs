@@ -67,6 +67,9 @@ namespace Bq.Messaging
         }
         public string Name { get; }
         public Uri RabbitMqUri { get; }
+        public string EventsExchange { get; set; } = "bq.events";
+        public string ErrorExchange { get; set; } = "bq.errors";
+        public IDictionary<string, object> InputQueueArguments { get; } = new Dictionary<string, object>();
         // Maximum concurrently executing deliveries for this endpoint instance.
         public ushort MaxConcurrency { get; set; } = 1;
         // Wait after an empty or failed dispatch poll.

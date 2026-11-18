@@ -49,3 +49,18 @@ Call `config.SendOnly()` before starting a producer that only sends or publishes
 Send-only messages carry no reply address. `SendLocal` targets the configured endpoint name. A receiving endpoint or provisioning step must create that queue before the send. Use an explicit receiving endpoint for scheduled sends.
 
 When resolved inside `ExecuteTransaction`, a uniform session joins that application transaction for immediate and scheduled messaging. A session obtained before the transaction cannot be reused inside it.
+
+
+## RabbitMQ topology
+
+`config.EventsExchange` and `config.ErrorExchange` select the durable topic and direct exchanges. Their defaults are `bq.events` and `bq.errors`. Publishers and subscribers must agree on the event exchange name. A pending outbox message retains the exchange it was originally queued for.
+
+Set AMQP queue arguments before starting a receiving endpoint, for example:
+
+```csharp
+config.EventsExchange = "orders.events";
+config.ErrorExchange = "orders.errors";
+config.InputQueueArguments["x-message-ttl"] = 120_000;
+```
+
+RabbitMQ requires a queue declaration to match existing topology. Coordinate argument changes with queue provisioning. Bq supplies the dead-letter exchange and routing key using `ErrorExchange` and the endpoint name, and binds the error queue configured in `Recoverability.ErrorQueue`.

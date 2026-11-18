@@ -14,8 +14,8 @@ namespace Bq.Messaging
 {
     public sealed class RabbitEndpoint : IDisposable
     {
-        const string EventsExchange = "bq.events";
-        const string ErrorExchange = "bq.errors";
+        readonly string eventsExchange;
+        readonly string errorExchange;
         const string ContentType = "application/x-msgpack";
         static readonly MessagePackSerializerOptions SerializerOptions = MessagePackSerializerOptions.Standard
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
@@ -46,6 +46,8 @@ namespace Bq.Messaging
         {
             this.configuration = configuration;
             sendOnly = configuration.IsSendOnly;
+            eventsExchange = configuration.EventsExchange;
+            errorExchange = configuration.ErrorExchange;
             dispatchPollInterval = configuration.DispatchPollInterval;
             publisherConfirmTimeout = configuration.PublisherConfirmTimeout;
             var factory = new ConnectionFactory
@@ -59,23 +61,23 @@ namespace Bq.Messaging
             try
             {
                 publisherChannel = connection.CreateModel();
-                publisherChannel.ExchangeDeclare(EventsExchange, ExchangeType.Topic, true);
+                publisherChannel.ExchangeDeclare(eventsExchange, ExchangeType.Topic, true);
                 publisherChannel.ConfirmSelect();
                 publisherChannel.BasicReturn += (sender, args) => { returned = true; };
                 if (!sendOnly)
                 {
                     consumerChannel = connection.CreateModel();
-                    consumerChannel.ExchangeDeclare(ErrorExchange, ExchangeType.Direct, true);
+                    consumerChannel.ExchangeDeclare(errorExchange, ExchangeType.Direct, true);
                     var errorQueue = configuration.Recoverability.ErrorQueue ?? configuration.Name + ".error";
                     consumerChannel.QueueDeclare(errorQueue, true, false, false);
-                    consumerChannel.QueueBind(errorQueue, ErrorExchange, configuration.Name);
-                    consumerChannel.QueueDeclare(configuration.Name, true, false, false, new Dictionary<string, object>
+                    consumerChannel.QueueBind(errorQueue, errorExchange, configuration.Name);
+                    consumerChannel.QueueDeclare(configuration.Name, true, false, false, new Dictionary<string, object>(configuration.InputQueueArguments)
                     {
-                        ["x-dead-letter-exchange"] = ErrorExchange,
+                        ["x-dead-letter-exchange"] = errorExchange,
                         ["x-dead-letter-routing-key"] = configuration.Name
                     });
                     foreach (var entry in configuration.Handlers.Where(x => x.Value.Subscribe))
-                        consumerChannel.QueueBind(configuration.Name, EventsExchange, entry.Key);
+                        consumerChannel.QueueBind(configuration.Name, eventsExchange, entry.Key);
                     consumerChannel.BasicQos(0, configuration.MaxConcurrency, false);
                     var consumer = new AsyncEventingBasicConsumer(consumerChannel);
                     consumer.Received += OnReceived;
@@ -90,6 +92,13 @@ namespace Bq.Messaging
         public static RabbitEndpoint Start(EndpointConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            if (string.IsNullOrWhiteSpace(configuration.EventsExchange) ||
+                string.IsNullOrWhiteSpace(configuration.ErrorExchange) ||
+                configuration.EventsExchange == configuration.ErrorExchange)
+                throw new ArgumentException("Configure distinct, nonempty event and error exchange names.");
+            if (configuration.InputQueueArguments.ContainsKey("x-dead-letter-exchange") ||
+                configuration.InputQueueArguments.ContainsKey("x-dead-letter-routing-key"))
+                throw new ArgumentException("Bq configures dead-letter routing. Use ErrorExchange and Recoverability.ErrorQueue.");
             if (configuration.IsSendOnly && (configuration.Handlers.Count > 0 || configuration.HasSagas))
                 throw new InvalidOperationException("A send-only endpoint cannot register message handlers or sagas.");
             if (configuration.Persistence == null || !(configuration.Persistence is IRecoveryPersistence)) throw new InvalidOperationException("Transactional persistence with recovery support is required.");
@@ -206,7 +215,7 @@ namespace Bq.Messaging
             public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
                 endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null);
             public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
-                message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), null, false));
+                message, endpoint.eventsExchange, EndpointConfiguration.MessageType(typeof(T)), null, false));
             public void End() => ended = true;
         }
 
@@ -219,7 +228,7 @@ namespace Bq.Messaging
             ExecuteTransaction(session => session.PublishAt(message, dueAt));
 
         Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId) =>
-            session.StoreTimeout(Prepare(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false), dueUtc);
+            session.StoreTimeout(Prepare(message, eventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false), dueUtc);
 
         Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId) =>
             session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true), dueUtc);
@@ -244,7 +253,7 @@ namespace Bq.Messaging
         }
 
         internal Task PublishCore<T>(T message, string correlationId) =>
-            Dispatch(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false);
+            Dispatch(message, eventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false);
         OutgoingMessage Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
@@ -630,7 +639,7 @@ namespace Bq.Messaging
             }
             public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
             public Task Publish<T>(T message) => PersistenceSession == null ? endpoint.PublishCore(message, CorrelationId) :
-                PersistenceSession.StoreOutgoing(endpoint.Prepare(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false));
+                PersistenceSession.StoreOutgoing(endpoint.Prepare(message, endpoint.eventsExchange, EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false));
             public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor<T>(), message, dueAt);
             public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.configuration.Name, message, dueAt);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>

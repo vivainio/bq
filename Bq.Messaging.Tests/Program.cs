@@ -249,13 +249,17 @@ namespace Bq.Messaging.Tests
             var dbPath = Path.Combine(Path.GetTempPath(), "bq-broker-" + suffix + ".db");
             var store = new SqlitePersistence(() => Sqlite(dbPath), receiverName);
             await store.Initialize();
-            var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = store };
+            var eventsExchange = "bq.test.events." + suffix;
+            var errorExchange = "bq.test.errors." + suffix;
+            var receiver = new EndpointConfiguration(receiverName, uri)
+                { Persistence = store, EventsExchange = eventsExchange, ErrorExchange = errorExchange };
+            receiver.InputQueueArguments["x-message-ttl"] = 120000;
             receiver.Handle(() => new Handler<Command>(async (m, c) => { gotCommand.TrySetResult(m.Text); await c.Reply(new Response { Text = m.Text }); await c.SendLocal(new LocalMessage { Text = m.Text }); }));
             receiver.Handle(() => new Handler<LocalMessage>((m, c) => { gotLocal.TrySetResult(m.Text); return Task.CompletedTask; }));
             receiver.Handle(() => new Handler<Event>((m, c) => { gotEvent1.TrySetResult(m.Text); return Task.CompletedTask; }), true);
             receiver.Recoverability.DelayedRetries = new TimeSpan[0];
             receiver.Handle(() => new Handler<Failed>((m, c) => { attempts++; throw new Exception("expected"); }));
-            var subscriber = new EndpointConfiguration(subscriberName, uri) { Persistence = subscriberStore };
+            var subscriber = new EndpointConfiguration(subscriberName, uri) { Persistence = subscriberStore, EventsExchange = eventsExchange };
             subscriber.Handle(() => new Handler<Event>((m, c) => { gotEvent2.TrySetResult(m.Text); return Task.CompletedTask; }), true);
             try
             {
@@ -326,7 +330,7 @@ namespace Bq.Messaging.Tests
                     }
                     var producerName = "bq.test.producer." + suffix;
                     var producerStore = new SqlitePersistence(() => Sqlite(senderPath), producerName);
-                    var producerConfig = new EndpointConfiguration(producerName, uri) { Persistence = producerStore };
+                    var producerConfig = new EndpointConfiguration(producerName, uri) { Persistence = producerStore, EventsExchange = eventsExchange };
                     producerConfig.SendOnly();
                     using (var producer = RabbitEndpoint.Start(producerConfig))
                     {
@@ -377,6 +381,13 @@ namespace Bq.Messaging.Tests
                     using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                     using (var channel = connection.CreateModel())
                     {
+                        channel.QueueDeclare(receiverName, true, false, false,
+                            new System.Collections.Generic.Dictionary<string, object>
+                            {
+                                ["x-dead-letter-exchange"] = errorExchange,
+                                ["x-dead-letter-routing-key"] = receiverName,
+                                ["x-message-ttl"] = 120000
+                            });
                         BasicGetResult failed = null;
                         for (int i = 0; i < 100 && failed == null; i++) { failed = channel.BasicGet(receiverName + ".error", true); if (failed == null) await Task.Delay(100); }
                         Assert(failed != null && attempts == 3, "retries and error queue");
@@ -391,7 +402,11 @@ namespace Bq.Messaging.Tests
                 if (File.Exists(subscriberPath)) File.Delete(subscriberPath);
                 using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                 using (var channel = connection.CreateModel())
+                {
                     foreach (var name in new[] { senderName, receiverName, subscriberName }) { channel.QueueDelete(name); channel.QueueDelete(name + ".error"); }
+                    channel.ExchangeDelete(eventsExchange);
+                    channel.ExchangeDelete(errorExchange);
+                }
             }
         }
         static async Task<SagaStoredState<OrderState>> ReadOrder(SqlitePersistence store, string id)
