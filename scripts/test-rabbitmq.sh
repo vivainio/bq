@@ -3,6 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 dotnet build Bq.Messaging.Tests/Bq.Messaging.Tests.csproj
+dotnet build Bq.Reference.Windsor/Bq.Reference.Windsor.csproj
 
 test_dir=$(mktemp -d)
 container="bq-integration-${test_dir##*/}"
@@ -44,6 +45,11 @@ wait_for_broker
 ) &
 watcher=$!
 
-BQ_BROKER_OUTAGE_DIR="$test_dir" BQ_RABBITMQ_URI="amqp://guest:guest@$address/" \
+export BQ_RABBITMQ_URI="amqp://guest:guest@$address/"
+BQ_BROKER_OUTAGE_DIR="$test_dir" \
     mono Bq.Messaging.Tests/bin/Debug/net472/Bq.Messaging.Tests.exe
 wait "$watcher"
+watcher=""
+
+BQ_SAMPLE_DB="$test_dir/windsor.db" \
+    mono Bq.Reference.Windsor/bin/Debug/net472/Bq.Reference.Windsor.exe
