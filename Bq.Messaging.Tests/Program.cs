@@ -188,6 +188,15 @@ namespace Bq.Messaging.Tests
                     "outgoing polls alternate between due timeouts and ordinary messages");
                 await store.MarkDispatched("test", "ordinary");
                 await store.MarkDispatched("test", "timeout");
+                using (var session = await store.OpenSession())
+                {
+                    await session.StoreTimeout(new OutgoingMessage { Id = "later", Type = "t",
+                        Exchange = "", RoutingKey = "q", Body = new byte[] { 1 } }, DateTime.UtcNow.AddHours(1));
+                    session.Commit();
+                }
+                Assert((await store.ListPendingDispatches(DispatchKind.SagaTimeout)).Count == 1 &&
+                    (await store.ListReadyDispatches(DispatchKind.SagaTimeout)).Count == 0,
+                    "ready inspection excludes scheduled timeouts");
                 var failedAt = DateTime.UtcNow;
                 using (var session = await store.OpenSession())
                 {
@@ -199,7 +208,7 @@ namespace Bq.Messaging.Tests
                         });
                     session.Commit();
                 }
-                var errorsPending = await store.ListPendingDispatches(DispatchKind.Error, 2);
+                var errorsPending = await store.ListReadyDispatches(DispatchKind.Error, 2);
                 Assert(errorsPending.Count == 2 && errorsPending[0].Kind == DispatchKind.Error &&
                     errorsPending[0].DueAtUtc == failedAt, "pending errors include scheduled UTC time");
                 Assert((await store.ListPendingDispatches(DispatchKind.Recovery)).Count == 0,
