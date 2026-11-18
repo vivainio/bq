@@ -12,6 +12,7 @@ nav = [
   { "Getting started" = "getting-started.md" },
   { "Messaging" = [
     { "Endpoints and sessions" = "endpoints.md" },
+    { "Delivery architecture" = "architecture.md" },
     { "Persistence and outbox" = "persistence.md" },
     { "Sagas and timeouts" = "sagas.md" },
     { "Retries and replay" = "recoverability.md" },
