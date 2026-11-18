@@ -21,6 +21,12 @@ namespace Bq.Messaging
         Task Publish<T>(T message);
     }
 
+    public interface ITransactionalSession : IUniformSession
+    {
+        System.Data.Common.DbConnection Connection { get; }
+        System.Data.Common.DbTransaction Transaction { get; }
+    }
+
     public interface IMessageHandlerContext
     {
         IUniformSession UniformSession { get; }

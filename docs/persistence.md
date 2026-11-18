@@ -11,6 +11,22 @@ using (var endpoint = RabbitEndpoint.Start(config)) { /* host the endpoint */ }
 
 Within a handler, `context.PersistenceSession.Connection` and `.Transaction` are the same connection and local transaction used by the inbox, saga and outbox stores. Application commands must use both. Bq records the incoming message ID in a unique inbox key, invokes the handler, records context-generated sends/publishes/replies in the outbox, commits, and then acknowledges RabbitMQ. On failure the transaction is disposed without commit. Each immediate retry creates a new session and transaction. A dispatcher polls committed outbox records; it deletes a record only after a broker confirmation. Publisher-confirm uncertainty and multiple dispatchers can produce duplicates, with the same outgoing message ID.
 
+## Transactions outside handlers
+
+Call `endpoint.ExecuteTransaction` from an application request or background job to commit SQL changes and outgoing messages together.
+
+```csharp
+await endpoint.ExecuteTransaction(async session =>
+{
+    await orders.SaveAsync(order, session.Connection, session.Transaction);
+    await session.Send("billing", new OrderPlaced { OrderId = order.Id });
+});
+```
+
+Bq commits when the callback returns successfully and rolls back if it throws. Use the supplied connection and transaction on every participating command. Await operations before leaving the callback and use its session for messaging. Calls on the endpoint itself publish directly. A successful return means Bq committed the database transaction. The dispatcher publishes the message separately.
+
+Use the handler context for work that already runs inside a handler. A transactional session cannot be nested. Graceful shutdown waits for active application transactions. If forced cancellation is observed before commit, Bq rolls back.
+
 ## Message bodies and payload references
 
 The outbox stores serialized message bodies so handlers can commit their outgoing messages with their business changes. The dispatcher publishes the body plus routing and correlation metadata to RabbitMQ. After publisher confirmation, SQLite can delete the staging row. A receiver can then consume the body even when the sender or its database is offline.

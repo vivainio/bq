@@ -263,7 +263,44 @@ namespace Bq.Messaging.Tests
                 using (var b = RabbitEndpoint.Start(receiver))
                 using (var c = RabbitEndpoint.Start(subscriber))
                 {
-                    await a.Send(receiverName, new Command { Text = "command" });
+                    var rollback = new InvalidOperationException("abort application transaction");
+                    try
+                    {
+                        await a.ExecuteTransaction(async session =>
+                        {
+                            using (var sql = session.Connection.CreateCommand())
+                            {
+                                sql.Transaction = session.Transaction;
+                                sql.CommandText = "CREATE TABLE transaction_probe(value TEXT)";
+                                await sql.ExecuteNonQueryAsync();
+                            }
+                            await session.Send(receiverName, new Command { Text = "rolled back" });
+                            throw rollback;
+                        });
+                        throw new Exception("Expected application transaction to fail");
+                    }
+                    catch (InvalidOperationException ex) when (ReferenceEquals(ex, rollback)) { }
+                    Assert((await senderStore.GetDispatchBacklog()).Outgoing == 0, "rollback discards outgoing message");
+
+                    await a.ExecuteTransaction(async session =>
+                    {
+                        using (var sql = session.Connection.CreateCommand())
+                        {
+                            sql.Transaction = session.Transaction;
+                            sql.CommandText = "CREATE TABLE transaction_probe(value TEXT); INSERT INTO transaction_probe VALUES ('committed')";
+                            await sql.ExecuteNonQueryAsync();
+                        }
+                        await session.Send(receiverName, new Command { Text = "command" });
+                    });
+                    using (var db = Sqlite(senderPath))
+                    {
+                        await db.OpenAsync();
+                        using (var sql = db.CreateCommand())
+                        {
+                            sql.CommandText = "SELECT value FROM transaction_probe";
+                            Assert((string)await sql.ExecuteScalarAsync() == "committed", "application transaction commits business data");
+                        }
+                    }
                     await a.Publish(new Event { Text = "event" });
                     await a.Send(new Failed());
                     Assert(await Within(gotCommand.Task) == "command", "command");

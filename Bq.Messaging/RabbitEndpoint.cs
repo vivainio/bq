@@ -28,6 +28,7 @@ namespace Bq.Messaging
         readonly object publishLock = new object();
         readonly object consumerLock = new object();
         readonly object lifecycleLock = new object();
+        readonly AsyncLocal<TransactionalSession> externalTransaction = new AsyncLocal<TransactionalSession>();
         readonly AsyncLocal<UniformScope> uniformScope = new AsyncLocal<UniformScope>();
         readonly CancellationTokenSource forceStop = new CancellationTokenSource();
         readonly TaskCompletionSource<bool> drained = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -113,6 +114,65 @@ namespace Bq.Messaging
                 return new UniformSession(this, scope);
             }
         }
+        public async Task ExecuteTransaction(Func<ITransactionalSession, Task> action)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+            if (uniformScope.Value != null || externalTransaction.Value != null)
+                throw new InvalidOperationException("Use the existing session inside a messaging transaction.");
+            lock (lifecycleLock)
+            {
+                if (shutdownRequested) throw new InvalidOperationException("Endpoint is stopping or stopped.");
+                activeDeliveries++;
+            }
+            try
+            {
+                using (var persistence = await configuration.Persistence.OpenSession().ConfigureAwait(false))
+                {
+                    var session = new TransactionalSession(this, persistence);
+                    externalTransaction.Value = session;
+                    try { await action(session).ConfigureAwait(false); }
+                    finally
+                    {
+                        session.End();
+                        externalTransaction.Value = null;
+                    }
+                    forceStop.Token.ThrowIfCancellationRequested();
+                    persistence.Commit();
+                }
+            }
+            finally { CompleteActiveWork(); }
+        }
+
+        sealed class TransactionalSession : ITransactionalSession
+        {
+            readonly RabbitEndpoint endpoint;
+            readonly IPersistenceSession persistence;
+            volatile bool ended;
+
+            public TransactionalSession(RabbitEndpoint endpoint, IPersistenceSession persistence)
+            {
+                this.endpoint = endpoint;
+                this.persistence = persistence;
+            }
+
+            IPersistenceSession ActivePersistence => !ended && ReferenceEquals(endpoint.externalTransaction.Value, this)
+                ? persistence : throw new InvalidOperationException("The transactional session is outside its active scope.");
+            public System.Data.Common.DbConnection Connection => ActivePersistence.Connection;
+            public System.Data.Common.DbTransaction Transaction => ActivePersistence.Transaction;
+            public Task Send<T>(T message)
+            {
+                if (!endpoint.configuration.Routes.TryGetValue(typeof(T), out var destination))
+                    throw new InvalidOperationException("No route for " + typeof(T).FullName);
+                return Send(destination, message);
+            }
+            public Task Send<T>(string destination, T message) =>
+                ActivePersistence.StoreOutgoing(endpoint.Prepare(message, "", RequireDestination(destination), null, true));
+            public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
+            public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
+                message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), null, false));
+            public void End() => ended = true;
+        }
+
         public Task Send<T>(T message) => SendCore(message, null, null);
         public Task Send<T>(string destination, T message) => SendCore(message, null, RequireDestination(destination));
         static string RequireDestination(string destination)
@@ -240,13 +300,14 @@ namespace Bq.Messaging
                 activeDeliveries++;
             }
             try { await ProcessDelivery(delivery).ConfigureAwait(false); }
-            finally
+            finally { CompleteActiveWork(); }
+        }
+        void CompleteActiveWork()
+        {
+            lock (lifecycleLock)
             {
-                lock (lifecycleLock)
-                {
-                    activeDeliveries--;
-                    if (shutdownRequested && activeDeliveries == 0) drained.TrySetResult(true);
-                }
+                activeDeliveries--;
+                if (shutdownRequested && activeDeliveries == 0) drained.TrySetResult(true);
             }
         }
         async Task ProcessDelivery(BasicDeliverEventArgs delivery)
