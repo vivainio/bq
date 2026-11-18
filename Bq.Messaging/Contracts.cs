@@ -50,6 +50,8 @@ namespace Bq.Messaging
         public Uri RabbitMqUri { get; }
         // Maximum concurrently executing deliveries for this endpoint instance.
         public ushort MaxConcurrency { get; set; } = 1;
+        // Wait after an empty or failed dispatch poll.
+        public TimeSpan DispatchPollInterval { get; set; } = TimeSpan.FromSeconds(1);
         public RecoverabilityOptions Recoverability { get; } = new RecoverabilityOptions();
         // Retained for existing applications.
         public int ImmediateRetries { get => Recoverability.ImmediateRetries; set => Recoverability.ImmediateRetries = value; }

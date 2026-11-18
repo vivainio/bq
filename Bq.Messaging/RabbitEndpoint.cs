@@ -20,6 +20,7 @@ namespace Bq.Messaging
         static readonly MessagePackSerializerOptions SerializerOptions = MessagePackSerializerOptions.Standard
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly EndpointConfiguration configuration;
+        readonly TimeSpan dispatchPollInterval;
         readonly IConnection connection;
         readonly IModel consumerChannel;
         readonly IModel publisherChannel;
@@ -41,6 +42,7 @@ namespace Bq.Messaging
         RabbitEndpoint(EndpointConfiguration configuration)
         {
             this.configuration = configuration;
+            dispatchPollInterval = configuration.DispatchPollInterval;
             var factory = new ConnectionFactory { Uri = configuration.RabbitMqUri, DispatchConsumersAsync = true, ConsumerDispatchConcurrency = configuration.MaxConcurrency };
             connection = factory.CreateConnection();
             try
@@ -79,6 +81,9 @@ namespace Bq.Messaging
             if (configuration.Recoverability.DelayedRetries == null || configuration.Recoverability.DelayedRetries.Any(delay => delay < TimeSpan.Zero || delay > TimeSpan.FromDays(24))) throw new ArgumentException("Delayed retry intervals must be between zero and 24 days.");
             if (configuration.Recoverability.ErrorQueue != null && string.IsNullOrWhiteSpace(configuration.Recoverability.ErrorQueue)) throw new ArgumentException("Error queue cannot be empty.");
             if (configuration.Recoverability.ErrorQueue == configuration.Name) throw new ArgumentException("Error queue must differ from the endpoint queue.");
+            if (configuration.DispatchPollInterval < TimeSpan.FromMilliseconds(1) ||
+                configuration.DispatchPollInterval > TimeSpan.FromMilliseconds(int.MaxValue))
+                throw new ArgumentOutOfRangeException(nameof(configuration.DispatchPollInterval));
             if (configuration.MaxConcurrency == 0) throw new ArgumentOutOfRangeException(nameof(configuration.MaxConcurrency));
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));
             return new RabbitEndpoint(configuration);
@@ -165,7 +170,7 @@ namespace Bq.Messaging
                     }
                 }
                 catch (Exception ex) { if (!cancellation.IsCancellationRequested) System.Diagnostics.Trace.TraceError("{0} dispatch failed: {1}", recoveries ? "Recovery" : "Outbox", ex); }
-                try { await Task.Delay(1000, cancellation).ConfigureAwait(false); }
+                try { await Task.Delay(dispatchPollInterval, cancellation).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
             }
         }
