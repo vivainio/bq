@@ -100,6 +100,12 @@ namespace Bq.Messaging
             }
         }
         public Task Send<T>(T message) => SendCore(message, null, null);
+        public Task Send<T>(string destination, T message) => SendCore(message, null, RequireDestination(destination));
+        static string RequireDestination(string destination)
+        {
+            if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("A destination queue is required.", nameof(destination));
+            return destination;
+        }
         public Task SendLocal<T>(T message) => SendCore(message, null, configuration.Name);
         public Task Publish<T>(T message) => PublishCore(message, null);
         internal Task SendCore<T>(T message, string correlationId, string destination)
@@ -401,6 +407,11 @@ namespace Bq.Messaging
                 }
             }
             public Task Send<T>(T message) { var context = Validate(); return context == null ? endpoint.Send(message) : context.Send(message); }
+            public Task Send<T>(string destination, T message)
+            {
+                var context = Validate();
+                return context == null ? endpoint.Send(destination, message) : context.Send(destination, message);
+            }
             public Task SendLocal<T>(T message) { var context = Validate(); return context == null ? endpoint.SendLocal(message) : context.SendLocal(message); }
             public Task Publish<T>(T message) { var context = Validate(); return context == null ? endpoint.Publish(message) : context.Publish(message); }
         }
@@ -429,8 +440,12 @@ namespace Bq.Messaging
                 if (!endpoint.configuration.Routes.TryGetValue(typeof(T), out var destination)) throw new InvalidOperationException("No route for " + typeof(T).FullName);
                 return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true));
             }
-            public Task SendLocal<T>(T message) => PersistenceSession == null ? endpoint.SendCore(message, CorrelationId, endpoint.configuration.Name) :
-                PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", endpoint.configuration.Name, CorrelationId, true));
+            public Task Send<T>(string destination, T message)
+            {
+                RequireDestination(destination);
+                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true));
+            }
+            public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
             public Task Publish<T>(T message) => PersistenceSession == null ? endpoint.PublishCore(message, CorrelationId) :
                 PersistenceSession.StoreOutgoing(endpoint.Prepare(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false));
             internal Task ScheduleSagaTimeout(SagaTimeoutMessage timeout, DateTime dueUtc)

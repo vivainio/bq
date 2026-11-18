@@ -16,6 +16,7 @@ namespace Bq.Messaging
     public interface IUniformSession
     {
         Task Send<T>(T message);
+        Task Send<T>(string destination, T message);
         Task SendLocal<T>(T message);
         Task Publish<T>(T message);
     }
@@ -29,6 +30,7 @@ namespace Bq.Messaging
         IReadOnlyDictionary<string, object> Headers { get; }
         IPersistenceSession PersistenceSession { get; }
         Task Send<T>(T message);
+        Task Send<T>(string destination, T message);
         Task SendLocal<T>(T message);
         Task Publish<T>(T message);
         Task Reply<T>(T message);

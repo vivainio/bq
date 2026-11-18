@@ -213,7 +213,7 @@ namespace Bq.Messaging.Tests
             var subscriberPath = Path.Combine(Path.GetTempPath(), "bq-subscriber-" + suffix + ".db");
             var subscriberStore = new SqlitePersistence(() => Sqlite(subscriberPath), subscriberName); await subscriberStore.Initialize();
             var sender = new EndpointConfiguration(senderName, uri) { Persistence = senderStore };
-            sender.Route<Command>(receiverName);
+            sender.Route<Command>(senderName);
             sender.Route<Failed>(receiverName);
             sender.Handle(() => new Handler<Response>((m, c) => { gotReply.TrySetResult(m.Text); return Task.CompletedTask; }));
             var dbPath = Path.Combine(Path.GetTempPath(), "bq-broker-" + suffix + ".db");
@@ -233,7 +233,7 @@ namespace Bq.Messaging.Tests
                 using (var b = RabbitEndpoint.Start(receiver))
                 using (var c = RabbitEndpoint.Start(subscriber))
                 {
-                    await a.Send(new Command { Text = "command" });
+                    await a.Send(receiverName, new Command { Text = "command" });
                     await a.Publish(new Event { Text = "event" });
                     await a.Send(new Failed());
                     Assert(await Within(gotCommand.Task) == "command", "command");
