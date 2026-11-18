@@ -22,16 +22,22 @@ namespace Bq.Reference.Windsor
         public Task Prepare(string id) => session.SendLocal(new PrepareOrder { OrderId = id });
     }
 
-    // Commands use the exact connection and transaction owned by the current Bq delivery.
+    // Commands share the current Bq transaction.
     public class OrderRepository
     {
-        readonly IMessageHandlerContext context;
-        public OrderRepository(IMessageHandlerContext context) { this.context = context; }
+        readonly DbConnection connection;
+        readonly DbTransaction transaction;
+
+        public OrderRepository(DbConnection connection, DbTransaction transaction)
+        {
+            this.connection = connection;
+            this.transaction = transaction;
+        }
         public async Task Save(string id, string state)
         {
-            using (var cmd = context.PersistenceSession.Connection.CreateCommand())
+            using (var cmd = connection.CreateCommand())
             {
-                cmd.Transaction = context.PersistenceSession.Transaction;
+                cmd.Transaction = transaction;
                 cmd.CommandText = "INSERT OR REPLACE INTO sample_orders(order_id,state) VALUES(@id,@state)";
                 var idParam = cmd.CreateParameter(); idParam.ParameterName = "@id"; idParam.Value = id; cmd.Parameters.Add(idParam);
                 var stateParam = cmd.CreateParameter(); stateParam.ParameterName = "@state"; stateParam.Value = state; cmd.Parameters.Add(stateParam);
@@ -124,7 +130,12 @@ namespace Bq.Reference.Windsor
                     Component.For<IMessageHandlerContext>().UsingFactoryMethod(() => WindsorHandlerScope.Current ?? throw new InvalidOperationException("No active message scope.")).LifestyleScoped(),
                     Component.For<IUniformSession>().UsingFactoryMethod(() => WindsorHandlerScope.Current != null ? WindsorHandlerScope.Current.UniformSession : endpoint.CreateUniformSession()).LifestyleScoped(),
                     Component.For<OrderMessages>().LifestyleScoped(),
-                    Component.For<OrderRepository>().LifestyleScoped(),
+                    Component.For<OrderRepository>().UsingFactoryMethod(() =>
+                    {
+                        var persistenceSession = WindsorHandlerScope.Current?.PersistenceSession ??
+                            throw new InvalidOperationException("No active message scope.");
+                        return new OrderRepository(persistenceSession.Connection, persistenceSession.Transaction);
+                    }).LifestyleScoped(),
                     Component.For<IHandleMessages<PlaceOrder>>().ImplementedBy<PlaceOrderHandler>().LifestyleScoped(),
                     Component.For<IHandleMessages<PrepareOrder>>().ImplementedBy<PrepareOrderHandler>().LifestyleScoped());
                 var config = new EndpointConfiguration(endpointName, uri) { Persistence = persistence };
@@ -133,8 +144,14 @@ namespace Bq.Reference.Windsor
                 endpoint = RabbitEndpoint.Start(config);
                 using (endpoint)
                 {
-                    var id = Guid.NewGuid().ToString("N");
-                    using (container.BeginScope()) await container.Resolve<OrderMessages>().Place(id);
+                    var id = await endpoint.ExecuteTransaction(async session =>
+                    {
+                        var orderId = Guid.NewGuid().ToString("N");
+                        await new OrderRepository(session.Connection, session.Transaction).Save(orderId, "requested");
+                        using (container.BeginScope())
+                            await container.Resolve<OrderMessages>().Place(orderId);
+                        return orderId;
+                    });
                     var prepared = false;
                     for (var i = 0; i < 150 && !prepared; i++)
                     {
