@@ -25,15 +25,23 @@ namespace Bq.Messaging
         readonly IModel publisherChannel;
         readonly object publishLock = new object();
         readonly object consumerLock = new object();
+        readonly object lifecycleLock = new object();
+        readonly AsyncLocal<UniformScope> uniformScope = new AsyncLocal<UniformScope>();
+        readonly CancellationTokenSource forceStop = new CancellationTokenSource();
+        readonly TaskCompletionSource<bool> drained = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        string consumerTag;
+        int activeDeliveries;
+        bool shutdownRequested;
+        Task stopTask;
         readonly CancellationTokenSource stopping = new CancellationTokenSource();
         Task dispatcher;
         bool returned;
-        bool disposed;
+        volatile bool disposed;
 
         RabbitEndpoint(EndpointConfiguration configuration)
         {
             this.configuration = configuration;
-            var factory = new ConnectionFactory { Uri = configuration.RabbitMqUri, DispatchConsumersAsync = true };
+            var factory = new ConnectionFactory { Uri = configuration.RabbitMqUri, DispatchConsumersAsync = true, ConsumerDispatchConcurrency = configuration.MaxConcurrency };
             connection = factory.CreateConnection();
             try
             {
@@ -51,12 +59,12 @@ namespace Bq.Messaging
                 });
                 foreach (var entry in configuration.Handlers.Where(x => x.Value.Subscribe))
                     consumerChannel.QueueBind(configuration.Name, EventsExchange, entry.Key);
-                consumerChannel.BasicQos(0, 1, false);
+                consumerChannel.BasicQos(0, configuration.MaxConcurrency, false);
                 publisherChannel.ConfirmSelect();
                 publisherChannel.BasicReturn += (sender, args) => { returned = true; };
                 var consumer = new AsyncEventingBasicConsumer(consumerChannel);
                 consumer.Received += OnReceived;
-                consumerChannel.BasicConsume(configuration.Name, false, consumer);
+                consumerTag = consumerChannel.BasicConsume(configuration.Name, false, consumer);
                 if (configuration.Persistence != null) dispatcher = Task.Run(() => DispatchOutbox(stopping.Token));
             }
             catch { connection.Dispose(); throw; }
@@ -69,10 +77,23 @@ namespace Bq.Messaging
             if (configuration.Recoverability.DelayedRetries == null || configuration.Recoverability.DelayedRetries.Any(delay => delay < TimeSpan.Zero || delay > TimeSpan.FromDays(24))) throw new ArgumentException("Delayed retry intervals must be between zero and 24 days.");
             if (configuration.Recoverability.ErrorQueue != null && string.IsNullOrWhiteSpace(configuration.Recoverability.ErrorQueue)) throw new ArgumentException("Error queue cannot be empty.");
             if (configuration.Recoverability.ErrorQueue == configuration.Name) throw new ArgumentException("Error queue must differ from the endpoint queue.");
+            if (configuration.MaxConcurrency == 0) throw new ArgumentOutOfRangeException(nameof(configuration.MaxConcurrency));
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));
             return new RabbitEndpoint(configuration);
         }
+        // Create inside each DI/request/handler scope rather than caching the result.
+        public IUniformSession CreateUniformSession()
+        {
+            lock (lifecycleLock)
+            {
+                var scope = uniformScope.Value;
+                if (disposed || (shutdownRequested && scope == null)) throw new InvalidOperationException("Endpoint is stopping or stopped.");
+                if (scope != null && Volatile.Read(ref scope.Active) == 0) throw new InvalidOperationException("Message handling scope has ended.");
+                return new UniformSession(this, scope);
+            }
+        }
         public Task Send<T>(T message) => SendCore(message, null, null);
+        public Task SendLocal<T>(T message) => SendCore(message, null, configuration.Name);
         public Task Publish<T>(T message) => PublishCore(message, null);
         internal Task SendCore<T>(T message, string correlationId, string destination)
         {
@@ -178,6 +199,24 @@ namespace Bq.Messaging
         }
         async Task OnReceived(object sender, BasicDeliverEventArgs delivery)
         {
+            lock (lifecycleLock)
+            {
+                // The broker will requeue a delivery left unacknowledged when the channel closes.
+                if (shutdownRequested) return;
+                activeDeliveries++;
+            }
+            try { await ProcessDelivery(delivery).ConfigureAwait(false); }
+            finally
+            {
+                lock (lifecycleLock)
+                {
+                    activeDeliveries--;
+                    if (shutdownRequested && activeDeliveries == 0) drained.TrySetResult(true);
+                }
+            }
+        }
+        async Task ProcessDelivery(BasicDeliverEventArgs delivery)
+        {
             var props = delivery.BasicProperties;
             var cycle = 0;
             var currentId = props.MessageId;
@@ -202,7 +241,14 @@ namespace Bq.Messaging
                             var recovery = session as IRecoverySession ?? throw new InvalidOperationException("Persistence session does not support recovery.");
                             if (!await recovery.HasRecovery(configuration.Name, RecoveryId(currentId, cycle)).ConfigureAwait(false) &&
                                 await session.TryClaimMessage(configuration.Name, currentId).ConfigureAwait(false))
-                                await registration.Invoke(message, new HandlerContext(this, props, session)).ConfigureAwait(false);
+                            {
+                                var context = new HandlerContext(this, props, session);
+                                var previous = uniformScope.Value;
+                                var scope = new UniformScope(context);
+                                uniformScope.Value = scope;
+                                try { await registration.Invoke(message, context).ConfigureAwait(false); }
+                                finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; }
+                            }
                             session.Commit();
                         }
                         break;
@@ -218,6 +264,7 @@ namespace Bq.Messaging
                 return;
             }
             catch (Exception ex) { failure = ex; }
+            if (forceStop.IsCancellationRequested) return;
             try
             {
                 var options = configuration.Recoverability;
@@ -250,15 +297,98 @@ namespace Bq.Messaging
                 lock (consumerLock) { if (!disposed && consumerChannel.IsOpen) consumerChannel.BasicNack(delivery.DeliveryTag, false, true); }
             }
         }
-        public void Dispose()
+        // Stops accepting new deliveries, waits for active handlers, and then closes the connection.
+        // Cancellation forces closure and leaves unfinished deliveries for broker redelivery.
+        public Task StopAsync(CancellationToken cancellationToken = default)
         {
-            lock (consumerLock) lock (publishLock)
+            lock (lifecycleLock)
+            {
+                if (stopTask != null) return stopTask;
+                if (disposed) return Task.CompletedTask;
+                shutdownRequested = true;
+                if (activeDeliveries == 0) drained.TrySetResult(true);
+                stopTask = Task.Run(() => StopCore(cancellationToken));
+                return stopTask;
+            }
+        }
+        async Task StopCore(CancellationToken cancellationToken)
+        {
+            try
+            {
+                // BasicCancel is synchronous in the netstandard2.0 RabbitMQ client.
+                var cancel = Task.Run(() => { lock (consumerLock) { if (consumerChannel.IsOpen) consumerChannel.BasicCancel(consumerTag); } });
+                await WaitFor(cancel, cancellationToken).ConfigureAwait(false);
+                await WaitFor(drained.Task, cancellationToken).ConfigureAwait(false);
+                stopping.Cancel();
+                if (dispatcher != null) await WaitFor(dispatcher, cancellationToken).ConfigureAwait(false);
+                Close(false);
+            }
+            catch
+            {
+                Close(true);
+                throw;
+            }
+        }
+        static async Task WaitFor(Task task, CancellationToken cancellation)
+        {
+            if (!cancellation.CanBeCanceled) { await task.ConfigureAwait(false); return; }
+            var cancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using (cancellation.Register(() => cancelled.TrySetResult(true)))
+            {
+                if (await Task.WhenAny(task, cancelled.Task).ConfigureAwait(false) != task) throw new OperationCanceledException(cancellation);
+                await task.ConfigureAwait(false);
+            }
+        }
+        void Close(bool forced)
+        {
+            lock (lifecycleLock)
             {
                 if (disposed) return;
                 disposed = true;
-                stopping.Cancel();
+                shutdownRequested = true;
+                if (activeDeliveries == 0) drained.TrySetResult(true);
             }
-            connection.Dispose();
+            if (forced)
+            {
+                try { forceStop.Cancel(); }
+                catch (AggregateException ex) { System.Diagnostics.Trace.TraceError("Handler cancellation callback failed: {0}", ex); }
+            }
+            stopping.Cancel();
+            if (forced) connection.Abort(TimeSpan.FromMilliseconds(500));
+            else connection.Dispose();
+        }
+        // Dispose is immediate; use StopAsync to drain active handlers.
+        public void Dispose() => Close(true);
+        sealed class UniformScope
+        {
+            public UniformScope(HandlerContext context) { Context = context; Active = 1; }
+            public HandlerContext Context { get; }
+            public int Active;
+        }
+        sealed class UniformSession : IUniformSession
+        {
+            readonly RabbitEndpoint endpoint;
+            readonly UniformScope scope;
+            public UniformSession(RabbitEndpoint endpoint, UniformScope scope) { this.endpoint = endpoint; this.scope = scope; }
+            HandlerContext Validate()
+            {
+                lock (endpoint.lifecycleLock)
+                {
+                    if (endpoint.disposed) throw new InvalidOperationException("Endpoint has stopped.");
+                    if (scope == null)
+                    {
+                        if (endpoint.shutdownRequested || endpoint.uniformScope.Value != null)
+                            throw new InvalidOperationException("An outside uniform session cannot be used in a handler or after shutdown starts.");
+                        return null;
+                    }
+                    if (Volatile.Read(ref scope.Active) == 0 || !ReferenceEquals(endpoint.uniformScope.Value, scope))
+                        throw new InvalidOperationException("Uniform session is outside its message handling scope.");
+                    return scope.Context;
+                }
+            }
+            public Task Send<T>(T message) { var context = Validate(); return context == null ? endpoint.Send(message) : context.Send(message); }
+            public Task SendLocal<T>(T message) { var context = Validate(); return context == null ? endpoint.SendLocal(message) : context.SendLocal(message); }
+            public Task Publish<T>(T message) { var context = Validate(); return context == null ? endpoint.Publish(message) : context.Publish(message); }
         }
         internal sealed class HandlerContext : IMessageHandlerContext
         {
@@ -273,6 +403,8 @@ namespace Bq.Messaging
                 CorrelationId = properties.CorrelationId ?? properties.MessageId;
                 Headers = new Dictionary<string, object>(properties.Headers ?? new Dictionary<string, object>());
             }
+            public IUniformSession UniformSession => endpoint.CreateUniformSession();
+            public CancellationToken CancellationToken => endpoint.forceStop.Token;
             public IPersistenceSession PersistenceSession { get; }
             public string MessageId { get; }
             public string CorrelationId { get; }
@@ -283,6 +415,8 @@ namespace Bq.Messaging
                 if (!endpoint.configuration.Routes.TryGetValue(typeof(T), out var destination)) throw new InvalidOperationException("No route for " + typeof(T).FullName);
                 return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true));
             }
+            public Task SendLocal<T>(T message) => PersistenceSession == null ? endpoint.SendCore(message, CorrelationId, endpoint.configuration.Name) :
+                PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", endpoint.configuration.Name, CorrelationId, true));
             public Task Publish<T>(T message) => PersistenceSession == null ? endpoint.PublishCore(message, CorrelationId) :
                 PersistenceSession.StoreOutgoing(endpoint.Prepare(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false));
             internal Task ScheduleSagaTimeout(SagaTimeoutMessage timeout, DateTime dueUtc)

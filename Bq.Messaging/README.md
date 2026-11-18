@@ -28,7 +28,31 @@ using (var endpoint = RabbitEndpoint.Start(config))
 }
 ```
 
-Register event handlers with `config.Handle(() => new EventHandler(), subscribe: true)`. Configure command destinations with `config.Route<PlaceOrder>("orders")`, then call `await endpoint.Send(command)`; `endpoint.Publish(evt)` broadcasts to registered subscribers. Handlers can send, publish and reply through their context. Message types use their full .NET type name on the wire; receivers must explicitly register each type. Renaming types or properties changes the contract. Avoid polymorphic `object` properties; test schema changes with both versions.
+Register handlers explicitly before calling `RabbitEndpoint.Start`. Register event handlers with `config.Handle(() => new EventHandler(), subscribe: true)`. The factory creates a handler for each processing attempt. For scoped dependencies, use `config.Handle<PlaceOrder>(context => new Handler(/* construct services using context */))`. Bq does not automatically discover handlers or register an endpoint with a DI container; the host owns those registrations and endpoint lifetime. See the [Castle Windsor reference application](../Bq.Reference.Windsor/README.md) for an end-to-end example.
+
+Configure command destinations with `config.Route<PlaceOrder>("orders")`, then call `await endpoint.Send(command)`; `endpoint.Publish(evt)` broadcasts to registered subscribers. `endpoint.SendLocal(message)` sends to that endpoint's own queue without a route. Handlers have `Send`, `SendLocal`, `Publish` and `Reply` on their context. Handler-context operations are recorded in the current transactional outbox; endpoint operations publish directly. Message types use their full .NET type name on the wire; receivers must explicitly register each type. Renaming types or properties changes the contract. Avoid polymorphic `object` properties; test schema changes with both versions.
+
+### Uniform sessions
+
+Bq provides its own `IUniformSession` interface with `Send`, `SendLocal`, and `Publish`. It is a small compatibility-oriented surface, not the NServiceBus interface or an automatic dependency-injection integration. Obtain a fresh session for each scope:
+
+```csharp
+// Outside a handler, this publishes directly through the running endpoint.
+IUniformSession requestSession = endpoint.CreateUniformSession();
+await requestSession.SendLocal(new PlaceOrder { OrderId = "123" });
+
+// Inside a handler, a context-aware factory can inject the session into shared code.
+config.Handle<PlaceOrder>(context => new OrderHandler(
+    new SharedOrderService(context.UniformSession)));
+```
+
+Resolve handler sessions inside the handler factory or from `context.UniformSession`; their sends participate in the handler's database transaction and inherit its correlation ID. An external session does not make external database changes transactional. Do not cache a session across scopes: Bq rejects a handler session after its handler ends, an external session used inside a handler, and any session used after its endpoint stops. Sessions are endpoint-specific; sending through another endpoint does not join the current handler transaction.
+
+### Concurrency and shutdown
+
+`config.MaxConcurrency` sets the maximum number of deliveries processed simultaneously per endpoint instance and the RabbitMQ prefetch count (default `1`). Concurrent handlers get separate persistence sessions. Actual throughput depends on the provider; SQLite's single-writer locking can serialize work or cause contention.
+
+Call `await endpoint.StopAsync(cancellationToken)` to stop accepting deliveries and wait for active handlers and the dispatcher before closing the connection. If cancellation is requested before draining completes, the connection is forcibly closed, the handler context's `CancellationToken` is cancelled, and unacknowledged deliveries can be redelivered. `Dispose()` is an immediate forced close; use `StopAsync` for graceful shutdown. Handler code should observe its context cancellation token, and external side effects should be idempotent because an in-flight handler can finish after a forced close.
 
 Every endpoint requires a configured persistence provider implementing both `IPersistenceProvider` and `IRecoveryPersistence`, with each session implementing `IRecoverySession`. Initialize its schema before starting the endpoint. All instances of the same endpoint must share the same database and compatible configuration.
 
@@ -62,7 +86,7 @@ foreach (var error in errors)
 
 Replay is an atomic database operation and can be requested once per error record. It creates a fresh message ID so the old retry decisions and inbox entry do not suppress it; the original ID is retained in `x-bq-original-message-id`. Replay does not remove an already-published copy from the RabbitMQ error queue. Consumption directly from that queue is separate from Bq's inspection and replay API. Retry and error records are retained indefinitely; monitor and back up the database. An unavailable error queue leaves its database record pending, and can block other dispatch until restored. Delivery remains at least once; external side effects still need idempotency.
 
-`Dispose` closes the connection and in-flight messages may be redelivered. This is an early Bq API inspired by NServiceBus, not a replacement for its assemblies or its RabbitMQ wire protocol.
+This is an early Bq API inspired by NServiceBus, not a replacement for its assemblies or its RabbitMQ wire protocol.
 
 ## Tests
 

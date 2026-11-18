@@ -13,6 +13,7 @@ namespace Bq.Messaging.Tests
 {
     public class Command { public string Text { get; set; } }
     public class Event { public string Text { get; set; } }
+    public class LocalMessage { public string Text { get; set; } }
     public class Response { public string Text { get; set; } }
     public class Failed { public string Text { get; set; } }
     public class RecoverCommand { public string Text { get; set; } }
@@ -104,6 +105,8 @@ namespace Bq.Messaging.Tests
             await BrokerTests(new Uri(uri));
             await SagaTests(new Uri(uri));
             await RecoverabilityTests(new Uri(uri));
+            await LifecycleTests.Run(new Uri(uri));
+            await UniformSessionTests.Run(new Uri(uri), Sqlite);
             var outageDirectory = Environment.GetEnvironmentVariable("BQ_BROKER_OUTAGE_DIR");
             if (!string.IsNullOrEmpty(outageDirectory)) await BrokerOutageTest(new Uri(uri), outageDirectory);
         }
@@ -180,6 +183,7 @@ namespace Bq.Messaging.Tests
             var gotEvent1 = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var gotEvent2 = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var gotReply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var gotLocal = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var attempts = 0;
             var senderPath = Path.Combine(Path.GetTempPath(), "bq-sender-" + suffix + ".db");
             var senderStore = new SqlitePersistence(() => Sqlite(senderPath), senderName); await senderStore.Initialize();
@@ -193,7 +197,8 @@ namespace Bq.Messaging.Tests
             var store = new SqlitePersistence(() => Sqlite(dbPath), receiverName);
             await store.Initialize();
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = store };
-            receiver.Handle(() => new Handler<Command>(async (m, c) => { gotCommand.TrySetResult(m.Text); await c.Reply(new Response { Text = m.Text }); }));
+            receiver.Handle(() => new Handler<Command>(async (m, c) => { gotCommand.TrySetResult(m.Text); await c.Reply(new Response { Text = m.Text }); await c.SendLocal(new LocalMessage { Text = m.Text }); }));
+            receiver.Handle(() => new Handler<LocalMessage>((m, c) => { gotLocal.TrySetResult(m.Text); return Task.CompletedTask; }));
             receiver.Handle(() => new Handler<Event>((m, c) => { gotEvent1.TrySetResult(m.Text); return Task.CompletedTask; }), true);
             receiver.Recoverability.DelayedRetries = new TimeSpan[0];
             receiver.Handle(() => new Handler<Failed>((m, c) => { attempts++; throw new Exception("expected"); }));
@@ -210,6 +215,7 @@ namespace Bq.Messaging.Tests
                     await a.Send(new Failed());
                     Assert(await Within(gotCommand.Task) == "command", "command");
                     Assert(await Within(gotReply.Task) == "command", "reply");
+                    Assert(await Within(gotLocal.Task) == "command", "send local");
                     Assert(await Within(gotEvent1.Task) == "event" && await Within(gotEvent2.Task) == "event", "event fanout");
                     using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                     using (var channel = connection.CreateModel())

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Bq.Messaging
@@ -10,13 +11,25 @@ namespace Bq.Messaging
         Task Handle(T message, IMessageHandlerContext context);
     }
 
+    // Bq's small uniform messaging surface. A session belongs to the scope in
+    // which it is created; resolve a fresh session for each application/handler scope.
+    public interface IUniformSession
+    {
+        Task Send<T>(T message);
+        Task SendLocal<T>(T message);
+        Task Publish<T>(T message);
+    }
+
     public interface IMessageHandlerContext
     {
+        IUniformSession UniformSession { get; }
+        CancellationToken CancellationToken { get; }
         string MessageId { get; }
         string CorrelationId { get; }
         IReadOnlyDictionary<string, object> Headers { get; }
         IPersistenceSession PersistenceSession { get; }
         Task Send<T>(T message);
+        Task SendLocal<T>(T message);
         Task Publish<T>(T message);
         Task Reply<T>(T message);
     }
@@ -35,6 +48,8 @@ namespace Bq.Messaging
         }
         public string Name { get; }
         public Uri RabbitMqUri { get; }
+        // Maximum concurrently executing deliveries for this endpoint instance.
+        public ushort MaxConcurrency { get; set; } = 1;
         public RecoverabilityOptions Recoverability { get; } = new RecoverabilityOptions();
         // Retained for existing applications.
         public int ImmediateRetries { get => Recoverability.ImmediateRetries; set => Recoverability.ImmediateRetries = value; }
@@ -46,10 +61,17 @@ namespace Bq.Messaging
         public void Handle<T>(Func<IHandleMessages<T>> factory, bool subscribe = false)
         {
             if (factory == null) throw new ArgumentNullException(nameof(factory));
+            Handle<T>(_ => factory(), subscribe);
+        }
+        // The factory runs inside the current message scope, allowing scoped services
+        // to receive its uniform session without relying on an endpoint startup race.
+        public void Handle<T>(Func<IMessageHandlerContext, IHandleMessages<T>> factory, bool subscribe = false)
+        {
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
             var key = MessageType(typeof(T));
             AddRegistration(key, new Registration(typeof(T), subscribe, async (message, context) =>
             {
-                var handler = factory() ?? throw new InvalidOperationException("Handler factory returned null.");
+                var handler = factory(context) ?? throw new InvalidOperationException("Handler factory returned null.");
                 try { await handler.Handle((T)message, context).ConfigureAwait(false); }
                 finally { (handler as IDisposable)?.Dispose(); }
             }));
