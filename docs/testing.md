@@ -14,6 +14,6 @@ podman run -d --name bq-rabbitmq -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672
 
 ## Broker restart test
 
-Run the complete suite with `./scripts/test-rabbitmq.sh`. It requires the .NET SDK, Mono, and a running Podman machine or native Podman. The runner starts its own RabbitMQ container on an available localhost port, restarts it during a scheduled retry, then runs the Castle Windsor reference application against the restarted broker using a temporary SQLite database. It removes the container on exit.
+Run the complete suite with `./scripts/test-rabbitmq.sh`. It requires the .NET SDK, Mono, and a running Podman machine or native Podman. The runner starts its own RabbitMQ container on an available localhost port, restarts it during a scheduled retry, then runs the Castle Windsor reference application against the restarted broker using a temporary SQLite database. On failure it prints the last 200 RabbitMQ log lines before removing the container.
 
 The Messaging integration workflow runs this script on Ubuntu for changes to messaging, SQLite persistence, the Windsor sample, or the test runner. It can also be started manually from the GitHub Actions tab.

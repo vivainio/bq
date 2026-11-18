@@ -10,12 +10,20 @@ container="bq-integration-${test_dir##*/}"
 watcher=""
 created=false
 cleanup() {
+    local status=$?
     if [[ -n "$watcher" ]]; then
         kill "$watcher" 2>/dev/null || true
         wait "$watcher" 2>/dev/null || true
     fi
-    if "$created"; then podman rm -f -v "$container" >/dev/null || true; fi
+    if "$created"; then
+        if ((status != 0)); then
+            printf '\nRabbitMQ container logs (%s)\n' "$container" >&2
+            podman logs --tail 200 "$container" >&2 || true
+        fi
+        podman rm -f -v "$container" >/dev/null || true
+    fi
     rm -rf "$test_dir"
+    exit "$status"
 }
 trap cleanup EXIT
 
@@ -33,7 +41,7 @@ wait_for_broker() {
         fi
         sleep 1
     done
-    podman logs "$container" >&2
+    echo "RabbitMQ did not become ready." >&2
     return 1
 }
 
