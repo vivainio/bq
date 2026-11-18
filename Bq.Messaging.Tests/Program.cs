@@ -186,6 +186,11 @@ namespace Bq.Messaging.Tests
                         });
                     session.Commit();
                 }
+                var errorsPending = await store.ListPendingDispatches(DispatchKind.Error, 2);
+                Assert(errorsPending.Count == 2 && errorsPending[0].Kind == DispatchKind.Error &&
+                    errorsPending[0].DueAtUtc == failedAt, "pending errors include scheduled UTC time");
+                Assert((await store.ListPendingDispatches(DispatchKind.Recovery)).Count == 0,
+                    "pending recovery filter excludes errors");
                 var firstPage = await store.ListErrors("test", 2);
                 Assert(firstPage.Count == 2 && firstPage[0].RecoveryId == "c" &&
                     firstPage[1].RecoveryId == "b", "errors with matching timestamps have stable order");

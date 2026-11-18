@@ -72,8 +72,13 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             }
         }
 
-        public async Task<System.Collections.Generic.IReadOnlyList<PendingDispatch>> ListPendingDispatches(int limit = 100)
+        public Task<System.Collections.Generic.IReadOnlyList<PendingDispatch>> ListPendingDispatches(int limit = 100) =>
+            ListPendingDispatches(null, limit);
+
+        public async Task<System.Collections.Generic.IReadOnlyList<PendingDispatch>> ListPendingDispatches(DispatchKind? kind, int limit = 100)
         {
+            if (kind.HasValue && !Enum.IsDefined(typeof(DispatchKind), kind.Value))
+                throw new ArgumentOutOfRangeException(nameof(kind));
             if (limit <= 0) throw new ArgumentOutOfRangeException(nameof(limit));
             var result = new System.Collections.Generic.List<PendingDispatch>();
             using (var connection = await Open().ConfigureAwait(false))
@@ -85,7 +90,9 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
     SELECT message_id, CASE WHEN is_error=1 THEN 'Error' ELSE 'Recovery' END,
         CASE WHEN is_error=1 THEN error_queue ELSE endpoint END, due_ticks
         FROM bq_recovery WHERE endpoint=@e AND dispatched=0
-) ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit", "@e", endpoint, "@limit", limit))
+) WHERE (@kind IS NULL OR kind=@kind)
+ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
+                "@e", endpoint, "@limit", limit, "@kind", kind?.ToString()))
             using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
             {
                 while (await reader.ReadAsync().ConfigureAwait(false))
