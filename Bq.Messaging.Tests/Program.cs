@@ -243,7 +243,7 @@ namespace Bq.Messaging.Tests
             var subscriberPath = Path.Combine(Path.GetTempPath(), "bq-subscriber-" + suffix + ".db");
             var subscriberStore = new SqlitePersistence(() => Sqlite(subscriberPath), subscriberName); await subscriberStore.Initialize();
             var sender = new EndpointConfiguration(senderName, uri) { Persistence = senderStore };
-            sender.Route<Command>(senderName);
+            sender.Route<Command>(receiverName);
             sender.Route<Failed>(receiverName);
             sender.Handle(() => new Handler<Response>((m, c) => { gotReply.TrySetResult(m.Text); return Task.CompletedTask; }));
             var dbPath = Path.Combine(Path.GetTempPath(), "bq-broker-" + suffix + ".db");
@@ -291,7 +291,7 @@ namespace Bq.Messaging.Tests
                             sql.CommandText = "CREATE TABLE transaction_probe(value TEXT); INSERT INTO transaction_probe VALUES ('committed')";
                             await sql.ExecuteNonQueryAsync();
                         }
-                        await session.SendAt(receiverName, new Command { Text = "command" }, dueAt);
+                        await session.SendAt(new Command { Text = "command" }, dueAt);
                     });
                     using (var db = Sqlite(senderPath))
                     {
@@ -328,6 +328,10 @@ namespace Bq.Messaging.Tests
                                 await producer.SendLocal(new LocalMessage { Text = "shared endpoint" });
                                 Assert(queueOwner.BasicGet(producerName, true) != null,
                                     "send-only local send reaches the existing named queue");
+                                await producer.SendLocalAt(new LocalMessage { Text = "scheduled local" },
+                                    DateTimeOffset.UtcNow.AddMilliseconds(500));
+                                await WaitFor(() => Task.FromResult(queueOwner.BasicGet(producerName, true) != null),
+                                    "send-only scheduled local send reaches the existing named queue");
                             }
                             finally { queueOwner.QueueDelete(producerName); }
                         }

@@ -23,7 +23,9 @@ namespace Bq.Messaging
 
     public interface ITransactionalSession : IUniformSession
     {
+        Task SendAt<T>(T message, DateTimeOffset dueAt);
         Task SendAt<T>(string destination, T message, DateTimeOffset dueAt);
+        Task SendLocalAt<T>(T message, DateTimeOffset dueAt);
         Task PublishAt<T>(T message, DateTimeOffset dueAt);
         System.Data.Common.DbConnection Connection { get; }
         System.Data.Common.DbTransaction Transaction { get; }
@@ -42,7 +44,9 @@ namespace Bq.Messaging
         Task SendLocal<T>(T message);
         Task Publish<T>(T message);
         Task Reply<T>(T message);
+        Task SendAt<T>(T message, DateTimeOffset dueAt);
         Task SendAt<T>(string destination, T message, DateTimeOffset dueAt);
+        Task SendLocalAt<T>(T message, DateTimeOffset dueAt);
         Task PublishAt<T>(T message, DateTimeOffset dueAt);
     }
 

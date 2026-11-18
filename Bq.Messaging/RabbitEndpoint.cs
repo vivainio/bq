@@ -174,6 +174,8 @@ namespace Bq.Messaging
             public Task Send<T>(string destination, T message) =>
                 ActivePersistence.StoreOutgoing(endpoint.Prepare(message, "", RequireDestination(destination), null, true));
             public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
+            public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor<T>(), message, dueAt);
+            public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.configuration.Name, message, dueAt);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
                 endpoint.StoreScheduled(ActivePersistence, destination, message, dueAt.UtcDateTime, null);
             public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
@@ -183,6 +185,8 @@ namespace Bq.Messaging
             public void End() => ended = true;
         }
 
+        public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(RouteFor<T>(), message, dueAt);
+        public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(configuration.Name, message, dueAt);
         public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
             ExecuteTransaction(session => session.SendAt(destination, message, dueAt));
 
@@ -206,10 +210,14 @@ namespace Bq.Messaging
         public Task Publish<T>(T message) => PublishCore(message, null);
         internal Task SendCore<T>(T message, string correlationId, string destination)
         {
-            if (destination == null && !configuration.Routes.TryGetValue(typeof(T), out destination))
-                throw new InvalidOperationException("No route for " + typeof(T).FullName);
-            return Dispatch(message, "", destination, correlationId, true);
+            return Dispatch(message, "", destination ?? RouteFor<T>(), correlationId, true);
         }
+        string RouteFor<T>()
+        {
+            if (configuration.Routes.TryGetValue(typeof(T), out var destination)) return destination;
+            throw new InvalidOperationException("No route for " + typeof(T).FullName);
+        }
+
         internal Task PublishCore<T>(T message, string correlationId) =>
             Dispatch(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false);
         OutgoingMessage Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory)
@@ -578,6 +586,8 @@ namespace Bq.Messaging
             public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
             public Task Publish<T>(T message) => PersistenceSession == null ? endpoint.PublishCore(message, CorrelationId) :
                 PersistenceSession.StoreOutgoing(endpoint.Prepare(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false));
+            public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor<T>(), message, dueAt);
+            public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.configuration.Name, message, dueAt);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
                 endpoint.StoreScheduled(PersistenceSession, destination, message, dueAt.UtcDateTime, CorrelationId);
             public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
