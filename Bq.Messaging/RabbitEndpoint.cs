@@ -280,7 +280,7 @@ namespace Bq.Messaging
                         message = MessagePackSerializer.Deserialize(registration.Type, delivery.Body, SerializerOptions);
                     }
                 }
-                lock (consumerLock) { if (!disposed) consumerChannel.BasicAck(delivery.DeliveryTag, false); }
+                AcknowledgeCommittedDelivery(delivery.DeliveryTag);
                 return;
             }
             catch (Exception ex) { failure = ex; }
@@ -308,13 +308,32 @@ namespace Bq.Messaging
                     session.Commit();
                 }
                 System.Diagnostics.Trace.TraceError("Message {0} failed; {1}: {2}", currentId, isError ? "error queue" : "delayed retry", failure);
-                lock (consumerLock) { if (!disposed) consumerChannel.BasicAck(delivery.DeliveryTag, false); }
+
             }
             catch (Exception handoffError)
             {
                 System.Diagnostics.Trace.TraceError("Failed to persist recovery for message {0}; requeuing: {1}", currentId, handoffError);
                 await Task.Delay(1000).ConfigureAwait(false);
                 lock (consumerLock) { if (!disposed && consumerChannel.IsOpen) consumerChannel.BasicNack(delivery.DeliveryTag, false, true); }
+                return;
+            }
+            AcknowledgeCommittedDelivery(delivery.DeliveryTag);
+        }
+
+        void AcknowledgeCommittedDelivery(ulong deliveryTag)
+        {
+            try
+            {
+                lock (consumerLock)
+                {
+                    if (!disposed) consumerChannel.BasicAck(deliveryTag, false);
+                }
+            }
+            catch (Exception ex)
+            {
+                // The database decision is final. If RabbitMQ redelivers, the inbox
+                // or recovery record prevents the committed work from running again.
+                System.Diagnostics.Trace.TraceError("Failed to acknowledge committed delivery {0}: {1}", deliveryTag, ex);
             }
         }
         // Stops accepting new deliveries, waits for active handlers, and then closes the connection.
