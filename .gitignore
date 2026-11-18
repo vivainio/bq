@@ -357,3 +357,8 @@ MigrationBackup/
 .ionide/
 
 .idea/
+
+# Zensical documentation output
+/site/
+/.venv-docs/
+/.cache/

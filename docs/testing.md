@@ -1,0 +1,13 @@
+# Integration tests
+
+```sh
+dotnet build Bq.Messaging.Tests/Bq.Messaging.Tests.csproj
+mono Bq.Messaging.Tests/bin/Debug/net472/Bq.Messaging.Tests.exe
+BQ_RABBITMQ_URI=amqp://guest:guest@localhost:5672/ mono Bq.Messaging.Tests/bin/Debug/net472/Bq.Messaging.Tests.exe
+```
+
+The last command also exercises command delivery, replies, event fan-out, saga timeouts, delayed retry, replay, and failure handling against a local RabbitMQ broker. For example, with Podman:
+
+```sh
+podman run -d --name bq-rabbitmq -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672 docker.io/library/rabbitmq:3.13-management
+```

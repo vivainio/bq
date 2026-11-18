@@ -1,0 +1,20 @@
+# Persistence and outbox
+
+`Bq.Persistence.Sqlite` is the first persistence provider. It accepts a factory for an ADO.NET SQLite connection, so the host chooses a compatible driver (the Mono tests use `Mono.Data.Sqlite`). Use a file-backed database shared by instances of the same endpoint, and initialize the schema before starting the endpoint:
+
+```csharp
+var store = new SqlitePersistence(() => CreateSqliteConnection(), "orders");
+await store.Initialize();
+config.Persistence = store;
+using (var endpoint = RabbitEndpoint.Start(config)) { /* host the endpoint */ }
+```
+
+Within a handler, `context.PersistenceSession.Connection` and `.Transaction` are the same connection and local transaction used by the inbox, saga and outbox stores. Application commands must use both. Bq records the incoming message ID in a unique inbox key, invokes the handler, records context-generated sends/publishes/replies in the outbox, commits, and then acknowledges RabbitMQ. On failure the transaction is disposed without commit. Each immediate retry creates a new session and transaction. A dispatcher polls committed outbox records; it deletes a record only after a broker confirmation. Publisher-confirm uncertainty and multiple dispatchers can produce duplicates, with the same outgoing message ID.
+
+## Dispatch inspection
+
+`config.DispatchPollInterval` sets the wait after an empty or failed dispatch poll. It defaults to one second, and both the outbox and recovery loops use it. Shorter intervals reduce idle pickup latency and increase database polling. `config.PublisherConfirmTimeout` controls how long direct sends and both background dispatchers wait for publisher confirmation. It defaults to ten seconds. After a failed confirmation, durable records remain pending for another attempt.
+
+Use `await store.GetDispatchBacklog()` to count pending outbox messages, due and scheduled saga timeouts, and due and scheduled recovery records for the SQLite endpoint. Counts include records awaiting publisher confirmation. Use `await store.ListPendingDispatches(limit: 100)` to inspect message IDs, dispatch kinds, routing keys, and scheduled UTC times. Pass a `DispatchKind` such as `DispatchKind.Error` as the first argument to filter before applying the limit. The listing omits message bodies and its order is for inspection.
+
+The inbox and recovery ledger currently have no retention cleanup, and the outbox has no dead-letter policy: a persistently unroutable command blocks later ordinary outbox records until fixed. The SQLite dispatcher alternates preference between ordinary outbox messages and due saga timeouts on each poll. The SQLite provider is a first implementation intended for local or low-concurrency use, not a claim that SQLite supports distributed multi-host deployment. Run the provider against the exact filesystem, SQLite driver and Mono version used in production. Handler external effects, other databases, and sends made outside the handler context are not part of the transaction.

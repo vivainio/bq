@@ -13,6 +13,6 @@ The current implementation supports:
 
 Delivery is at least once. Database changes only participate in the Bq transaction when they use the supplied connection and transaction; external effects still need idempotency. SQLite is the only persistence provider and is intended for local or low-concurrency use. The API and wire format are not drop-in compatible with NServiceBus. Recovery and inbox records currently have no automatic retention cleanup.
 
-See [Bq.Messaging/README.md](Bq.Messaging/README.md) for setup, examples, guarantees, limitations, and test commands. The [Castle Windsor reference application](Bq.Reference.Windsor/README.md) demonstrates net472/Mono endpoint registration, scoped handlers, and uniform sessions.
+Start with the [Bq book](docs/index.md). See [Bq.Messaging/README.md](Bq.Messaging/README.md) for setup, examples, guarantees, limitations, and test commands. The [Castle Windsor reference application](Bq.Reference.Windsor/README.md) demonstrates net472/Mono endpoint registration, scoped handlers, and uniform sessions.
 
 The older `Bq` and `Bq.Core` projects contain the previous Oracle/Redis/protobuf queue prototype; they are separate from the RabbitMQ implementation.
