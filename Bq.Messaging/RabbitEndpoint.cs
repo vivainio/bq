@@ -170,6 +170,8 @@ namespace Bq.Messaging
             public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
                 endpoint.StoreScheduled(ActivePersistence, destination, message, dueAt.UtcDateTime, null);
+            public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
+                endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null);
             public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
                 message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), null, false));
             public void End() => ended = true;
@@ -177,6 +179,12 @@ namespace Bq.Messaging
 
         public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
             ExecuteTransaction(session => session.SendAt(destination, message, dueAt));
+
+        public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
+            ExecuteTransaction(session => session.PublishAt(message, dueAt));
+
+        Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId) =>
+            session.StoreTimeout(Prepare(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false), dueUtc);
 
         Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId) =>
             session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true), dueUtc);
@@ -566,6 +574,8 @@ namespace Bq.Messaging
                 PersistenceSession.StoreOutgoing(endpoint.Prepare(message, EventsExchange, EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false));
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
                 endpoint.StoreScheduled(PersistenceSession, destination, message, dueAt.UtcDateTime, CorrelationId);
+            public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
+                endpoint.StoreScheduledEvent(PersistenceSession, message, dueAt.UtcDateTime, CorrelationId);
 
             internal Task ScheduleSagaTimeout(SagaTimeoutMessage timeout, DateTime dueUtc)
             {

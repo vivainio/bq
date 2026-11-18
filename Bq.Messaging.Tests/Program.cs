@@ -302,7 +302,7 @@ namespace Bq.Messaging.Tests
                             Assert((string)await sql.ExecuteScalarAsync() == "committed", "application transaction commits business data");
                         }
                     }
-                    await a.Publish(new Event { Text = "event" });
+                    await a.PublishAt(new Event { Text = "event" }, DateTimeOffset.UtcNow.AddSeconds(1));
                     await a.Send(new Failed());
                     Assert(await Within(gotCommand.Task) == "command", "command");
                     Assert(DateTimeOffset.UtcNow >= dueAt, "scheduled command delivered after due time");
