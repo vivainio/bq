@@ -264,6 +264,7 @@ namespace Bq.Messaging.Tests
                 using (var c = RabbitEndpoint.Start(subscriber))
                 {
                     var rollback = new InvalidOperationException("abort application transaction");
+                    var outsideSession = a.CreateUniformSession();
                     try
                     {
                         await a.ExecuteTransaction(async session =>
@@ -274,13 +275,17 @@ namespace Bq.Messaging.Tests
                                 sql.CommandText = "CREATE TABLE transaction_probe(value TEXT)";
                                 await sql.ExecuteNonQueryAsync();
                             }
-                            await session.SendAt(receiverName, new Command { Text = "rolled back" }, DateTimeOffset.UtcNow);
+                            var rejected = false;
+                            try { await outsideSession.Send(receiverName, new Command { Text = "out of scope" }); }
+                            catch (InvalidOperationException) { rejected = true; }
+                            Assert(rejected, "an outside session cannot bypass the application transaction");
+                            await a.CreateUniformSession().Send(receiverName, new Command { Text = "rolled back" });
                             throw rollback;
                         });
                         throw new Exception("Expected application transaction to fail");
                     }
                     catch (InvalidOperationException ex) when (ReferenceEquals(ex, rollback)) { }
-                    Assert((await senderStore.ListPendingDispatches()).Count == 0, "rollback discards scheduled message");
+                    Assert((await senderStore.ListPendingDispatches()).Count == 0, "rollback discards uniform-session outbox message");
 
                     var dueAt = DateTimeOffset.UtcNow.AddSeconds(2);
                     await a.ExecuteTransaction(async session =>
@@ -291,7 +296,7 @@ namespace Bq.Messaging.Tests
                             sql.CommandText = "CREATE TABLE transaction_probe(value TEXT); INSERT INTO transaction_probe VALUES ('committed')";
                             await sql.ExecuteNonQueryAsync();
                         }
-                        await session.SendAt(new Command { Text = "command" }, dueAt);
+                        await a.CreateUniformSession().SendAt(new Command { Text = "command" }, dueAt);
                     });
                     using (var db = Sqlite(senderPath))
                     {

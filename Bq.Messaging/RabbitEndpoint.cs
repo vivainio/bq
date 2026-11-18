@@ -115,8 +115,10 @@ namespace Bq.Messaging
             lock (lifecycleLock)
             {
                 var scope = uniformScope.Value;
-                if (disposed || (shutdownRequested && scope == null)) throw new InvalidOperationException("Endpoint is stopping or stopped.");
+                var transaction = externalTransaction.Value;
+                if (disposed || (shutdownRequested && scope == null && transaction == null)) throw new InvalidOperationException("Endpoint is stopping or stopped.");
                 if (scope != null && Volatile.Read(ref scope.Active) == 0) throw new InvalidOperationException("Message handling scope has ended.");
+                if (transaction != null) return transaction;
                 return new UniformSession(this, scope);
             }
         }
@@ -535,8 +537,8 @@ namespace Bq.Messaging
                     if (endpoint.disposed) throw new InvalidOperationException("Endpoint has stopped.");
                     if (scope == null)
                     {
-                        if (endpoint.shutdownRequested || endpoint.uniformScope.Value != null)
-                            throw new InvalidOperationException("An outside uniform session cannot be used in a handler or after shutdown starts.");
+                        if (endpoint.shutdownRequested || endpoint.uniformScope.Value != null || endpoint.externalTransaction.Value != null)
+                            throw new InvalidOperationException("An outside uniform session cannot be used inside a messaging transaction or after shutdown starts.");
                         return null;
                     }
                     if (Volatile.Read(ref scope.Active) == 0 || !ReferenceEquals(endpoint.uniformScope.Value, scope))
