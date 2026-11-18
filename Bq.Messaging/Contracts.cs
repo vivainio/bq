@@ -73,6 +73,8 @@ namespace Bq.Messaging
         public IDictionary<string, object> InputQueueArguments { get; } = new Dictionary<string, object>();
         // Maximum concurrently executing deliveries for this endpoint instance.
         public ushort MaxConcurrency { get; set; } = 1;
+        // RabbitMQ prefetch. Null follows MaxConcurrency; zero requests unlimited prefetch.
+        public ushort? PrefetchCount { get; set; }
         // Wait after an empty or failed dispatch poll.
         public TimeSpan DispatchPollInterval { get; set; } = TimeSpan.FromSeconds(1);
         public TimeSpan NetworkRecoveryInterval { get; set; } = TimeSpan.FromSeconds(5);

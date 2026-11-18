@@ -76,7 +76,7 @@ namespace Bq.Messaging
                     });
                     foreach (var entry in configuration.Handlers.Where(x => x.Value.Subscribe))
                         consumerChannel.QueueBind(configuration.Name, eventsExchange, entry.Key);
-                    consumerChannel.BasicQos(0, configuration.MaxConcurrency, false);
+                    consumerChannel.BasicQos(0, configuration.PrefetchCount ?? configuration.MaxConcurrency, false);
                     var consumer = new AsyncEventingBasicConsumer(consumerChannel);
                     consumer.Received += OnReceived;
                     consumerTag = consumerChannel.BasicConsume(configuration.Name, false, consumer);

@@ -50,7 +50,7 @@ Resolve handler sessions inside the handler factory or from `context.UniformSess
 
 ### Concurrency and shutdown
 
-`config.MaxConcurrency` sets the maximum number of deliveries processed simultaneously per endpoint instance and the RabbitMQ prefetch count (default `1`). Concurrent handlers get separate persistence sessions. Actual throughput depends on the provider; SQLite's single-writer locking can serialize work or cause contention.
+`config.MaxConcurrency` sets the maximum number of deliveries processed simultaneously per endpoint instance (default `1`). RabbitMQ prefetch follows that value by default; set `config.PrefetchCount` to tune how many unacknowledged deliveries RabbitMQ can send to this consumer independently. A value of `0` asks RabbitMQ for unlimited prefetch. Concurrent handlers get separate persistence sessions. Actual throughput depends on the provider; SQLite's single-writer locking can serialize work or cause contention.
 
 Call `await endpoint.StopAsync(cancellationToken)` to stop accepting deliveries and wait for active handlers and the dispatcher before closing the connection. If cancellation is requested before draining completes, the connection is forcibly closed, the handler context's `CancellationToken` is cancelled, and unacknowledged deliveries can be redelivered. `Dispose()` is an immediate forced close; use `StopAsync` for graceful shutdown. Handler code should observe its context cancellation token, and external side effects should be idempotent because an in-flight handler can finish after a forced close.
 
