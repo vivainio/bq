@@ -67,6 +67,7 @@ namespace Bq.Messaging
         }
         public string Name { get; }
         public Uri RabbitMqUri { get; }
+        public Action<RabbitMQ.Client.ConnectionFactory> ConfigureRabbitMqConnection { get; set; }
         public string EventsExchange { get; set; } = "bq.events";
         public string ErrorExchange { get; set; } = "bq.errors";
         public IDictionary<string, object> InputQueueArguments { get; } = new Dictionary<string, object>();

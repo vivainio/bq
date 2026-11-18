@@ -331,9 +331,16 @@ namespace Bq.Messaging.Tests
                     var producerName = "bq.test.producer." + suffix;
                     var producerStore = new SqlitePersistence(() => Sqlite(senderPath), producerName);
                     var producerConfig = new EndpointConfiguration(producerName, uri) { Persistence = producerStore, EventsExchange = eventsExchange };
+                    var connectionConfigured = false;
+                    producerConfig.ConfigureRabbitMqConnection = factory =>
+                    {
+                        factory.RequestedHeartbeat = TimeSpan.FromSeconds(15);
+                        connectionConfigured = true;
+                    };
                     producerConfig.SendOnly();
                     using (var producer = RabbitEndpoint.Start(producerConfig))
                     {
+                        Assert(connectionConfigured, "RabbitMQ connection customization runs at startup");
                         using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                         using (var probe = connection.CreateModel())
                         {

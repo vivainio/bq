@@ -64,3 +64,16 @@ config.InputQueueArguments["x-message-ttl"] = 120_000;
 ```
 
 RabbitMQ requires a queue declaration to match existing topology. Coordinate argument changes with queue provisioning. Bq supplies the dead-letter exchange and routing key using `ErrorExchange` and the endpoint name, and binds the error queue configured in `Recoverability.ErrorQueue`.
+
+
+### Connection settings
+
+Use `config.ConfigureRabbitMqConnection` to customize the RabbitMQ .NET client’s connection factory during endpoint startup. Bq initializes it from the broker URI, invokes the hook, then applies async consumer dispatch, `MaxConcurrency`, and `NetworkRecoveryInterval` from the endpoint configuration.
+
+```csharp
+config.ConfigureRabbitMqConnection = factory =>
+{
+    factory.RequestedHeartbeat = TimeSpan.FromSeconds(30);
+    factory.RequestedConnectionTimeout = TimeSpan.FromSeconds(10);
+};
+```

@@ -50,13 +50,11 @@ namespace Bq.Messaging
             errorExchange = configuration.ErrorExchange;
             dispatchPollInterval = configuration.DispatchPollInterval;
             publisherConfirmTimeout = configuration.PublisherConfirmTimeout;
-            var factory = new ConnectionFactory
-            {
-                Uri = configuration.RabbitMqUri,
-                DispatchConsumersAsync = true,
-                ConsumerDispatchConcurrency = configuration.MaxConcurrency,
-                NetworkRecoveryInterval = configuration.NetworkRecoveryInterval
-            };
+            var factory = new ConnectionFactory { Uri = configuration.RabbitMqUri };
+            configuration.ConfigureRabbitMqConnection?.Invoke(factory);
+            factory.DispatchConsumersAsync = true;
+            factory.ConsumerDispatchConcurrency = configuration.MaxConcurrency;
+            factory.NetworkRecoveryInterval = configuration.NetworkRecoveryInterval;
             connection = factory.CreateConnection();
             try
             {
