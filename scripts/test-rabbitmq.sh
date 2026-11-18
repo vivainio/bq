@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 dotnet build Bq.Messaging.Tests/Bq.Messaging.Tests.csproj
 dotnet build Bq.Reference.Windsor/Bq.Reference.Windsor.csproj
 
+broker_image=${BQ_RABBITMQ_IMAGE:-docker.io/library/rabbitmq:3.13-management}
 test_dir=$(mktemp -d)
 container="bq-integration-${test_dir##*/}"
 watcher=""
@@ -29,7 +30,7 @@ trap cleanup EXIT
 
 podman run -d --name "$container" --user 0 --entrypoint rabbitmq-server \
     -e RABBITMQ_ERLANG_COOKIE=bq-local-integration \
-    -p 127.0.0.1::5672 docker.io/library/rabbitmq:3.13-management >/dev/null
+    -p 127.0.0.1::5672 -- "$broker_image" >/dev/null
 created=true
 address=$(podman port "$container" 5672/tcp)
 
