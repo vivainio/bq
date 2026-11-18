@@ -166,9 +166,11 @@ namespace Bq.Messaging.Tests
                     await session.DeleteSaga<OrderSaga>("s1", saga.Version);
                     session.Commit();
                 }
+                Assert((await store.GetDispatchBacklog()).Outgoing == 1, "only committed outgoing message is pending");
                 Assert((await store.NextOutgoing("test")).Id == "sent", "outbox commit and rollback");
                 await store.MarkDispatched("test", "sent");
                 Assert(await store.NextOutgoing("test") == null, "outbox dispatch");
+                Assert((await store.GetDispatchBacklog()).Outgoing == 0, "dispatched item leaves backlog");
                 Console.WriteLine("SQLite transaction and saga tests passed.");
             }
             finally { if (File.Exists(path)) File.Delete(path); }
@@ -339,6 +341,14 @@ namespace Bq.Messaging.Tests
             var successes = 0;
             var replayAllowed = false;
             var handoffAttempts = 0;
+            var outboxProbe = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            config.Handle(() => new Handler<Command>((message, context) =>
+                context.SendLocal(new LocalMessage { Text = message.Text })));
+            config.Handle(() => new Handler<LocalMessage>((message, context) =>
+            {
+                if (message.Text == "outbox probe") outboxProbe.TrySetResult(true);
+                return Task.CompletedTask;
+            }));
             var exhaustedAttempts = 0;
             string seenId = null, seenCorrelation = null, seenHeader = null;
             config.Handle(() => new Handler<RecoverCommand>((m, context) =>
@@ -406,6 +416,9 @@ namespace Bq.Messaging.Tests
                         await WaitFor(async () => (await endpoint.ListErrors()).Count == 1, "error retained while destination unavailable");
                         await Task.Delay(1500);
                         Assert(await store.NextRecovery(name) != null, "unroutable error remains pending");
+                        await endpoint.SendLocal(new Command { Text = "outbox probe" });
+                        await WaitFor(() => Task.FromResult(outboxProbe.Task.IsCompleted),
+                            "ordinary outbox dispatch while error queue is missing");
                         channel.QueueDeclare(errorName, true, false, false);
                         BasicGetResult restored = null;
                         await WaitFor(() => { restored = channel.BasicGet(errorName, true); return Task.FromResult(restored != null); }, "pending error delivered after destination restored");

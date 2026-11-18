@@ -53,6 +53,24 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             return cmd;
         }
         void CheckEndpoint(string name) { if (name != endpoint) throw new InvalidOperationException("Persistence endpoint does not match configured endpoint."); }
+        public async Task<DispatchBacklog> GetDispatchBacklog()
+        {
+            using (var connection = await Open().ConfigureAwait(false))
+            using (var command = Command(connection, null, @"SELECT
+    (SELECT COUNT(*) FROM bq_outbox WHERE endpoint=@e),
+    (SELECT COUNT(*) FROM bq_saga_timeout WHERE endpoint=@e AND due_ticks<=@now),
+    (SELECT COUNT(*) FROM bq_saga_timeout WHERE endpoint=@e AND due_ticks>@now),
+    (SELECT COUNT(*) FROM bq_recovery WHERE endpoint=@e AND dispatched=0 AND due_ticks<=@now),
+    (SELECT COUNT(*) FROM bq_recovery WHERE endpoint=@e AND dispatched=0 AND due_ticks>@now)",
+                "@e", endpoint, "@now", DateTime.UtcNow.Ticks))
+            using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
+            {
+                await reader.ReadAsync().ConfigureAwait(false);
+                return new DispatchBacklog(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2),
+                    reader.GetInt64(3), reader.GetInt64(4));
+            }
+        }
+
         public async Task<OutgoingMessage> NextOutgoing(string name)
         {
             CheckEndpoint(name);

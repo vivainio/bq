@@ -7,6 +7,7 @@ The current implementation supports:
 - Explicit endpoint and handler registration, command routing, SendLocal, event subscriptions, replies, and multiple handlers per message.
 - Scoped uniform sessions, configurable concurrency, and graceful endpoint shutdown.
 - SQLite-backed inbox deduplication, a transactional outbox, and explicit ADO.NET transactions shared with application data.
+- SQLite dispatch backlog counts, with separate polling for recovery and ordinary outbox messages.
 - Saga message correlation, persisted state, completion, and durable timeouts.
 - Configurable immediate and durable delayed retries, an error queue, retained failure details, and an API to inspect and replay failures.
 

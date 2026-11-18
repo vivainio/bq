@@ -65,7 +65,9 @@ namespace Bq.Messaging
                 var consumer = new AsyncEventingBasicConsumer(consumerChannel);
                 consumer.Received += OnReceived;
                 consumerTag = consumerChannel.BasicConsume(configuration.Name, false, consumer);
-                if (configuration.Persistence != null) dispatcher = Task.Run(() => DispatchOutbox(stopping.Token));
+                dispatcher = Task.WhenAll(
+                    Task.Run(() => DispatchPending(true, stopping.Token)),
+                    Task.Run(() => DispatchPending(false, stopping.Token)));
             }
             catch { connection.Dispose(); throw; }
         }
@@ -134,28 +136,35 @@ namespace Bq.Messaging
                 if (returned) throw new InvalidOperationException("Message was unroutable: " + message.RoutingKey);
             }
         }
-        async Task DispatchOutbox(CancellationToken cancellation)
+        async Task DispatchPending(bool recoveries, CancellationToken cancellation)
         {
             while (!cancellation.IsCancellationRequested)
             {
                 try
                 {
-                    var recovery = await ((IRecoveryPersistence)configuration.Persistence).NextRecovery(configuration.Name).ConfigureAwait(false);
-                    if (recovery != null)
+                    if (recoveries)
                     {
-                        PublishRecovery(recovery);
-                        await ((IRecoveryPersistence)configuration.Persistence).MarkRecoveryDispatched(configuration.Name, recovery.RecoveryId).ConfigureAwait(false);
-                        continue;
+                        var store = (IRecoveryPersistence)configuration.Persistence;
+                        var recovery = await store.NextRecovery(configuration.Name).ConfigureAwait(false);
+                        if (recovery != null)
+                        {
+                            PublishRecovery(recovery);
+                            await store.MarkRecoveryDispatched(configuration.Name, recovery.RecoveryId).ConfigureAwait(false);
+                            continue;
+                        }
                     }
-                    var message = await configuration.Persistence.NextOutgoing(configuration.Name).ConfigureAwait(false);
-                    if (message != null)
+                    else
                     {
-                        PublishPrepared(message);
-                        await configuration.Persistence.MarkDispatched(configuration.Name, message.Id).ConfigureAwait(false);
-                        continue;
+                        var message = await configuration.Persistence.NextOutgoing(configuration.Name).ConfigureAwait(false);
+                        if (message != null)
+                        {
+                            PublishPrepared(message);
+                            await configuration.Persistence.MarkDispatched(configuration.Name, message.Id).ConfigureAwait(false);
+                            continue;
+                        }
                     }
                 }
-                catch (Exception ex) { if (!cancellation.IsCancellationRequested) System.Diagnostics.Trace.TraceError("Outbox dispatch failed: {0}", ex); }
+                catch (Exception ex) { if (!cancellation.IsCancellationRequested) System.Diagnostics.Trace.TraceError("{0} dispatch failed: {1}", recoveries ? "Recovery" : "Outbox", ex); }
                 try { await Task.Delay(1000, cancellation).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
             }
