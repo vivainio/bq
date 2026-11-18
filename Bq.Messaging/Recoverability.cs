@@ -19,6 +19,8 @@ namespace Bq.Messaging
         public string MessageId { get; set; }
         public int Cycle { get; set; }
         public bool IsError { get; set; }
+        // True once persistence records the broker confirmation.
+        public bool Dispatched { get; set; }
         public string ErrorQueue { get; set; }
         public string ExceptionType { get; set; }
         public string ExceptionMessage { get; set; }

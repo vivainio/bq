@@ -147,9 +147,10 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             RecoveryId = r.GetString(0), MessageId = r.GetString(1), Cycle = Convert.ToInt32(r.GetValue(2)), IsError = Convert.ToInt32(r.GetValue(3)) != 0,
             ErrorQueue = r.IsDBNull(4) ? null : r.GetString(4), ExceptionType = r.IsDBNull(5) ? null : r.GetString(5),
             ExceptionMessage = r.IsDBNull(6) ? null : r.GetString(6), ExceptionDetail = r.IsDBNull(7) ? null : r.GetString(7),
-            FailedAtUtc = new DateTime(Convert.ToInt64(r.GetValue(8)), DateTimeKind.Utc), DueAtUtc = new DateTime(Convert.ToInt64(r.GetValue(9)), DateTimeKind.Utc), Payload = (byte[])r.GetValue(10)
+            FailedAtUtc = new DateTime(Convert.ToInt64(r.GetValue(8)), DateTimeKind.Utc), DueAtUtc = new DateTime(Convert.ToInt64(r.GetValue(9)), DateTimeKind.Utc), Payload = (byte[])r.GetValue(10),
+            Dispatched = Convert.ToInt32(r.GetValue(11)) != 0
         };
-        const string RecoveryColumns = "recovery_id,message_id,cycle,is_error,error_queue,exception_type,exception_message,exception_detail,failed_ticks,due_ticks,payload";
+        const string RecoveryColumns = "recovery_id,message_id,cycle,is_error,error_queue,exception_type,exception_message,exception_detail,failed_ticks,due_ticks,payload,dispatched";
         static DbCommand InsertRecovery(DbConnection c, DbTransaction tx, string endpoint, RecoveryRecord r) => Command(c, tx,
             "INSERT OR IGNORE INTO bq_recovery(endpoint,recovery_id,message_id,cycle,is_error,error_queue,exception_type,exception_message,exception_detail,failed_ticks,due_ticks,payload) VALUES(@e,@r,@id,@cycle,@error,@queue,@type,@message,@detail,@failed,@due,@payload)",
             "@e", endpoint, "@r", r.RecoveryId, "@id", r.MessageId, "@cycle", r.Cycle, "@error", r.IsError ? 1 : 0, "@queue", r.ErrorQueue,

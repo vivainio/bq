@@ -216,6 +216,9 @@ namespace Bq.Messaging.Tests
                 var firstPage = await store.ListErrors("test", 2);
                 Assert(firstPage.Count == 2 && firstPage[0].RecoveryId == "c" &&
                     firstPage[1].RecoveryId == "b", "errors with matching timestamps have stable order");
+                Assert(!firstPage[0].Dispatched, "error starts pending");
+                await store.MarkRecoveryDispatched("test", "c");
+                Assert((await store.GetError("test", "c")).Dispatched, "retained error shows recorded dispatch");
                 var secondPage = await store.ListErrors("test", 2, firstPage[1]);
                 Assert(secondPage.Count == 1 && secondPage[0].RecoveryId == "a",
                     "error cursor reaches remaining older records without overlap");
