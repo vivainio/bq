@@ -357,10 +357,17 @@ namespace Bq.Messaging.Tests
                             }
                             finally { queueOwner.QueueDelete(producerName); }
                         }
-                        await producer.PublishAt(new Event { Text = "event" }, DateTimeOffset.UtcNow.AddSeconds(1));
-                        Assert(await Within(gotEvent1.Task) == "event" && await Within(gotEvent2.Task) == "event",
-                            "send-only endpoint dispatches durable events");
+                        await producer.PublishAt(new Event { Text = "event" }, DateTimeOffset.UtcNow.AddSeconds(3));
                         await producer.StopAsync();
+                    }
+                    Assert((await producerStore.ListPendingDispatches(DispatchKind.ScheduledSend)).Count == 1 &&
+                        !gotEvent1.Task.IsCompleted && !gotEvent2.Task.IsCompleted,
+                        "scheduled event remains in the database after stopping the producer");
+                    using (var restartedProducer = RabbitEndpoint.Start(producerConfig))
+                    {
+                        Assert(await Within(gotEvent1.Task) == "event" && await Within(gotEvent2.Task) == "event",
+                            "scheduled event reaches both subscribers after producer restart");
+                        await restartedProducer.StopAsync();
                     }
                     await a.Send(new Failed());
                     Assert(await Within(gotCommand.Task) == "command", "command");
