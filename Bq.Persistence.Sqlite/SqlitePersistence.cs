@@ -83,13 +83,13 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             if (limit <= 0) throw new ArgumentOutOfRangeException(nameof(limit));
             var result = new System.Collections.Generic.List<PendingDispatch>();
             using (var connection = await Open().ConfigureAwait(false))
-            using (var command = Command(connection, null, @"SELECT id, kind, destination, due_ticks FROM (
-    SELECT id, 'Outbox' AS kind, routing_key AS destination, NULL AS due_ticks FROM bq_outbox WHERE endpoint=@e
+            using (var command = Command(connection, null, @"SELECT id, kind, destination, due_ticks, exchange_name FROM (
+    SELECT id, 'Outbox' AS kind, routing_key AS destination, NULL AS due_ticks, exchange_name FROM bq_outbox WHERE endpoint=@e
     UNION ALL
-    SELECT id, 'SagaTimeout', routing_key, due_ticks FROM bq_saga_timeout WHERE endpoint=@e
+    SELECT id, 'SagaTimeout', routing_key, due_ticks, exchange_name FROM bq_saga_timeout WHERE endpoint=@e
     UNION ALL
     SELECT message_id, CASE WHEN is_error=1 THEN 'Error' ELSE 'Recovery' END,
-        CASE WHEN is_error=1 THEN error_queue ELSE endpoint END, due_ticks
+        CASE WHEN is_error=1 THEN error_queue ELSE endpoint END, due_ticks, ''
         FROM bq_recovery WHERE endpoint=@e AND dispatched=0
 ) WHERE (@kind IS NULL OR kind=@kind)
 ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
@@ -101,7 +101,7 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
                     var due = reader.IsDBNull(3) ? (DateTime?)null : new DateTime(reader.GetInt64(3), DateTimeKind.Utc);
                     result.Add(new PendingDispatch(reader.GetString(0),
                         (DispatchKind)Enum.Parse(typeof(DispatchKind), reader.GetString(1)),
-                        reader.IsDBNull(2) ? null : reader.GetString(2), due));
+                        reader.GetString(4), reader.IsDBNull(2) ? null : reader.GetString(2), due));
                 }
             }
             return result;
