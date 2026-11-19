@@ -80,6 +80,7 @@ namespace Bq.Messaging
         public TimeSpan DispatchPollInterval { get; set; } = TimeSpan.FromSeconds(1);
         public TimeSpan NetworkRecoveryInterval { get; set; } = TimeSpan.FromSeconds(5);
         public TimeSpan PublisherConfirmTimeout { get; set; } = TimeSpan.FromSeconds(10);
+        public IncomingPipeline Incoming { get; } = new IncomingPipeline();
         public RecoverabilityOptions Recoverability { get; } = new RecoverabilityOptions();
         // Retained for existing applications.
         public int ImmediateRetries { get => Recoverability.ImmediateRetries; set => Recoverability.ImmediateRetries = value; }

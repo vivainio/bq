@@ -20,6 +20,7 @@ namespace Bq.Messaging
         static readonly MessagePackSerializerOptions SerializerOptions = MessagePackSerializerOptions.Standard
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly EndpointConfiguration configuration;
+        readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
         readonly Dictionary<Type, string> wireNames = new Dictionary<Type, string>();
         readonly Dictionary<string, Registration> receivers = new Dictionary<string, Registration>();
         readonly bool sendOnly;
@@ -47,6 +48,7 @@ namespace Bq.Messaging
         RabbitEndpoint(EndpointConfiguration configuration)
         {
             this.configuration = configuration;
+            incoming = configuration.Incoming.Build();
             var owners = new Dictionary<string, Type>();
             var types = configuration.ContractNames.Keys.Concat(configuration.Handlers.Values.Select(handler => handler.Type))
                 .Concat(configuration.Routes.Keys).Distinct();
@@ -465,7 +467,11 @@ namespace Bq.Messaging
                                 var previous = uniformScope.Value;
                                 var scope = new UniformScope(context);
                                 uniformScope.Value = scope;
-                                try { await registration.Invoke(message, context).ConfigureAwait(false); }
+                                try
+                                {
+                                    var incomingContext = new IncomingMessageContext(message, context);
+                                    await incoming(incomingContext, () => registration.Invoke(message, context)).ConfigureAwait(false);
+                                }
                                 finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; }
                             }
                             forceStop.Token.ThrowIfCancellationRequested();

@@ -523,6 +523,23 @@ namespace Bq.Messaging.Tests
             var replayAllowed = false;
             var handoffAttempts = 0;
             var outboxProbe = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            config.Incoming.Use(async (context, next) =>
+            {
+                if (context.Message is Command) context.Items["stage"] = "before handler";
+                await next();
+                if (context.Message is Command)
+                    Assert((string)context.Items["stage"] == "before commit", "before-commit callback runs within behavior scope");
+            });
+            config.Incoming.BeforeCommit((context, session) =>
+            {
+                if (context.Message is Command)
+                {
+                    Assert((string)context.Items["stage"] == "before handler", "behavior items available to callback");
+                    Assert(session.Transaction != null, "before-commit callback has active transaction");
+                    context.Items["stage"] = "before commit";
+                }
+                return Task.CompletedTask;
+            });
             config.Handle(() => new Handler<Command>((message, context) =>
                 context.SendLocal(new LocalMessage { Text = message.Text })));
             config.Handle(() => new Handler<LocalMessage>((message, context) =>
