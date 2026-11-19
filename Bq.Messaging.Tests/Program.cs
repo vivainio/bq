@@ -139,6 +139,7 @@ namespace Bq.Messaging.Tests
             await StalledDispatcherTest(new Uri(uri));
             await MigrationPipelineTests(new Uri(uri));
             await PhasedMigrationTests(new Uri(uri));
+            await OrderWorkflowEndToEndTest(new Uri(uri));
             await LifecycleTests.Run(new Uri(uri));
             await UniformSessionTests.Run(new Uri(uri), Sqlite);
             var outageDirectory = Environment.GetEnvironmentVariable("BQ_BROKER_OUTAGE_DIR");
