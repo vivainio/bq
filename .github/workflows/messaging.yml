@@ -12,6 +12,7 @@ on:
       - 'Bq.Extensions.CastleWindsor/**'
       - 'Bq.Reference.Windsor/**'
       - 'scripts/test-rabbitmq.sh'
+      - 'scripts/test-rabbit-sim.sh'
       - '.github/workflows/messaging.yml'
   pull_request:
     paths:
@@ -23,6 +24,7 @@ on:
       - 'Bq.Extensions.CastleWindsor/**'
       - 'Bq.Reference.Windsor/**'
       - 'scripts/test-rabbitmq.sh'
+      - 'scripts/test-rabbit-sim.sh'
       - '.github/workflows/messaging.yml'
   workflow_dispatch:
 
@@ -30,7 +32,28 @@ permissions:
   contents: read
 
 jobs:
-  integration:
+  simulator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install Mono and SQLite provider
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mono-devel libmono-sqlite4.0-cil
+      - name: Install rabbit-sim
+        run: python -m pip install --only-binary=:all: rabbit-sim==0.1.0
+      - name: Run messaging integration tests
+        run: bash scripts/test-rabbit-sim.sh
+
+  rabbitmq:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
