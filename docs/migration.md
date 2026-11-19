@@ -25,4 +25,4 @@ Run `bash scripts/test-rabbitmq.sh` to exercise the following cases with RabbitM
 | Recoverability and outages | Policies select immediate retry, delayed retry, or direct error routing. A retry gets a freshly deserialized message. Failed publications stay pending, and the critical-error hook reports a stalled dispatcher or sustained broker outage. |
 | Sagas and test doubles | Saga correlation, completion, and durable timeouts run through RabbitMQ. Transport-free tests capture messages and timeout requests with `Bq.Testing`. |
 
-The local fixtures use representative Bq endpoints. Production cutover still requires verification against the consuming application's contracts, topology, and database. The Oracle provider and shared EF6 transaction verification are deferred.
+The local fixtures use representative Bq endpoints. Production cutover still requires verification against the consuming application's contracts, topology, and database. The Oracle adapter accepts a host-supplied Devart or ODP.NET connection. Live Oracle and shared EF6 transaction verification require a database and the selected driver.

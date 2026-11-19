@@ -8,6 +8,7 @@
   <ItemGroup>
     <ProjectReference Include="../Bq.Messaging/Bq.Messaging.csproj" />
     <ProjectReference Include="../Bq.Testing/Bq.Testing.csproj" />
+    <ProjectReference Include="../Bq.Persistence.Oracle/Bq.Persistence.Oracle.csproj" />
     <ProjectReference Include="../Bq.Persistence.Sqlite/Bq.Persistence.Sqlite.csproj" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>

@@ -130,6 +130,7 @@ namespace Bq.Messaging.Tests
             Console.WriteLine("MessagePack tests passed on " + Environment.Version);
             await TestingSupportTests();
             await PersistenceTests();
+            await OraclePersistenceTests();
             var uri = Environment.GetEnvironmentVariable("BQ_RABBITMQ_URI");
             if (string.IsNullOrEmpty(uri)) { Console.WriteLine("RabbitMQ tests skipped: set BQ_RABBITMQ_URI."); return; }
             await BrokerTests(new Uri(uri));

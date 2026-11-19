@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>8.0</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Update="migrations/*.sql" Pack="true" PackagePath="migrations/%(Filename)%(Extension)" />
+    <ProjectReference Include="../Bq.Messaging/Bq.Messaging.csproj" />
+  </ItemGroup>
+</Project>
