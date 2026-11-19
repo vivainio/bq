@@ -149,6 +149,13 @@ namespace Bq.Messaging.Tests
         static async Task TestingSupportTests()
         {
             var sendOptions = new SendOptions();
+            sendOptions.GetExtensions().Set("operation", "checkout");
+            Assert(sendOptions.GetExtensions().Get<string>("operation") == "checkout" &&
+                !new SendOptions().GetExtensions().TryGet<string>("operation", out _),
+                "extension data belongs to one options instance");
+            var subscriptionOptions = new SubscribeOptions();
+            subscriptionOptions.GetExtensions().Set(42);
+            Assert(subscriptionOptions.GetExtensions().Get<int>() == 42, "subscription options expose the same extension API");
             Assert(sendOptions.GetDestination() == null && !sendOptions.IsRoutingToThisEndpoint() && sendOptions.GetMessageId() == null,
                 "unset send options report no explicit routing or identity");
             sendOptions.RouteToThisEndpoint();

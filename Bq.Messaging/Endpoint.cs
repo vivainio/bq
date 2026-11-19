@@ -13,8 +13,8 @@ namespace Bq.Messaging
         Task Unsubscribe(Type eventType, UnsubscribeOptions options);
     }
 
-    public sealed class SubscribeOptions { }
-    public sealed class UnsubscribeOptions { }
+    public sealed class SubscribeOptions : ExtendableOptions { }
+    public sealed class UnsubscribeOptions : ExtendableOptions { }
 
     public static class SubscriptionExtensions
     {

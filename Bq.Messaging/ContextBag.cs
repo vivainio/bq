@@ -8,6 +8,17 @@ namespace Bq.Messaging
         ContextBag Extensions { get; }
     }
 
+    public abstract class ExtendableOptions
+    {
+        internal ContextBag Extensions { get; } = new ContextBag();
+    }
+
+    public static class ExtendableOptionsExtensions
+    {
+        public static ContextBag GetExtensions(this ExtendableOptions options) =>
+            (options ?? throw new ArgumentNullException(nameof(options))).Extensions;
+    }
+
     public interface ReadOnlyContextBag
     {
         T Get<T>();

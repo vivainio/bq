@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 
 namespace Bq.Messaging
 {
-    public abstract class MessageOptions
+    public abstract class MessageOptions : ExtendableOptions
     {
         internal const string WireIdHeader = "x-bq-forwarded-message-id";
         internal const string ReplyAddressHeader = "x-bq-override-reply-to";
