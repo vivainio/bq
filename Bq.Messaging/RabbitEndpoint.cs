@@ -291,11 +291,11 @@ namespace Bq.Messaging
 
         Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
-            session.StoreTimeout(Prepare(message, eventsExchange, WireName(typeof(T)), correlationId, false, headers), dueUtc);
+            session.StoreTimeout(Prepare(message, eventsExchange, WireName(typeof(T)), correlationId, false, headers, deferred: true), dueUtc);
 
         Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
-            session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true, headers), dueUtc);
+            session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true, headers, deferred: true), dueUtc);
 
         public Task Send<T>(T message) => SendCore(message, null, null);
         public Task Send<T>(string destination, T message) => SendCore(message, null, RequireDestination(destination));
@@ -322,10 +322,12 @@ namespace Bq.Messaging
         internal Task PublishCore<T>(T message, string correlationId, IDictionary<string, object> headers = null) =>
             Dispatch(message, eventsExchange, WireName(typeof(T)), correlationId, false, headers);
         OutgoingMessage Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
-            IDictionary<string, object> headers = null)
+            IDictionary<string, object> headers = null, bool deferred = false)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
             var copiedHeaders = headers == null ? new Dictionary<string, object>() : new Dictionary<string, object>(headers);
+            copiedHeaders[MessageHeaders.TimeSent] = DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+            if (deferred) copiedHeaders[MessageHeaders.Deferred] = true;
             var scope = uniformScope.Value;
             var transport = new TransportMessage(WireName(typeof(T)),
                 MessagePackSerializer.Serialize(typeof(T), message, SerializerOptions), copiedHeaders,
@@ -519,7 +521,7 @@ namespace Bq.Messaging
                                 uniformScope.Value = scope;
                                 try
                                 {
-                                    var incomingContext = new IncomingMessageContext(message, context);
+                                    var incomingContext = new IncomingMessageContext(message, context, typeName, attempt, cycle);
                                     await incoming(incomingContext, () => registration.Invoke(message, context)).ConfigureAwait(false);
                                 }
                                 finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; }

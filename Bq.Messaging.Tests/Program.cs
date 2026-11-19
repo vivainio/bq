@@ -260,6 +260,17 @@ namespace Bq.Messaging.Tests
             var receiver = new EndpointConfiguration(receiverName, uri)
                 { Persistence = store, EventsExchange = eventsExchange, ErrorExchange = errorExchange };
             receiver.InputQueueArguments["x-message-ttl"] = 120000;
+            receiver.Incoming.Use((context, next) =>
+            {
+                if (context.Message is Command command && command.Text == "command")
+                {
+                    Assert(context.IsDeferred && !context.IsSagaTimeout, "scheduled command metadata");
+                    Assert(context.ContractName == typeof(Command).FullName, "incoming contract name");
+                    Assert(DateTimeOffset.TryParse(context.HandlerContext.GetHeader(MessageHeaders.TimeSent), out _),
+                        "scheduled send retains time sent");
+                }
+                return next();
+            });
             receiver.Handle(() => new Handler<Command>(async (m, c) =>
             {
                 if (m.Text == "command") Assert(c.Headers.ContainsKey("scheduled-option"), "scheduled send carries option headers");

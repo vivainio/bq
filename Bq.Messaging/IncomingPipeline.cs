@@ -6,13 +6,23 @@ namespace Bq.Messaging
 {
     public sealed class IncomingMessageContext
     {
-        internal IncomingMessageContext(object message, IMessageHandlerContext handlerContext)
+        internal IncomingMessageContext(object message, IMessageHandlerContext handlerContext,
+            string contractName, int immediateRetries, int delayedRetries)
         {
             Message = message;
             HandlerContext = handlerContext;
+            ContractName = contractName;
+            ImmediateRetries = immediateRetries;
+            DelayedRetries = delayedRetries;
         }
 
         public object Message { get; }
+        public string ContractName { get; }
+        public int ImmediateRetries { get; }
+        public int DelayedRetries { get; }
+        public bool IsSagaTimeout => Message is SagaTimeoutMessage;
+        public bool IsDeferred => IsSagaTimeout || DelayedRetries > 0 ||
+            (HandlerContext.Headers.TryGetValue(MessageHeaders.Deferred, out var value) && value is bool deferred && deferred);
         public IMessageHandlerContext HandlerContext { get; }
         public IDictionary<string, object> Items { get; } = new Dictionary<string, object>();
     }
