@@ -50,6 +50,15 @@ namespace Bq.Messaging
         Task<OutgoingMessage> NextOutgoing(string endpoint);
         Task MarkDispatched(string endpoint, string messageId);
     }
+    // A provider can hold a row lock from selection through broker confirmation.
+    // Return true after dispatch is recorded, or false when no row is ready.
+    // If publishing throws, release the lock and leave the row pending.
+    public interface ILockedDispatchPersistence
+    {
+        Task<bool> DispatchOutgoing(string endpoint, Action<OutgoingMessage> publish);
+        Task<bool> DispatchRecovery(string endpoint, Action<RecoveryRecord> publish);
+    }
+
     public sealed class SagaConcurrencyException : Exception
     {
         public SagaConcurrencyException(string message) : base(message) { }

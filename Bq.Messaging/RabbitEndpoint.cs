@@ -364,33 +364,40 @@ namespace Bq.Messaging
             {
                 try
                 {
-                    if (recoveries)
-                    {
-                        var store = (IRecoveryPersistence)configuration.Persistence;
-                        var recovery = await store.NextRecovery(configuration.Name).ConfigureAwait(false);
-                        if (recovery != null)
-                        {
-                            PublishRecovery(recovery);
-                            await store.MarkRecoveryDispatched(configuration.Name, recovery.RecoveryId).ConfigureAwait(false);
-                            continue;
-                        }
-                    }
-                    else
-                    {
-                        var message = await configuration.Persistence.NextOutgoing(configuration.Name).ConfigureAwait(false);
-                        if (message != null)
-                        {
-                            PublishPrepared(message);
-                            await configuration.Persistence.MarkDispatched(configuration.Name, message.Id).ConfigureAwait(false);
-                            continue;
-                        }
-                    }
+                    if (await DispatchNext(recoveries).ConfigureAwait(false)) continue;
                 }
                 catch (Exception ex) { if (!cancellation.IsCancellationRequested) System.Diagnostics.Trace.TraceError("{0} dispatch failed: {1}", recoveries ? "Recovery" : "Outbox", ex); }
                 try { await Task.Delay(dispatchPollInterval, cancellation).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
             }
         }
+        async Task<bool> DispatchNext(bool recoveries)
+        {
+            var persistence = configuration.Persistence;
+            var endpoint = configuration.Name;
+            if (persistence is ILockedDispatchPersistence locked)
+                return recoveries
+                    ? await locked.DispatchRecovery(endpoint, PublishRecovery).ConfigureAwait(false)
+                    : await locked.DispatchOutgoing(endpoint, PublishPrepared).ConfigureAwait(false);
+
+            if (recoveries)
+            {
+                var store = (IRecoveryPersistence)persistence;
+                var recovery = await store.NextRecovery(endpoint).ConfigureAwait(false);
+                if (recovery == null) return false;
+                PublishRecovery(recovery);
+                await store.MarkRecoveryDispatched(endpoint, recovery.RecoveryId).ConfigureAwait(false);
+            }
+            else
+            {
+                var message = await persistence.NextOutgoing(endpoint).ConfigureAwait(false);
+                if (message == null) return false;
+                PublishPrepared(message);
+                await persistence.MarkDispatched(endpoint, message.Id).ConfigureAwait(false);
+            }
+            return true;
+        }
+
         static string RecoveryId(string messageId, int cycle)
         {
             using (var sha = SHA256.Create())
