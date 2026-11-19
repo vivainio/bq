@@ -309,6 +309,39 @@ namespace Bq.Messaging
             IDictionary<string, object> headers = null) =>
             session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true, headers, deferred: true), dueUtc);
 
+        public Task Subscribe(Type eventType, SubscribeOptions options)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            return ChangeSubscription(eventType, subscribe: true);
+        }
+
+        public Task Unsubscribe(Type eventType, UnsubscribeOptions options)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            return ChangeSubscription(eventType, subscribe: false);
+        }
+
+        Task ChangeSubscription(Type eventType, bool subscribe)
+        {
+            if (eventType == null) throw new ArgumentNullException(nameof(eventType));
+            if (sendOnly) throw new InvalidOperationException("A send-only endpoint has no queue to subscribe.");
+            var names = receivers.Where(entry => entry.Value.Type == eventType).Select(entry => entry.Key).ToArray();
+            if (names.Length == 0)
+                throw new InvalidOperationException("No handler registered for " + eventType.FullName);
+
+            lock (consumerLock)
+            {
+                lock (lifecycleLock)
+                    if (shutdownRequested) throw new InvalidOperationException("Endpoint is stopping or stopped.");
+                foreach (var name in names)
+                {
+                    if (subscribe) consumerChannel.QueueBind(configuration.Name, eventsExchange, name);
+                    else consumerChannel.QueueUnbind(configuration.Name, eventsExchange, name);
+                }
+            }
+            return Task.CompletedTask;
+        }
+
         public Task Send<T>(T message, SendOptions options) => CreateUniformSession().Send(message, options);
         public Task Send(object message, SendOptions options) => Send<object>(message, options);
         public Task Send<T>(Action<T> initialize, SendOptions options) =>

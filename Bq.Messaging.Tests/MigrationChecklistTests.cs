@@ -12,6 +12,8 @@ using RabbitMQ.Client;
 
 namespace Bq.Messaging.Tests
 {
+    public sealed class RuntimeSubscriptionEvent { public int Value { get; set; } }
+
     public interface IPilotMessage { string Text { get; set; } }
     public interface IPilotEvent : IPilotMessage, IEvent { int Count { get; set; } }
 
@@ -271,6 +273,26 @@ namespace Bq.Messaging.Tests
                 return Task.CompletedTask;
             }));
 
+            const string runtimeContract = "migration.runtime";
+            const string runtimeAlias = "migration.runtime.previous";
+            const string barrierContract = "migration.runtime.barrier";
+            sender.RegisterMessageContract<RuntimeSubscriptionEvent>(runtimeContract);
+            receiver.RegisterMessageContract<RuntimeSubscriptionEvent>(runtimeContract, runtimeAlias);
+            receiver.RegisterMessageContract<WorkflowBarrier>(barrierContract);
+            var runtimeDeliveries = 0;
+            var subscribed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var barrier = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            receiver.Handle(() => new Handler<RuntimeSubscriptionEvent>((message, context) =>
+            {
+                if (Interlocked.Increment(ref runtimeDeliveries) == 2) subscribed.TrySetResult(true);
+                return Task.CompletedTask;
+            }));
+            receiver.Handle(() => new Handler<WorkflowBarrier>((message, context) =>
+            {
+                barrier.TrySetResult(true);
+                return Task.CompletedTask;
+            }));
+
             using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
             using (var channel = connection.CreateModel())
             {
@@ -310,6 +332,19 @@ namespace Bq.Messaging.Tests
                             "legacy subscriber receives the original XML");
                         Assert(channel.BasicGet(legacyQueue, true) == null && (await subscriber.ListErrors()).Count == 0,
                             "wire formats stay on their own exchanges during phased cutover");
+
+                        await subscriber.Subscribe<RuntimeSubscriptionEvent>();
+                        await subscriber.Subscribe(typeof(RuntimeSubscriptionEvent), new SubscribeOptions());
+                        await messaging.Publish(new RuntimeSubscriptionEvent { Value = 1 }, new PublishOptions());
+                        PublishSubscriptionProbe(channel, pilotExchange, runtimeAlias, runtimeAlias, new RuntimeSubscriptionEvent { Value = 2 });
+                        await Within(subscribed.Task);
+
+                        await subscriber.Unsubscribe(typeof(RuntimeSubscriptionEvent), new UnsubscribeOptions());
+                        await messaging.Publish(new RuntimeSubscriptionEvent { Value = 3 }, new PublishOptions());
+                        PublishSubscriptionProbe(channel, pilotExchange, runtimeAlias, runtimeAlias, new RuntimeSubscriptionEvent { Value = 4 });
+                        PublishSubscriptionProbe(channel, "", receiverName, barrierContract, new WorkflowBarrier());
+                        await Within(barrier.Task);
+                        Assert(Volatile.Read(ref runtimeDeliveries) == 2, "unsubscribe removes both the event contract and its alias");
                     }
                 }
                 finally
@@ -323,6 +358,17 @@ namespace Bq.Messaging.Tests
                 }
             }
             Console.WriteLine("Phased migration routing and wire isolation tests passed.");
+        }
+
+        static void PublishSubscriptionProbe<T>(IModel channel, string exchange, string route, string contract, T message)
+        {
+            var properties = channel.CreateBasicProperties();
+            properties.MessageId = Guid.NewGuid().ToString("N");
+            properties.ContentType = "application/x-msgpack";
+            properties.Type = contract;
+            var options = MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance);
+            channel.BasicPublish(exchange, route, properties, MessagePackSerializer.Serialize(message, options));
+            Assert(channel.WaitForConfirms(TimeSpan.FromSeconds(5)), "subscription test publication confirmed");
         }
 
         static void RegisterPilotHandler<T>(EndpointConfiguration sender, EndpointConfiguration receiver, IHandleMessages<T> handler)

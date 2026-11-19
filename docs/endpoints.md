@@ -92,3 +92,7 @@ config.ConfigureRabbitMqConnection = factory =>
     factory.RequestedConnectionTimeout = TimeSpan.FromSeconds(10);
 };
 ```
+
+## Change a subscription at runtime
+
+On a receiving endpoint with a registered handler, use `await endpoint.Subscribe<MyEvent>()` and `await endpoint.Unsubscribe<MyEvent>()`. Bq binds or unbinds the endpoint's RabbitMQ queue for the registered event name and receive aliases. Unsubscribing applies to future publications. Messages already in the queue can still reach the handler. A new endpoint instance applies any subscriptions declared in its startup configuration.

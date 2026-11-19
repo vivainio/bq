@@ -9,6 +9,26 @@ namespace Bq.Messaging
         Task Send<T>(Action<T> initialize, SendOptions options);
         Task Publish(object message, PublishOptions options);
         Task Publish<T>(Action<T> initialize, PublishOptions options);
+        Task Subscribe(Type eventType, SubscribeOptions options);
+        Task Unsubscribe(Type eventType, UnsubscribeOptions options);
+    }
+
+    public sealed class SubscribeOptions { }
+    public sealed class UnsubscribeOptions { }
+
+    public static class SubscriptionExtensions
+    {
+        public static Task Subscribe<T>(this IMessageSession session, SubscribeOptions options = null) =>
+            session.Subscribe(typeof(T), options ?? new SubscribeOptions());
+
+        public static Task Unsubscribe<T>(this IMessageSession session, UnsubscribeOptions options = null) =>
+            session.Unsubscribe(typeof(T), options ?? new UnsubscribeOptions());
+
+        public static Task Subscribe(this IMessageSession session, Type eventType) =>
+            session.Subscribe(eventType, new SubscribeOptions());
+
+        public static Task Unsubscribe(this IMessageSession session, Type eventType) =>
+            session.Unsubscribe(eventType, new UnsubscribeOptions());
     }
 
     public interface IEndpointInstance : IMessageSession, IDisposable

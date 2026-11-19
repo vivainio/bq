@@ -12,6 +12,23 @@ The last command also exercises command delivery, replies, event fan-out, saga t
 podman run -d --name bq-rabbitmq -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672 docker.io/library/rabbitmq:3.13-management
 ```
 
+## Run against rabbitsim
+
+If you have `rabbitsim` available locally, start it on a loopback port and point the messaging test executable at it.
+
+```sh
+~/r/rabbitsim/target/debug/rabbitsim --port 5679
+```
+
+In another terminal, build and run the tests.
+
+```sh
+dotnet build Bq.Messaging.Tests/Bq.Messaging.Tests.csproj
+BQ_RABBITMQ_URI=amqp://guest:guest@127.0.0.1:5679/ mono Bq.Messaging.Tests/bin/Debug/net472/Bq.Messaging.Tests.exe
+```
+
+The simulator keeps broker state in memory. Use the RabbitMQ runner below for the broker restart case.
+
 ## Cross-endpoint workflow
 
 The [order workflow tutorial](order-workflow.md) explains the scenario. The test uses three endpoints with separate SQLite databases and one RabbitMQ broker. It checks that intake commits an order with its command, fulfillment runs a saga and durable timeout, and a downstream handler rolls back and retries after an endpoint restart. It also redelivers both the original event and its successful retry to verify that the workflow completes once.
