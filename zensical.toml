@@ -20,6 +20,7 @@ nav = [
   ] },
   { "Examples and development" = [
     { "Castle Windsor example" = "windsor.md" },
+    { "Phased NServiceBus migration" = "migration.md" },
     { "Integration tests" = "testing.md" },
     { "Building this book" = "documentation.md" },
   ] },
