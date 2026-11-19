@@ -48,6 +48,12 @@ namespace Bq.Messaging.Tests
         }
     }
 
+    public sealed class UnexpectedPilotBehavior : Behavior<IIncomingLogicalMessageContext>
+    {
+        public override Task Invoke(IIncomingLogicalMessageContext context, Func<Task> next) =>
+            throw new InvalidOperationException("A replaced or removed behavior ran.");
+    }
+
     partial class Program
     {
         static async Task MigrationPipelineTests(Uri uri)
@@ -384,8 +390,17 @@ namespace Bq.Messaging.Tests
             var sender = new EndpointConfiguration(senderName, uri) { Persistence = senderStore, EventsExchange = pilotExchange };
             sender.SendOnly();
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
-            receiver.Pipeline.Register(typeof(ObservePilotEvent), "Inspect the declared event contract");
+            receiver.Pipeline.Register("first-observer", typeof(UnexpectedPilotBehavior), "Replace before startup");
+            receiver.Pipeline.Register("removed-observer", new UnexpectedPilotBehavior(), "Remove before startup");
+            receiver.Pipeline.Remove("removed-observer");
+            receiver.Incoming.Use((context, next) =>
+            {
+                if (context.MessageType == typeof(IPilotEvent))
+                    Assert(context.Extensions.Get<int>("pilot-behaviors") == 1, "replacement retains its pipeline position");
+                return next();
+            });
             receiver.Pipeline.Register("second-observer", new ObservePilotEvent(), "Verify registration by instance");
+            receiver.Pipeline.Replace("first-observer", typeof(ObservePilotEvent), "Inspect the declared event contract");
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             receiver.Handle(() => new Handler<IPilotEvent>((message, context) =>

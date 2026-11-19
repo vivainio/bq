@@ -49,20 +49,16 @@ namespace Bq.Messaging
     public sealed class PipelineSettings
     {
         readonly IncomingPipeline incoming;
-        readonly HashSet<string> stepIds = new HashSet<string>(StringComparer.Ordinal);
+        readonly Dictionary<string, Func<IncomingMessageContext, Func<Task>, Task>> steps =
+            new Dictionary<string, Func<IncomingMessageContext, Func<Task>, Task>>(StringComparer.Ordinal);
 
         internal PipelineSettings(IncomingPipeline incoming) { this.incoming = incoming; }
 
         public void Register(Type behavior, string description) =>
             Register(TypeName(behavior), behavior, description);
 
-        public void Register(string stepId, Type behavior, string description)
-        {
-            TypeName(behavior);
-            if (behavior.IsAbstract || !typeof(IBehavior).IsAssignableFrom(behavior))
-                throw new ArgumentException("A concrete pipeline behavior is required.", nameof(behavior));
-            Register(stepId, (IBehavior)Activator.CreateInstance(behavior), description);
-        }
+        public void Register(string stepId, Type behavior, string description) =>
+            Register(stepId, CreateBehavior(behavior), description);
 
         public void Register<T>(T behavior, string description) where T : IBehavior =>
             Register(TypeName(behavior?.GetType()), behavior, description);
@@ -70,6 +66,46 @@ namespace Bq.Messaging
         public void Register<T>(string stepId, T behavior, string description) where T : IBehavior
         {
             if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
+            var invoke = Adapt(behavior);
+            if (steps.ContainsKey(stepId)) throw new InvalidOperationException("A pipeline step already uses ID " + stepId);
+            steps.Add(stepId, invoke);
+            incoming.Use(invoke);
+        }
+
+        public void Replace(string stepId, Type newBehavior, string description = null) =>
+            Replace(stepId, CreateBehavior(newBehavior), description);
+
+        public void Replace<T>(string stepId, T newBehavior, string description = null) where T : IBehavior
+        {
+            var current = FindStep(stepId);
+            var replacement = Adapt(newBehavior);
+            incoming.Replace(current, replacement);
+            steps[stepId] = replacement;
+        }
+
+        public void Remove(string stepId)
+        {
+            incoming.Remove(FindStep(stepId));
+            steps.Remove(stepId);
+        }
+
+        Func<IncomingMessageContext, Func<Task>, Task> FindStep(string stepId)
+        {
+            if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
+            if (!steps.TryGetValue(stepId, out var invoke)) throw new InvalidOperationException("No pipeline step uses ID " + stepId);
+            return invoke;
+        }
+
+        static IBehavior CreateBehavior(Type behavior)
+        {
+            if (behavior == null) throw new ArgumentNullException(nameof(behavior));
+            if (behavior.IsAbstract || !typeof(IBehavior).IsAssignableFrom(behavior))
+                throw new ArgumentException("A concrete pipeline behavior is required.", nameof(behavior));
+            return (IBehavior)Activator.CreateInstance(behavior);
+        }
+
+        static Func<IncomingMessageContext, Func<Task>, Task> Adapt(IBehavior behavior)
+        {
             if (behavior == null) throw new ArgumentNullException(nameof(behavior));
             Func<IncomingMessageContext, Func<Task>, Task> invoke;
             if (behavior is IBehavior<IncomingMessageContext, IncomingMessageContext> native)
@@ -82,8 +118,7 @@ namespace Bq.Messaging
                 };
             else
                 throw new NotSupportedException("Register an incoming logical message behavior or a Bq incoming behavior.");
-            if (!stepIds.Add(stepId)) throw new InvalidOperationException("A pipeline step already uses ID " + stepId);
-            incoming.Use(invoke);
+            return invoke;
         }
 
         static string TypeName(Type behavior) =>

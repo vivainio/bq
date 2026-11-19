@@ -51,6 +51,12 @@ namespace Bq.Messaging
         public void Use(Func<IncomingMessageContext, Func<Task>, Task> behavior) =>
             behaviors.Add(behavior ?? throw new ArgumentNullException(nameof(behavior)));
 
+        internal void Replace(Func<IncomingMessageContext, Func<Task>, Task> current,
+            Func<IncomingMessageContext, Func<Task>, Task> replacement) =>
+            behaviors[behaviors.IndexOf(current)] = replacement;
+
+        internal void Remove(Func<IncomingMessageContext, Func<Task>, Task> behavior) => behaviors.Remove(behavior);
+
         public void BeforeCommit(Func<IncomingMessageContext, IPersistenceSession, Task> callback) =>
             beforeCommit.Add(callback ?? throw new ArgumentNullException(nameof(callback)));
 
