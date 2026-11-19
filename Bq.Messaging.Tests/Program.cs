@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using System.Threading;
 using System.Data.Common;
 using System.IO;
+using System.Linq;
 using Bq.Persistence.Sqlite;
 using Bq.Messaging;
 using Bq.Testing;
@@ -55,16 +56,40 @@ namespace Bq.Messaging.Tests
         public Handler(Func<T, IMessageHandlerContext, Task> action) { this.action = action; }
         public Task Handle(T value, IMessageHandlerContext context) => action(value, context);
     }
-    class FaultPersistence : IPersistenceProvider, IRecoveryPersistence
+    class FaultPersistence : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence
     {
         readonly SqlitePersistence inner;
         public int FailNextStore;
         public FaultPersistence(SqlitePersistence inner) { this.inner = inner; }
         public async Task<IPersistenceSession> OpenSession() => new FaultSession(await inner.OpenSession(), this);
-        public Task<OutgoingMessage> NextOutgoing(string endpoint) => inner.NextOutgoing(endpoint);
-        public Task MarkDispatched(string endpoint, string id) => inner.MarkDispatched(endpoint, id);
-        public Task<RecoveryRecord> NextRecovery(string endpoint) => inner.NextRecovery(endpoint);
-        public Task MarkRecoveryDispatched(string endpoint, string id) => inner.MarkRecoveryDispatched(endpoint, id);
+        Task<OutgoingMessage> IPersistenceProvider.NextOutgoing(string endpoint) =>
+            throw new InvalidOperationException("Expected the provider-controlled outgoing dispatch path.");
+        Task IPersistenceProvider.MarkDispatched(string endpoint, string id) =>
+            throw new InvalidOperationException("Expected the provider to record outgoing dispatch.");
+        Task<RecoveryRecord> IRecoveryPersistence.NextRecovery(string endpoint) =>
+            throw new InvalidOperationException("Expected the provider-controlled recovery dispatch path.");
+        Task IRecoveryPersistence.MarkRecoveryDispatched(string endpoint, string id) =>
+            throw new InvalidOperationException("Expected the provider to record recovery dispatch.");
+
+        // Exercise the endpoint contract with SQLite and a single dispatcher per stream.
+        public async Task<bool> DispatchOutgoing(string endpoint, Action<OutgoingMessage> publish)
+        {
+            var message = await inner.NextOutgoing(endpoint);
+            if (message == null) return false;
+            publish(message);
+            await inner.MarkDispatched(endpoint, message.Id);
+            return true;
+        }
+
+        public async Task<bool> DispatchRecovery(string endpoint, Action<RecoveryRecord> publish)
+        {
+            var record = await inner.NextRecovery(endpoint);
+            if (record == null) return false;
+            publish(record);
+            await inner.MarkRecoveryDispatched(endpoint, record.RecoveryId);
+            return true;
+        }
+
         public Task<RecoveryRecord> GetError(string endpoint, string id) => inner.GetError(endpoint, id);
         public Task<System.Collections.Generic.IReadOnlyList<RecoveryRecord>> ListErrors(string endpoint, int limit) => inner.ListErrors(endpoint, limit);
         public Task<bool> ReplayError(string endpoint, string id, RecoveryRecord record) => inner.ReplayError(endpoint, id, record);
@@ -737,6 +762,8 @@ namespace Bq.Messaging.Tests
                         BasicGetResult restored = null;
                         await WaitFor(() => { restored = channel.BasicGet(errorName, true); return Task.FromResult(restored != null); }, "pending error delivered after destination restored");
                         Assert(restored.BasicProperties.MessageId == missingError.MessageId, "restored error retains identity");
+                        await WaitFor(async () => (await endpoint.ListErrors()).Single().Dispatched,
+                            "provider records dispatch after the broker accepts the recovery message");
                         var exhausted = channel.CreateBasicProperties(); exhausted.MessageId = "exhaust-" + suffix; exhausted.Type = typeof(RecoverCommand).FullName; exhausted.ContentType = "application/x-msgpack";
                         channel.BasicPublish("", name, exhausted, MessagePackSerializer.Serialize(new RecoverCommand { Text = "exhaust" }, options));
                         await WaitFor(async () => (await endpoint.ListErrors()).Count == 2, "delayed retries exhaust even when the classifier throws");
