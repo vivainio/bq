@@ -707,6 +707,15 @@ namespace Bq.Messaging
                 if (string.IsNullOrEmpty(currentId)) { currentId = Guid.NewGuid().ToString("N"); envelope.MessageId = currentId; isError = true; }
                 RecoveryWire.SetFailure(envelope, failure, cycle, configuration.Name);
                 if (!isError) RecoveryWire.SetCycle(envelope, checked(cycle + 1));
+                else if (options.CustomizeErrorHeaders != null)
+                {
+                    try { RecoveryWire.CustomizeHeaders(envelope, options.CustomizeErrorHeaders); }
+                    catch (Exception customizationFailure)
+                    {
+                        System.Diagnostics.Trace.TraceError("Error header customization failed for message {0}: {1}",
+                            currentId, customizationFailure);
+                    }
+                }
                 var now = DateTime.UtcNow;
                 var record = new RecoveryRecord { RecoveryId = RecoveryId(currentId, cycle), MessageId = currentId, Cycle = cycle,
                     IsError = isError, ErrorQueue = action.ErrorQueue ?? options.ErrorQueue ?? configuration.Name + ".error", ExceptionType = failure.GetType().FullName,

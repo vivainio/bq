@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 
 namespace Bq.Messaging
@@ -33,6 +34,13 @@ namespace Bq.Messaging
     public sealed class RetryFailedSettings
     {
         internal Func<FailedMessage, Task> Notification { get; private set; }
+        internal Action<Dictionary<string, string>> CustomizeHeaders { get; private set; }
+
+        public RetryFailedSettings HeaderCustomization(Action<Dictionary<string, string>> customization)
+        {
+            CustomizeHeaders = customization ?? throw new ArgumentNullException(nameof(customization));
+            return this;
+        }
 
         public RetryFailedSettings OnMessageSentToErrorQueue(Func<FailedMessage, Task> notificationCallback)
         {

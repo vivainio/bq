@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using MessagePack;
 using MessagePack.Resolvers;
@@ -99,6 +100,19 @@ namespace Bq.Messaging
         public static void SetOriginalId(RecoveryEnvelope envelope, string originalId)
         {
             var headers = Headers(envelope); headers[OriginalIdHeader] = originalId; headers[CycleHeader] = 0; SetHeaders(envelope, headers);
+        }
+        public static void CustomizeHeaders(RecoveryEnvelope envelope, Action<Dictionary<string, string>> customize)
+        {
+            var headers = Headers(envelope);
+            var original = MessageHeaders.AsText(headers);
+            var changed = original.ToDictionary(header => header.Key, header => header.Value, StringComparer.Ordinal);
+            customize(changed);
+            foreach (var key in original.Keys)
+                if (!changed.ContainsKey(key)) headers.Remove(key);
+            foreach (var header in changed)
+                if (!original.TryGetValue(header.Key, out var value) || value != header.Value)
+                    headers[header.Key] = header.Value;
+            SetHeaders(envelope, headers);
         }
         public static void Apply(RecoveryEnvelope e, IBasicProperties p)
         {

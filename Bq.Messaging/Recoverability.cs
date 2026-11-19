@@ -15,6 +15,7 @@ namespace Bq.Messaging
         internal Func<ImmediateRetryMessage, Task> ImmediateRetryNotification { get; private set; }
         internal Func<DelayedRetryMessage, Task> DelayedRetryNotification { get; private set; }
         internal Func<FailedMessage, Task> ErrorQueueNotification { get; private set; }
+        internal Action<Dictionary<string, string>> CustomizeErrorHeaders { get; private set; }
 
         internal HashSet<Type> UnrecoverableExceptionTypes { get; } = new HashSet<Type>();
 
@@ -42,6 +43,7 @@ namespace Bq.Messaging
             var settings = new RetryFailedSettings();
             customizations(settings);
             ErrorQueueNotification = settings.Notification ?? ErrorQueueNotification;
+            CustomizeErrorHeaders = settings.CustomizeHeaders ?? CustomizeErrorHeaders;
             return this;
         }
 

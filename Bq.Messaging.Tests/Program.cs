@@ -692,6 +692,11 @@ namespace Bq.Messaging.Tests
             var delayedNotifications = 0;
             var failedNotification = new TaskCompletionSource<FailedMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
             config.Recoverability()
+                .Failed(failed => failed.HeaderCustomization(headers =>
+                {
+                    headers.Remove("remove-on-error");
+                    headers["error-owner"] = "operations";
+                }))
                 .Failed(failed => failed.OnMessageSentToErrorQueue(message =>
                 {
                     if (message.Exception.Message != "permanent failure") return Task.CompletedTask;
@@ -834,7 +839,11 @@ namespace Bq.Messaging.Tests
                         fatalProps.MessageId = "fatal-" + suffix; fatalProps.Type = typeof(RecoverCommand).FullName; fatalProps.ContentType = "application/x-msgpack";
                         var protectedBody = MessagePackSerializer.Serialize(new RecoverCommand { Text = "fatal" }, options);
                         protectedBody[0] ^= 0xff;
-                        fatalProps.Headers = new System.Collections.Generic.Dictionary<string, object> { ["protected"] = true };
+                        fatalProps.Headers = new System.Collections.Generic.Dictionary<string, object>
+                        {
+                            ["protected"] = true,
+                            ["remove-on-error"] = "original"
+                        };
                         channel.BasicPublish("", name, fatalProps, protectedBody);
                         await WaitFor(async () => (await endpoint.ListErrors()).Count == 1, "error recorded");
                         var errors = await endpoint.ListErrors();
@@ -848,8 +857,13 @@ namespace Bq.Messaging.Tests
                             (string)failedMessage.Exception.Data["ExceptionType"] == typeof(FatalFailureException).FullName,
                             "error queue notification carries the published message and persisted failure");
                         Assert(error.BasicProperties.MessageId == fatalProps.MessageId, "error queue identity");
-                        Assert(error.BasicProperties.Headers.ContainsKey("protected") && error.Body.Span[0] == protectedBody[0],
+                        Assert(error.BasicProperties.Headers["protected"] is bool protectedHeader && protectedHeader &&
+                            error.Body.Span[0] == protectedBody[0],
                             "recovery preserves the original wire body and headers");
+                        Assert(failedMessage.Headers["error-owner"] == "operations" &&
+                            System.Text.Encoding.UTF8.GetString((byte[])error.BasicProperties.Headers["error-owner"]) == "operations" &&
+                            !error.BasicProperties.Headers.ContainsKey("remove-on-error"),
+                            "error header customization is persisted and published");
                         Assert(error.BasicProperties.Headers.ContainsKey("x-bq-failure-detail"), "error queue failure metadata");
                         replayAllowed = true;
                         Assert(await endpoint.ReplayError(errors[0].RecoveryId), "error replay scheduled");
