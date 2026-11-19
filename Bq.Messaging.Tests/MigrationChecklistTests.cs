@@ -17,6 +17,19 @@ namespace Bq.Messaging.Tests
     public interface IPilotMessage { string Text { get; set; } }
     public interface IPilotEvent : IPilotMessage { int Count { get; set; } }
 
+    public sealed class ObservePilotEvent : Behavior<IIncomingLogicalMessageContext>
+    {
+        public override Task Invoke(IIncomingLogicalMessageContext context, Func<Task> next)
+        {
+            if (context.Message.MessageType == typeof(IPilotEvent) && context.Message.Instance is IPilotEvent)
+            {
+                context.Extensions.TryGet<int>("pilot-behaviors", out var count);
+                context.Extensions.Set("pilot-behaviors", count + 1);
+            }
+            return next();
+        }
+    }
+
     partial class Program
     {
         static async Task MigrationPipelineTests(Uri uri)
@@ -335,12 +348,15 @@ namespace Bq.Messaging.Tests
             var sender = new EndpointConfiguration(senderName, uri) { Persistence = senderStore, EventsExchange = pilotExchange };
             sender.SendOnly();
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
+            receiver.Pipeline.Register(typeof(ObservePilotEvent), "Inspect the declared event contract");
+            receiver.Pipeline.Register("second-observer", new ObservePilotEvent(), "Verify registration by instance");
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             receiver.Handle(() => new Handler<IPilotEvent>((message, context) =>
             {
                 Assert(context.MessageHeaders["migration-group"] == "first", "publish option reaches the migrated subscriber");
                 Assert(message.Count == 7, "interface event properties round-trip through MessagePack");
+                Assert(context.Extensions.Get<int>("pilot-behaviors") == 2, "registered logical behaviors see the declared interface contract");
                 received.TrySetResult(message.Text);
                 return Task.CompletedTask;
             }));

@@ -91,6 +91,7 @@ namespace Bq.Messaging
             if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("An endpoint name is required.", nameof(name));
             Name = name;
             RabbitMqUri = rabbitMqUri ?? throw new ArgumentNullException(nameof(rabbitMqUri));
+            Pipeline = new PipelineSettings(Incoming);
         }
         public string Name { get; }
         public Uri RabbitMqUri { get; }
@@ -113,6 +114,7 @@ namespace Bq.Messaging
         public Action<TransportMessage> MutateIncoming { get; set; }
         public Action<TransportMessage> MutateOutgoing { get; set; }
         public IncomingPipeline Incoming { get; } = new IncomingPipeline();
+        public PipelineSettings Pipeline { get; }
         public RecoverabilityOptions Recoverability { get; } = new RecoverabilityOptions();
         // Retained for existing applications.
         public int ImmediateRetries { get => Recoverability.ImmediateRetries; set => Recoverability.ImmediateRetries = value; }

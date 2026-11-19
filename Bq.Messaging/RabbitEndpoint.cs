@@ -606,7 +606,7 @@ namespace Bq.Messaging
                                 uniformScope.Value = scope;
                                 try
                                 {
-                                    var incomingContext = new IncomingMessageContext(message, context, typeName, attempt, cycle);
+                                    var incomingContext = new IncomingMessageContext(message, context, registration.Type, typeName, attempt, cycle);
                                     await incoming(incomingContext, () => registration.Invoke(message, context)).ConfigureAwait(false);
                                 }
                                 finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; }

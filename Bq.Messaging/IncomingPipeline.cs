@@ -6,12 +6,13 @@ using System.Threading.Tasks;
 
 namespace Bq.Messaging
 {
-    public sealed class IncomingMessageContext : IExtendable
+    public sealed class IncomingMessageContext : IBehaviorContext
     {
         internal IncomingMessageContext(object message, IMessageHandlerContext handlerContext,
-            string contractName, int immediateRetries, int delayedRetries)
+            Type messageType, string contractName, int immediateRetries, int delayedRetries)
         {
             Message = message;
+            MessageType = messageType;
             HandlerContext = handlerContext;
             ContractName = contractName;
             ImmediateRetries = immediateRetries;
@@ -19,6 +20,7 @@ namespace Bq.Messaging
         }
 
         public object Message { get; }
+        public Type MessageType { get; }
         public string ContractName { get; }
         public int ImmediateRetries { get; }
         public int DelayedRetries { get; }
