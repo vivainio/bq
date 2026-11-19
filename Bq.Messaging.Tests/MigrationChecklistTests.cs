@@ -14,6 +14,14 @@ namespace Bq.Messaging.Tests
 {
     public sealed class RuntimeSubscriptionEvent { public int Value { get; set; } }
 
+    sealed class PilotMessageConvention : IMessageConvention
+    {
+        public string Name => nameof(PilotMessageConvention);
+        public bool IsCommandType(Type type) => type == typeof(Command);
+        public bool IsEventType(Type type) => type == typeof(IPilotEvent);
+        public bool IsMessageType(Type type) => type == typeof(WorkflowBarrier);
+    }
+
     public interface IPilotMessage { string Text { get; set; } }
     public interface IPilotEvent : IPilotMessage { int Count { get; set; } }
     public sealed class ReplacementPilotEvent : IPilotEvent
@@ -414,7 +422,9 @@ namespace Bq.Messaging.Tests
                 received.TrySetResult(message.Text);
                 return Task.CompletedTask;
             }));
-            sender.Conventions().DefiningCommandsAs(type => type == typeof(Command));
+            var senderConventions = sender.Conventions().Add(new PilotMessageConvention()).Conventions;
+            Assert(senderConventions.IsMessageType(typeof(WorkflowBarrier)) && senderConventions.IsMessageType(typeof(Command)),
+                "custom message and command conventions classify contracts");
             if (sender.Conventions().Conventions.IsCommandType(typeof(Command))) sender.Route(typeof(Command), receiverName);
             receiver.Handle(() => new Handler<Command>((message, context) =>
             {
@@ -436,7 +446,7 @@ namespace Bq.Messaging.Tests
                 if (Interlocked.Increment(ref runtimeDeliveries) == 2) subscribed.TrySetResult(true);
                 return Task.CompletedTask;
             }), subscribe: false);
-            receiver.Conventions().DefiningEventsAs(type => type == typeof(IPilotEvent) || type == typeof(RuntimeSubscriptionEvent));
+            receiver.Conventions().DefiningEventsAs(type => type == typeof(RuntimeSubscriptionEvent)).Add(new PilotMessageConvention());
             receiver.Handle(() => new Handler<WorkflowBarrier>((message, context) =>
             {
                 barrier.TrySetResult(true);
