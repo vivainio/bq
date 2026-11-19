@@ -8,12 +8,13 @@ namespace Bq.Messaging
 {
     public sealed class IncomingMessageContext : IBehaviorContext
     {
-        internal IncomingMessageContext(object message, IMessageHandlerContext handlerContext,
+        internal IncomingMessageContext(object message, RabbitEndpoint.HandlerContext handlerContext,
             Type messageType, string contractName, int immediateRetries, int delayedRetries)
         {
             Message = message;
             MessageType = messageType;
             HandlerContext = handlerContext;
+            LogicalHeaders = handlerContext.LogicalHeaders;
             ContractName = contractName;
             ImmediateRetries = immediateRetries;
             DelayedRetries = delayedRetries;
@@ -35,6 +36,7 @@ namespace Bq.Messaging
         public bool IsDeferred => IsSagaTimeout || DelayedRetries > 0 ||
             (HandlerContext.Headers.TryGetValue(MessageHeaders.Deferred, out var value) && value is bool deferred && deferred);
         public IMessageHandlerContext HandlerContext { get; }
+        internal Dictionary<string, string> LogicalHeaders { get; }
         public ContextBag Extensions => HandlerContext.Extensions;
         internal ExceptionDispatchInfo DownstreamFailure { get; set; }
         internal bool MessageHandled { get; set; }

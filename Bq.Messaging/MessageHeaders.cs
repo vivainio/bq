@@ -11,7 +11,10 @@ namespace Bq.Messaging
         public const string TimeSent = "x-bq-time-sent";
         public const string Deferred = "x-bq-deferred";
 
-        internal static IReadOnlyDictionary<string, string> AsText(IEnumerable<KeyValuePair<string, object>> headers)
+        internal static IReadOnlyDictionary<string, string> AsText(IEnumerable<KeyValuePair<string, object>> headers) =>
+            new ReadOnlyDictionary<string, string>(ToTextDictionary(headers));
+
+        internal static Dictionary<string, string> ToTextDictionary(IEnumerable<KeyValuePair<string, object>> headers)
         {
             var result = new Dictionary<string, string>();
             foreach (var header in headers)
@@ -19,7 +22,7 @@ namespace Bq.Messaging
                 var value = AsText(header.Value);
                 if (value != null) result.Add(header.Key, value);
             }
-            return new ReadOnlyDictionary<string, string>(result);
+            return result;
         }
 
         static string AsText(object value)

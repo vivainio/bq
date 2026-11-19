@@ -32,12 +32,13 @@ namespace Bq.Messaging.Tests
                 context.Extensions.Set("pilot-behaviors", count + 1);
                 if (count == 0)
                 {
+                    context.Headers["migration-group"] = "observed";
                     context.UpdateMessageInstance(new ReplacementPilotEvent { Text = pilot.Text + " observed", Count = pilot.Count });
                     var options = new ReplyOptions();
                     options.SetDestination(context.GetHeader("migration-reply"));
                     await context.Reply<Response>(response => response.Text = context.MessageId, options);
                 }
-                else if (!(context.Message.Instance is ReplacementPilotEvent))
+                else if (!(context.Message.Instance is ReplacementPilotEvent) || context.Headers["migration-group"] != "observed")
                 {
                     throw new InvalidOperationException("The next behavior must see the replacement instance.");
                 }
@@ -405,7 +406,9 @@ namespace Bq.Messaging.Tests
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             receiver.Handle(() => new Handler<IPilotEvent>((message, context) =>
             {
-                Assert(context.MessageHeaders["migration-group"] == "first", "publish option reaches the migrated subscriber");
+                Assert(context.MessageHeaders["migration-group"] == "observed" &&
+                    System.Text.Encoding.UTF8.GetString((byte[])context.Headers["migration-group"]) == "first",
+                    "logical header edits reach the handler while raw AMQP headers retain the received value");
                 Assert(message.Count == 7, "interface event properties round-trip through MessagePack");
                 Assert(context.Extensions.Get<int>("pilot-behaviors") == 2, "registered logical behaviors see the declared interface contract");
                 received.TrySetResult(message.Text);

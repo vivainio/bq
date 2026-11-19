@@ -10,6 +10,7 @@ namespace Bq.Messaging
 
     public interface IIncomingLogicalMessageContext : IIncomingContext
     {
+        Dictionary<string, string> Headers { get; }
         LogicalMessage Message { get; }
         bool MessageHandled { get; set; }
         void UpdateMessageInstance(object newInstance);
@@ -140,6 +141,7 @@ namespace Bq.Messaging
             }
 
             public LogicalMessage Message => new LogicalMessage(context.MessageType, context.Message);
+            public Dictionary<string, string> Headers => context.LogicalHeaders;
             public bool MessageHandled
             {
                 get => context.MessageHandled;

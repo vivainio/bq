@@ -983,7 +983,8 @@ namespace Bq.Messaging
                 CorrelationId = properties.CorrelationId ?? properties.MessageId;
                 Headers = new System.Collections.ObjectModel.ReadOnlyDictionary<string, object>(
                     new Dictionary<string, object>(headers ?? new Dictionary<string, object>()));
-                MessageHeaders = Bq.Messaging.MessageHeaders.AsText(Headers);
+                LogicalHeaders = Bq.Messaging.MessageHeaders.ToTextDictionary(Headers);
+                MessageHeaders = new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(LogicalHeaders);
             }
             public IUniformSession UniformSession => endpoint.CreateUniformSession();
             public CancellationToken CancellationToken => endpoint.forceStop.Token;
@@ -992,6 +993,7 @@ namespace Bq.Messaging
             public ContextBag Extensions { get; } = new ContextBag();
             public string ReplyToAddress => replyTo;
             public IReadOnlyDictionary<string, string> MessageHeaders { get; }
+            internal Dictionary<string, string> LogicalHeaders { get; }
             public string MessageId { get; }
             public string CorrelationId { get; }
             public IReadOnlyDictionary<string, object> Headers { get; }
