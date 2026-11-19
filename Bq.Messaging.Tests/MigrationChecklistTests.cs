@@ -62,6 +62,10 @@ namespace Bq.Messaging.Tests
                 {
                     throw new FatalFailureException("replacement: " + ex.Message);
                 }
+                catch (InvalidOperationException) when (message.Text == "swallow")
+                {
+                    // Returning successfully from a behavior must not commit a failed handler's work.
+                }
                 if (message.Text == "after-next") throw new FatalFailureException("behavior failed after next");
             });
             config.Incoming.Use((incoming, next) =>
@@ -94,6 +98,7 @@ namespace Bq.Messaging.Tests
                     // An absent destination keeps the committed outbox entry available for inspection.
                     await context.Send(name + ".absent", new LocalMessage { Text = message.Text });
                     if (message.Text == "replace") throw new InvalidOperationException("handler failure");
+                    if (message.Text == "swallow") throw new InvalidOperationException("caught handler failure");
                 });
             });
 
@@ -101,16 +106,18 @@ namespace Bq.Messaging.Tests
             {
                 using (var endpoint = RabbitEndpoint.Start(config))
                 {
-                    foreach (var scenario in new[] { "skip", "replace", "before-commit", "after-next", "commit", "retry" })
+                    foreach (var scenario in new[] { "skip", "replace", "before-commit", "after-next", "commit", "retry", "swallow" })
                         await endpoint.SendLocal(new Command { Text = scenario });
 
-                    await WaitFor(async () => (await endpoint.ListErrors()).Count == 3 &&
+                    await WaitFor(async () => (await endpoint.ListErrors()).Count == 4 &&
                         await CountMigrationRows(path, "bq_inbox") == 3, "pipeline cases reach durable outcomes");
-                    Assert(Volatile.Read(ref closedScopes) == 7 && Volatile.Read(ref resolvedHandlers) == 6,
+                    Assert(Volatile.Read(ref closedScopes) == 8 && Volatile.Read(ref resolvedHandlers) == 7,
                         "each attempt closes its host scope and the short-circuited attempt skips handler resolution");
                     var errors = await endpoint.ListErrors();
-                    Assert(errors.All(error => error.ExceptionType == typeof(FatalFailureException).FullName) &&
-                        errors.Select(error => error.ExceptionMessage).OrderBy(message => message).SequenceEqual(
+                    Assert(errors.Single(error => error.ExceptionType == typeof(InvalidOperationException).FullName)
+                        .ExceptionMessage == "caught handler failure", "recoverability sees the caught handler failure");
+                    Assert(errors.Where(error => error.ExceptionType == typeof(FatalFailureException).FullName)
+                        .Select(error => error.ExceptionMessage).OrderBy(message => message).SequenceEqual(
                             new[] { "behavior failed after next", "replacement: handler failure", "unit of work save failed" }),
                         "recoverability sees callback and behavior exceptions, including a replacement");
 

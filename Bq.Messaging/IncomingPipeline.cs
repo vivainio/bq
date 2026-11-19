@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 
 namespace Bq.Messaging
@@ -24,6 +25,7 @@ namespace Bq.Messaging
         public bool IsDeferred => IsSagaTimeout || DelayedRetries > 0 ||
             (HandlerContext.Headers.TryGetValue(MessageHeaders.Deferred, out var value) && value is bool deferred && deferred);
         public IMessageHandlerContext HandlerContext { get; }
+        internal ExceptionDispatchInfo DownstreamFailure { get; set; }
         public IDictionary<string, object> Items { get; } = new Dictionary<string, object>();
     }
 
@@ -54,10 +56,23 @@ namespace Bq.Messaging
             {
                 var behavior = behaviors[index];
                 var next = pipeline;
-                pipeline = (context, invokeHandler) => behavior(context, () => next(context, invokeHandler));
+                pipeline = (context, invokeHandler) => behavior(context, async () =>
+                {
+                    try { await next(context, invokeHandler).ConfigureAwait(false); }
+                    catch (Exception failure)
+                    {
+                        context.DownstreamFailure = ExceptionDispatchInfo.Capture(failure);
+                        throw;
+                    }
+                });
             }
 
-            return pipeline;
+            return async (context, invokeHandler) =>
+            {
+                await pipeline(context, invokeHandler).ConfigureAwait(false);
+                // Catching a downstream failure cannot make a partially executed transaction safe to commit.
+                context.DownstreamFailure?.Throw();
+            };
         }
     }
 }
