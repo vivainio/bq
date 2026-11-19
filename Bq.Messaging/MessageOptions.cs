@@ -73,33 +73,33 @@ namespace Bq.Messaging
 
     public static class MessageOptionsExtensions
     {
-        internal static T Initialize<T>(Action<T> initialize) where T : class, new()
+        internal static T Initialize<T>(Action<T> initialize)
         {
             if (initialize == null) throw new ArgumentNullException(nameof(initialize));
-            var message = new T();
+            var message = (T)InterfaceMessage.Create(typeof(T));
             initialize(message);
             return message;
         }
 
-        public static Task Send<T>(this IMessageSession session, Action<T> initialize) where T : class, new() =>
+        public static Task Send<T>(this IMessageSession session, Action<T> initialize) =>
             session.Send(initialize, new SendOptions());
 
-        public static Task Publish<T>(this IMessageSession session, Action<T> initialize) where T : class, new() =>
+        public static Task Publish<T>(this IMessageSession session, Action<T> initialize) =>
             session.Publish(initialize, new PublishOptions());
 
-        public static Task Send<T>(this IMessageHandlerContext context, Action<T> initialize) where T : class, new() =>
+        public static Task Send<T>(this IMessageHandlerContext context, Action<T> initialize) =>
             context.Send(initialize, new SendOptions());
 
-        public static Task Publish<T>(this IMessageHandlerContext context, Action<T> initialize) where T : class, new() =>
+        public static Task Publish<T>(this IMessageHandlerContext context, Action<T> initialize) =>
             context.Publish(initialize, new PublishOptions());
 
-        public static Task Reply<T>(this IMessageHandlerContext context, Action<T> initialize) where T : class, new() =>
+        public static Task Reply<T>(this IMessageHandlerContext context, Action<T> initialize) =>
             context.Reply(initialize, new ReplyOptions());
 
-        public static Task Send<T>(this IUniformSession session, Action<T> initialize) where T : class, new() =>
+        public static Task Send<T>(this IUniformSession session, Action<T> initialize) =>
             session.Send(initialize, new SendOptions());
 
-        public static Task Publish<T>(this IUniformSession session, Action<T> initialize) where T : class, new() =>
+        public static Task Publish<T>(this IUniformSession session, Action<T> initialize) =>
             session.Publish(initialize, new PublishOptions());
 
         public static Task SendWithOptions<T>(this IUniformSession session, T message, SendOptions options) =>

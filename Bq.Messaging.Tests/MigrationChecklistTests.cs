@@ -12,6 +12,9 @@ using RabbitMQ.Client;
 
 namespace Bq.Messaging.Tests
 {
+    public interface IPilotMessage { string Text { get; set; } }
+    public interface IPilotEvent : IPilotMessage, IEvent { int Count { get; set; } }
+
     partial class Program
     {
         static async Task MigrationPipelineTests(Uri uri)
@@ -255,9 +258,10 @@ namespace Bq.Messaging.Tests
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-            RegisterPilotHandler(sender, receiver, new Handler<Event>((message, context) =>
+            RegisterPilotHandler(sender, receiver, new Handler<IPilotEvent>((message, context) =>
             {
                 Assert(context.MessageHeaders["migration-group"] == "first", "publish option reaches the migrated subscriber");
+                Assert(message.Count == 7, "interface event properties round-trip through MessagePack");
                 received.TrySetResult(message.Text);
                 return Task.CompletedTask;
             }));
@@ -274,7 +278,7 @@ namespace Bq.Messaging.Tests
                 {
                     channel.ExchangeDeclare(legacyExchange, ExchangeType.Topic, true);
                     channel.QueueDeclare(legacyQueue, true, false, false);
-                    var contract = typeof(Event).FullName;
+                    var contract = typeof(IPilotEvent).FullName;
                     channel.QueueBind(legacyQueue, legacyExchange, contract);
                     IStartableEndpoint startable = await Endpoint.Create(sender);
                     using (var producer = await startable.Start())
@@ -291,8 +295,11 @@ namespace Bq.Messaging.Tests
                         var publish = new PublishOptions();
                         publish.SetHeader("migration-group", "first");
                         IMessageSession messaging = producer;
-                        object pilotEvent = new Event { Text = "pilot" };
-                        await messaging.Publish(pilotEvent, publish);
+                        await messaging.Publish<IPilotEvent>(message =>
+                        {
+                            message.Text = "pilot";
+                            message.Count = 7;
+                        }, publish);
                         object pilotCommand = new Command { Text = "pilot command" };
                         await messaging.Send(pilotCommand, new SendOptions());
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");

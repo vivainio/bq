@@ -176,11 +176,11 @@ namespace Bq.Messaging.Tests
             var initialized = new TestableMessageHandlerContext();
             IMessageHandlerContext initializerContext = initialized;
             await initializerContext.Send<Command>(command => command.Text = "created", send);
-            await initializerContext.Publish<Event>(message => message.Text = "published");
+            await initializerContext.Publish<IPilotEvent>(message => message.Text = "published");
             await initializerContext.Reply<Response>(response => response.Text = "replied", reply);
             Assert(((Command)initialized.Messages[0].Message).Text == "created" &&
                 initialized.Messages[0].Destination == "orders" && initialized.Messages[0].DueAt == dueAt, "message initializer preserves send options");
-            Assert(((Event)initialized.Messages[1].Message).Text == "published" &&
+            Assert(((IPilotEvent)initialized.Messages[1].Message).Text == "published" &&
                 ((Response)initialized.Messages[2].Message).Text == "replied" &&
                 (string)initialized.Messages[2].Headers["tenant"] == "two", "publish and reply initializers populate their contracts");
 
