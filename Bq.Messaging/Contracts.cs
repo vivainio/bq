@@ -45,7 +45,7 @@ namespace Bq.Messaging
         System.Data.Common.DbTransaction Transaction { get; }
     }
 
-    public interface IMessageHandlerContext
+    public interface IMessageHandlerContext : IExtendable
     {
         IUniformSession UniformSession { get; }
         CancellationToken CancellationToken { get; }

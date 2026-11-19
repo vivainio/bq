@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 
 namespace Bq.Messaging
 {
-    public sealed class IncomingMessageContext
+    public sealed class IncomingMessageContext : IExtendable
     {
         internal IncomingMessageContext(object message, IMessageHandlerContext handlerContext,
             string contractName, int immediateRetries, int delayedRetries)
@@ -26,6 +26,7 @@ namespace Bq.Messaging
         public bool IsDeferred => IsSagaTimeout || DelayedRetries > 0 ||
             (HandlerContext.Headers.TryGetValue(MessageHeaders.Deferred, out var value) && value is bool deferred && deferred);
         public IMessageHandlerContext HandlerContext { get; }
+        public ContextBag Extensions => HandlerContext.Extensions;
         internal ExceptionDispatchInfo DownstreamFailure { get; set; }
         public IDictionary<string, object> Items { get; } = new Dictionary<string, object>();
     }

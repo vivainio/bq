@@ -858,6 +858,7 @@ namespace Bq.Messaging
             public IUniformSession UniformSession => endpoint.CreateUniformSession();
             public CancellationToken CancellationToken => endpoint.forceStop.Token;
             public IPersistenceSession PersistenceSession { get; }
+            public ContextBag Extensions { get; } = new ContextBag();
             public string ReplyToAddress => replyTo;
             public IReadOnlyDictionary<string, string> MessageHeaders { get; }
             public string MessageId { get; }

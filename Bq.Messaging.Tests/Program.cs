@@ -150,6 +150,13 @@ namespace Bq.Messaging.Tests
         {
             var context = new TestableMessageHandlerContext();
             IMessageHandlerContext handler = context;
+            handler.Extensions.Set("shared", 4);
+            var child = new ContextBag(handler.Extensions);
+            child.Set("shared", 5);
+            Assert(child.Get<int>("shared") == 5 && handler.Extensions.Get<int>("shared") == 4, "child bag shadows parent values");
+            child.Remove("shared");
+            Assert(child.Get<int>("shared") == 4 && ReferenceEquals(child.GetOrCreate<Command>(), child.Get<Command>()),
+                "context bag supports inherited values and typed creation");
             var dueAt = DateTimeOffset.UtcNow.AddMinutes(5);
             var send = new SendOptions();
             send.DoNotDeliverBefore(dueAt);

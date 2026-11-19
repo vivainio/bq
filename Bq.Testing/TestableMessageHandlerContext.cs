@@ -43,6 +43,7 @@ namespace Bq.Testing
         public IReadOnlyList<RecordedMessage> Messages => messages.ToArray();
         public IUniformSession UniformSession { get; }
         public CancellationToken CancellationToken { get; set; }
+        public ContextBag Extensions { get; } = new ContextBag();
         public string MessageId { get; set; }
         public string ReplyToAddress { get; set; }
         public IReadOnlyDictionary<string, string> MessageHeaders => Bq.Messaging.MessageHeaders.AsText(Headers);

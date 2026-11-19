@@ -1,0 +1,63 @@
+using System;
+using System.Collections.Generic;
+
+namespace Bq.Messaging
+{
+    public interface IExtendable
+    {
+        ContextBag Extensions { get; }
+    }
+
+    public interface ReadOnlyContextBag
+    {
+        T Get<T>();
+        T Get<T>(string key);
+        bool TryGet<T>(out T value);
+        bool TryGet<T>(string key, out T value);
+    }
+
+    public class ContextBag : ReadOnlyContextBag
+    {
+        readonly ContextBag parent;
+        readonly Dictionary<string, object> values = new Dictionary<string, object>(StringComparer.Ordinal);
+
+        public ContextBag(ContextBag parentBag = null) { parent = parentBag; }
+
+        public T Get<T>() => Get<T>(TypeKey<T>());
+
+        public T Get<T>(string key)
+        {
+            if (TryGet<T>(key, out var value)) return value;
+            throw new KeyNotFoundException("No extension is registered for " + key);
+        }
+
+        public bool TryGet<T>(out T value) => TryGet(TypeKey<T>(), out value);
+
+        public bool TryGet<T>(string key, out T value)
+        {
+            if (values.TryGetValue(key, out var existing))
+            {
+                value = (T)existing;
+                return true;
+            }
+            if (parent != null) return parent.TryGet(key, out value);
+            value = default;
+            return false;
+        }
+
+        public T GetOrCreate<T>() where T : class, new()
+        {
+            if (TryGet<T>(out var value)) return value;
+            value = new T();
+            Set(value);
+            return value;
+        }
+
+        public void Set<T>(T value) => Set(TypeKey<T>(), value);
+        public void Set<T>(string key, T value) => values[key] = value;
+        public void Remove<T>() => Remove(TypeKey<T>());
+        public void Remove(string key) => values.Remove(key);
+
+        static string TypeKey<T>() => typeof(T).FullName;
+    }
+}

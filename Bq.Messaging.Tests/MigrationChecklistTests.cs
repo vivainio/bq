@@ -58,6 +58,8 @@ namespace Bq.Messaging.Tests
             {
                 Assert(currentScope.Value == null, "message attempt starts with a clean host scope");
                 currentScope.Value = incoming;
+                Assert(!incoming.Extensions.TryGet<IncomingMessageContext>(out _), "retry starts with a fresh extensions bag");
+                incoming.Extensions.Set(incoming);
                 try { await next(); }
                 finally
                 {
@@ -95,7 +97,9 @@ namespace Bq.Messaging.Tests
             });
             config.Incoming.BeforeCommit(async (incoming, session) =>
             {
-                Assert(ReferenceEquals(currentScope.Value, incoming), "before-commit callback runs inside the host scope");
+                Assert(ReferenceEquals(currentScope.Value, incoming) &&
+                    ReferenceEquals(incoming.Extensions.Get<IncomingMessageContext>(), incoming),
+                    "before-commit callback shares the host scope and extensions bag");
                 var unit = (string)incoming.Items["unit"];
                 await InsertApplicationWork(session, unit + ":commit");
                 if (unit == "before-commit") throw new FatalFailureException("unit of work save failed");
@@ -108,7 +112,8 @@ namespace Bq.Messaging.Tests
             config.Handle<Command>(handlerContext =>
             {
                 var scope = currentScope.Value;
-                Assert(scope != null && ReferenceEquals(scope.HandlerContext, handlerContext),
+                Assert(scope != null && ReferenceEquals(scope.HandlerContext, handlerContext) &&
+                    ReferenceEquals(handlerContext.Extensions.Get<IncomingMessageContext>(), scope),
                     "handler factory resolves inside the host scope for this attempt");
                 Interlocked.Increment(ref resolvedHandlers);
                 return new Handler<Command>(async (message, context) =>
