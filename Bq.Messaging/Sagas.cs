@@ -35,6 +35,12 @@ namespace Bq.Messaging
             finally { configuringMapper = null; }
         }
 
+        protected Task RequestTimeout<T>(IMessageHandlerContext context, TimeSpan delay) where T : new() =>
+            RequestTimeout(context, delay, new T());
+
+        protected Task RequestTimeout<T>(IMessageHandlerContext context, DateTime dueAt) where T : new() =>
+            RequestTimeout(context, dueAt, new T());
+
         protected Task RequestTimeout<T>(IMessageHandlerContext context, TimeSpan delay, T state) => RequestTimeout(delay, state);
         protected Task RequestTimeout<T>(IMessageHandlerContext context, DateTime utcDueAt, T state) =>
             RequestTimeout(new DateTimeOffset(utcDueAt), state);

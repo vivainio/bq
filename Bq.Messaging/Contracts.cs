@@ -45,6 +45,8 @@ namespace Bq.Messaging
         IUniformSession UniformSession { get; }
         CancellationToken CancellationToken { get; }
         string MessageId { get; }
+        string ReplyToAddress { get; }
+        IReadOnlyDictionary<string, string> MessageHeaders { get; }
         string CorrelationId { get; }
         IReadOnlyDictionary<string, object> Headers { get; }
         IPersistenceSession PersistenceSession { get; }

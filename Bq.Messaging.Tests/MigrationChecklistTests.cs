@@ -257,7 +257,7 @@ namespace Bq.Messaging.Tests
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             RegisterPilotHandler(sender, receiver, new Handler<Event>((message, context) =>
             {
-                Assert(context.GetHeader("migration-group") == "first", "publish option reaches the migrated subscriber");
+                Assert(context.MessageHeaders["migration-group"] == "first", "publish option reaches the migrated subscriber");
                 received.TrySetResult(message.Text);
                 return Task.CompletedTask;
             }));

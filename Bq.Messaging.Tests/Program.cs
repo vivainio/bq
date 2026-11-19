@@ -36,6 +36,7 @@ namespace Bq.Messaging.Tests
             Data.Status = "started";
             if (message.TimeoutAt.HasValue) await RequestTimeout(message.TimeoutAt.Value, new OrderTimeout { OrderId = message.OrderId });
             else if (message.DelayMs > 0) await RequestTimeout(TimeSpan.FromMilliseconds(message.DelayMs), new OrderTimeout { OrderId = message.OrderId });
+            else if (message.OrderId == "empty-timeout") await RequestTimeout<OrderTimeout>(context, TimeSpan.Zero);
             if (message.FailFirst && Interlocked.Increment(ref StartAttempts) == 1) throw new Exception("simulate rollback");
         }
         public Task Handle(ChangeOrder message, IMessageHandlerContext context)
@@ -158,6 +159,13 @@ namespace Bq.Messaging.Tests
             reply.SetHeader("tenant", "two");
             await handler.Reply(new Response(), reply);
             await handler.Publish(new Event());
+            context.Headers["text-bytes"] = System.Text.Encoding.UTF8.GetBytes("café");
+            context.Headers["attempt"] = 3;
+            context.Headers["nested"] = new System.Collections.Generic.Dictionary<string, object>();
+            context.ReplyToAddress = "orders.reply";
+            Assert(handler.MessageHeaders["text-bytes"] == "café" && handler.GetHeader("attempt") == "3" &&
+                !handler.MessageHeaders.ContainsKey("nested") && handler.ReplyToAddress == "orders.reply",
+                "handler test context exposes textual headers and the reply address");
             var messages = context.Messages;
             Assert(messages.Count == 3 && messages[0].Destination == "orders" && messages[0].DueAt == dueAt &&
                 (string)messages[0].Headers["tenant"] == "one", "handler testing captures scheduled send and headers");
@@ -171,6 +179,10 @@ namespace Bq.Messaging.Tests
             await saga.Timeout((OrderTimeout)saga.Timeouts[0].State);
             await saga.Handle(new ChangeOrder { OrderId = "unit", Complete = true });
             Assert(saga.Completed && saga.Data.TimeoutCount == 1, "saga testing invokes timeout and exposes completion");
+            var emptyTimeout = new SagaTest<OrderWorkflow, OrderState>(new OrderWorkflow());
+            await emptyTimeout.Handle(new StartOrder { OrderId = "empty-timeout" });
+            Assert(emptyTimeout.Timeouts.Count == 1 && emptyTimeout.Timeouts[0].State is OrderTimeout,
+                "timeout overload constructs its state");
             OrderWorkflow.TimeoutCalls = 0;
             Console.WriteLine("Transport-free handler and saga tests passed.");
         }

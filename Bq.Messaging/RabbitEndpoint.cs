@@ -783,11 +783,15 @@ namespace Bq.Messaging
                 replyTo = properties.ReplyTo;
                 MessageId = properties.MessageId;
                 CorrelationId = properties.CorrelationId ?? properties.MessageId;
-                Headers = new Dictionary<string, object>(headers ?? new Dictionary<string, object>());
+                Headers = new System.Collections.ObjectModel.ReadOnlyDictionary<string, object>(
+                    new Dictionary<string, object>(headers ?? new Dictionary<string, object>()));
+                MessageHeaders = Bq.Messaging.MessageHeaders.AsText(Headers);
             }
             public IUniformSession UniformSession => endpoint.CreateUniformSession();
             public CancellationToken CancellationToken => endpoint.forceStop.Token;
             public IPersistenceSession PersistenceSession { get; }
+            public string ReplyToAddress => replyTo;
+            public IReadOnlyDictionary<string, string> MessageHeaders { get; }
             public string MessageId { get; }
             public string CorrelationId { get; }
             public IReadOnlyDictionary<string, object> Headers { get; }

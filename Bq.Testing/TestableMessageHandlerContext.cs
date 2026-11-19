@@ -43,6 +43,8 @@ namespace Bq.Testing
         public IUniformSession UniformSession { get; }
         public CancellationToken CancellationToken { get; set; }
         public string MessageId { get; set; }
+        public string ReplyToAddress { get; set; }
+        public IReadOnlyDictionary<string, string> MessageHeaders => Bq.Messaging.MessageHeaders.AsText(Headers);
         public string CorrelationId { get; set; }
         public IDictionary<string, object> Headers { get; } = new Dictionary<string, object>();
         IReadOnlyDictionary<string, object> IMessageHandlerContext.Headers => new ReadOnlyDictionary<string, object>(Headers);
