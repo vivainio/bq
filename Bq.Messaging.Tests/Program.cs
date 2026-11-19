@@ -60,6 +60,7 @@ namespace Bq.Messaging.Tests
     {
         readonly SqlitePersistence inner;
         public int FailNextStore;
+        public Task OutgoingGate { get; set; }
         public FaultPersistence(SqlitePersistence inner) { this.inner = inner; }
         public async Task<IPersistenceSession> OpenSession() => new FaultSession(await inner.OpenSession(), this);
         Task<OutgoingMessage> IPersistenceProvider.NextOutgoing(string endpoint) =>
@@ -74,6 +75,7 @@ namespace Bq.Messaging.Tests
         // Exercise the endpoint contract with SQLite and a single dispatcher per stream.
         public async Task<bool> DispatchOutgoing(string endpoint, Action<OutgoingMessage> publish)
         {
+            if (OutgoingGate != null) await OutgoingGate;
             var message = await inner.NextOutgoing(endpoint);
             if (message == null) return false;
             publish(message);
@@ -133,6 +135,7 @@ namespace Bq.Messaging.Tests
             await BrokerTests(new Uri(uri));
             await SagaTests(new Uri(uri));
             await RecoverabilityTests(new Uri(uri));
+            await StalledDispatcherTest(new Uri(uri));
             await MigrationPipelineTests(new Uri(uri));
             await PhasedMigrationTests(new Uri(uri));
             await LifecycleTests.Run(new Uri(uri));

@@ -124,6 +124,51 @@ namespace Bq.Messaging.Tests
             }
         }
 
+        static async Task StalledDispatcherTest(Uri uri)
+        {
+            var name = "bq.test.stalled-dispatch." + Guid.NewGuid().ToString("N");
+            var path = Path.Combine(Path.GetTempPath(), name + ".db");
+            var store = new SqlitePersistence(() => Sqlite(path), name);
+            await store.Initialize();
+
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var notification = new TaskCompletionSource<(string Source, Exception Error)>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var config = new EndpointConfiguration(name, uri)
+            {
+                Persistence = new FaultPersistence(store) { OutgoingGate = release.Task },
+                CriticalErrorThreshold = TimeSpan.FromMilliseconds(250),
+                OnCriticalError = (source, error) =>
+                {
+                    notification.TrySetResult((source, error));
+                    return Task.CompletedTask;
+                }
+            };
+            config.SendOnly();
+
+            try
+            {
+                using (var endpoint = RabbitEndpoint.Start(config))
+                {
+                    try
+                    {
+                        var failure = await Within(notification.Task);
+                        Assert(failure.Source == "Outbox dispatcher" && failure.Error is TimeoutException && !release.Task.IsCompleted,
+                            "critical error callback identifies an outbox poll that has not returned");
+                    }
+                    finally
+                    {
+                        release.TrySetResult(true);
+                        await endpoint.StopAsync();
+                    }
+                }
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+            Console.WriteLine("Stalled dispatcher critical-error test passed.");
+        }
+
         static async Task PhasedMigrationTests(Uri uri)
         {
             var prefix = "bq.test.cutover." + Guid.NewGuid().ToString("N");

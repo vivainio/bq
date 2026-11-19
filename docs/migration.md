@@ -14,6 +14,6 @@ Transport mutators can change headers, the contract name, or the body. Bq runs t
 
 ## Verify the migration locally
 
-Use `Bq.Testing` to record sends, publications, replies, and saga timeouts without RabbitMQ. Run `bash scripts/test-rabbitmq.sh` for the [integration suite](testing.md). Its migration cases exercise transaction rollback, policy-selected retries, provider-controlled dispatch after broker confirmation, and an isolated MessagePack flow alongside a simulated legacy XML flow. The phased fixture uses host-defined marker conventions to set up both a command route and an event subscription.
+Use `Bq.Testing` to record sends, publications, replies, and saga timeouts without RabbitMQ. Run `bash scripts/test-rabbitmq.sh` for the [integration suite](testing.md). Its migration cases exercise transaction rollback, policy-selected retries, provider-controlled dispatch after broker confirmation, critical-error notification for a stalled persistence poll, and an isolated MessagePack flow alongside a simulated legacy XML flow. The phased fixture uses host-defined marker conventions to set up both a command route and an event subscription.
 
 The local fixtures use SQLite and representative Bq endpoints. Production cutover still requires verification against the consuming application's contracts, topology, and database. The Oracle provider and shared EF6 transaction verification are deferred.
