@@ -101,7 +101,7 @@ namespace Bq.Messaging
                     (message, context) => runtime.HandleMessage((TMessage)message, context, correlation, start)));
             });
         }
-        internal void AddMappedMessage<TMessage>(Func<TMessage, (string Key, Action<TData> Initialize)> correlation) where TMessage : class
+        internal void AddMappedMessage<TMessage>(Func<TMessage, IMessageHandlerContext, (string Key, Action<TData> Initialize)> correlation) where TMessage : class
         {
             if (!typeof(IHandleMessages<TMessage>).IsAssignableFrom(typeof(TSaga)))
                 throw new InvalidOperationException(typeof(TSaga).FullName + " must handle " + typeof(TMessage).FullName);
@@ -111,7 +111,7 @@ namespace Bq.Messaging
                 new Registration(typeof(TMessage), subscribe, (message, context) =>
                 {
                     var typed = (TMessage)message;
-                    var mapped = correlation(typed);
+                    var mapped = correlation(typed, context);
                     return runtime.HandleMappedMessage(typed, context, mapped.Key, start, mapped.Initialize);
                 })));
         }

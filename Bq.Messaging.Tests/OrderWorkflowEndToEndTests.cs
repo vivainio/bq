@@ -27,7 +27,7 @@ namespace Bq.Messaging.Tests
     {
         protected override void ConfigureHowToFindSaga(SagaPropertyMapper<FulfillmentState> mapper)
         {
-            mapper.MapSaga(data => data.OrderId).ToMessage<BeginFulfillment>(message => message.OrderId);
+            mapper.MapSaga(data => data.OrderId).ToMessageHeader<BeginFulfillment>("order-id");
             mapper.ConfigureMapping<FulfillmentRecorded>(message => message.OrderId).ToSaga(data => data.OrderId);
         }
 
@@ -133,7 +133,9 @@ namespace Bq.Messaging.Tests
                                     command.CommandText = "INSERT INTO application_work (name) VALUES ('order-1')";
                                     await command.ExecuteNonQueryAsync();
                                 }
-                                await session.Send(new BeginFulfillment { OrderId = orderId });
+                                var options = new SendOptions();
+                                options.SetHeader("order-id", orderId);
+                                await session.Send(new BeginFulfillment { OrderId = orderId }, options);
                             });
                             await WaitFor(async () => await CountMigrationRows(recordingPath, "bq_recovery") == 1,
                                 "workflow retry durably scheduled");

@@ -15,19 +15,19 @@ namespace Bq.Messaging
 
         sealed class Mapping<TMessage> : IMapping where TMessage : class
         {
-            readonly Func<TMessage, object> getValue;
+            readonly Func<TMessage, IMessageHandlerContext, object> getValue;
             readonly PropertyInfo sagaProperty;
 
-            public Mapping(Func<TMessage, object> getValue, PropertyInfo sagaProperty)
+            public Mapping(Func<TMessage, IMessageHandlerContext, object> getValue, PropertyInfo sagaProperty)
             {
                 this.getValue = getValue;
                 this.sagaProperty = sagaProperty;
             }
 
             public void Apply<TSaga>(SagaMappings<TSaga, TData> mappings) where TSaga : Saga<TData> =>
-                mappings.AddMappedMessage<TMessage>(message =>
+                mappings.AddMappedMessage<TMessage>((message, context) =>
                 {
-                    var value = getValue(message);
+                    var value = getValue(message, context);
                     var key = Convert.ToString(value, CultureInfo.InvariantCulture);
                     if (string.IsNullOrEmpty(key)) throw new InvalidOperationException("Saga correlation key must not be empty.");
                     return (key, data => sagaProperty.SetValue(data, value));
@@ -40,6 +40,9 @@ namespace Bq.Messaging
         public MessageMapping<TMessage> ConfigureMapping<TMessage>(Expression<Func<TMessage, object>> property)
             where TMessage : class => new MessageMapping<TMessage>(property, Add);
 
+        public HeaderMapping<TMessage> ConfigureHeaderMapping<TMessage>(string headerName)
+            where TMessage : class => new HeaderMapping<TMessage>(this, headerName);
+
         public SagaMapping MapSaga(Expression<Func<TData, object>> property) => new SagaMapping(this, property);
 
         internal void Add<TMessage>(Expression<Func<TData, object>> data, Expression<Func<TMessage, object>> message)
@@ -48,14 +51,36 @@ namespace Bq.Messaging
             var target = GetProperty(data);
             var source = GetProperty(message);
             var keyType = Nullable.GetUnderlyingType(target.PropertyType) ?? target.PropertyType;
-            if (keyType != (Nullable.GetUnderlyingType(source.PropertyType) ?? source.PropertyType) ||
-                target.SetMethod?.IsPublic != true || !IsSupportedKey(keyType))
-                throw new ArgumentException("Saga correlation requires compatible scalar properties and a writable saga property.");
+            if (keyType != (Nullable.GetUnderlyingType(source.PropertyType) ?? source.PropertyType))
+                throw new ArgumentException("Saga correlation requires compatible scalar properties.");
+            var read = message.Compile();
+            Register<TMessage>(target, (value, _) => read(value));
+        }
+
+        void AddHeader<TMessage>(Expression<Func<TData, object>> data, string headerName) where TMessage : class
+        {
+            var target = GetProperty(data);
+            var type = Nullable.GetUnderlyingType(target.PropertyType) ?? target.PropertyType;
+            Register<TMessage>(target, (_, context) =>
+            {
+                var value = context.GetHeader(headerName);
+                if (type == typeof(string)) return value;
+                if (type == typeof(Guid)) return Guid.Parse(value);
+                if (type.IsEnum) return Enum.Parse(type, value);
+                return Convert.ChangeType(value, type, CultureInfo.InvariantCulture);
+            });
+        }
+
+        void Register<TMessage>(PropertyInfo target, Func<TMessage, IMessageHandlerContext, object> read) where TMessage : class
+        {
+            var type = Nullable.GetUnderlyingType(target.PropertyType) ?? target.PropertyType;
+            if (target.SetMethod?.IsPublic != true || !IsSupportedKey(type))
+                throw new ArgumentException("Saga correlation requires a writable scalar saga property.");
             if (sagaProperty != null && !sagaProperty.Equals(target))
                 throw new InvalidOperationException("All saga messages must map to the same saga property.");
             if (mappings.ContainsKey(typeof(TMessage)))
                 throw new InvalidOperationException("A saga correlation is already registered for " + typeof(TMessage).FullName);
-            mappings.Add(typeof(TMessage), new Mapping<TMessage>(message.Compile(), target));
+            mappings.Add(typeof(TMessage), new Mapping<TMessage>(read, target));
             sagaProperty = target;
         }
 
@@ -89,11 +114,32 @@ namespace Bq.Messaging
                 this.data = data;
             }
 
+            public SagaMapping ToMessageHeader<TMessage>(string headerName) where TMessage : class
+            {
+                owner.ConfigureHeaderMapping<TMessage>(headerName).ToSaga(data);
+                return this;
+            }
+
             public SagaMapping ToMessage<TMessage>(Expression<Func<TMessage, object>> message) where TMessage : class
             {
                 owner.Add(data, message);
                 return this;
             }
+        }
+
+        public sealed class HeaderMapping<TMessage> where TMessage : class
+        {
+            readonly SagaPropertyMapper<TData> owner;
+            readonly string headerName;
+
+            internal HeaderMapping(SagaPropertyMapper<TData> owner, string headerName)
+            {
+                this.owner = owner;
+                this.headerName = string.IsNullOrWhiteSpace(headerName)
+                    ? throw new ArgumentException("Header name is required.", nameof(headerName)) : headerName;
+            }
+
+            public void ToSaga(Expression<Func<TData, object>> data) => owner.AddHeader<TMessage>(data, headerName);
         }
 
         public sealed class MessageMapping<TMessage> where TMessage : class
