@@ -116,6 +116,23 @@ namespace Bq.Messaging
             if (Handlers.TryGetValue(name, out var existing)) existing.Add(registration);
             else Handlers.Add(name, registration);
         }
+        internal readonly Dictionary<Type, string[]> ContractNames = new Dictionary<Type, string[]>();
+
+        public void RegisterMessageContract<T>(string name, params string[] receiveAliases)
+        {
+            if (typeof(T) == typeof(SagaTimeoutMessage))
+                throw new ArgumentException("The saga timeout contract is reserved.");
+            if (receiveAliases == null) throw new ArgumentNullException(nameof(receiveAliases));
+            var names = new string[receiveAliases.Length + 1];
+            names[0] = name;
+            Array.Copy(receiveAliases, 0, names, 1, receiveAliases.Length);
+            foreach (var value in names)
+                if (string.IsNullOrWhiteSpace(value) || System.Text.Encoding.UTF8.GetByteCount(value) > 255 ||
+                    value.IndexOfAny(new[] { '*', '#', '\0' }) >= 0 || value == MessageType(typeof(SagaTimeoutMessage)))
+                    throw new ArgumentException("Contract names must be nonempty AMQP names without wildcards or reserved values.");
+            ContractNames.Add(typeof(T), names);
+        }
+
         internal static string MessageType(Type type) => type.FullName ?? throw new ArgumentException("Message type must have a full name.");
     }
 

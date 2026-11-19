@@ -20,6 +20,8 @@ namespace Bq.Messaging
         static readonly MessagePackSerializerOptions SerializerOptions = MessagePackSerializerOptions.Standard
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly EndpointConfiguration configuration;
+        readonly Dictionary<Type, string> wireNames = new Dictionary<Type, string>();
+        readonly Dictionary<string, Registration> receivers = new Dictionary<string, Registration>();
         readonly bool sendOnly;
         readonly TimeSpan dispatchPollInterval;
         readonly TimeSpan publisherConfirmTimeout;
@@ -45,6 +47,23 @@ namespace Bq.Messaging
         RabbitEndpoint(EndpointConfiguration configuration)
         {
             this.configuration = configuration;
+            var owners = new Dictionary<string, Type>();
+            var types = configuration.ContractNames.Keys.Concat(configuration.Handlers.Values.Select(handler => handler.Type))
+                .Concat(configuration.Routes.Keys).Distinct();
+            foreach (var type in types)
+            {
+                var names = configuration.ContractNames.TryGetValue(type, out var configured)
+                    ? configured : new[] { EndpointConfiguration.MessageType(type) };
+                wireNames.Add(type, names[0]);
+                configuration.Handlers.TryGetValue(EndpointConfiguration.MessageType(type), out var handler);
+                foreach (var name in names)
+                {
+                    if (owners.TryGetValue(name, out var owner) && owner != type)
+                        throw new InvalidOperationException("Message contract name collision: " + name);
+                    owners[name] = type;
+                    if (handler != null && handler.Type == type) receivers[name] = handler;
+                }
+            }
             sendOnly = configuration.IsSendOnly;
             eventsExchange = configuration.EventsExchange;
             errorExchange = configuration.ErrorExchange;
@@ -74,7 +93,7 @@ namespace Bq.Messaging
                         ["x-dead-letter-exchange"] = errorExchange,
                         ["x-dead-letter-routing-key"] = configuration.Name
                     });
-                    foreach (var entry in configuration.Handlers.Where(x => x.Value.Subscribe))
+                    foreach (var entry in receivers.Where(x => x.Value.Subscribe))
                         consumerChannel.QueueBind(configuration.Name, eventsExchange, entry.Key);
                     consumerChannel.BasicQos(0, configuration.PrefetchCount ?? configuration.MaxConcurrency, false);
                     var consumer = new AsyncEventingBasicConsumer(consumerChannel);
@@ -225,7 +244,7 @@ namespace Bq.Messaging
             public Task PublishAt<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> messageHeaders) =>
                 endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null, messageHeaders);
             public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
-                message, endpoint.eventsExchange, EndpointConfiguration.MessageType(typeof(T)), null, false, headers));
+                message, endpoint.eventsExchange, endpoint.WireName(typeof(T)), null, false, headers));
             public void End() => root.ended = true;
         }
 
@@ -257,7 +276,7 @@ namespace Bq.Messaging
 
         Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
-            session.StoreTimeout(Prepare(message, eventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false, headers), dueUtc);
+            session.StoreTimeout(Prepare(message, eventsExchange, WireName(typeof(T)), correlationId, false, headers), dueUtc);
 
         Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
@@ -282,8 +301,11 @@ namespace Bq.Messaging
             throw new InvalidOperationException("No route for " + typeof(T).FullName);
         }
 
+        string WireName(Type type) => wireNames.TryGetValue(type, out var name)
+            ? name : EndpointConfiguration.MessageType(type);
+
         internal Task PublishCore<T>(T message, string correlationId, IDictionary<string, object> headers = null) =>
-            Dispatch(message, eventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false, headers);
+            Dispatch(message, eventsExchange, WireName(typeof(T)), correlationId, false, headers);
         OutgoingMessage Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
             IDictionary<string, object> headers = null)
         {
@@ -294,7 +316,7 @@ namespace Bq.Messaging
             RecoveryWire.EncodeHeaders(copiedHeaders); // Validate the AMQP field types before storing or publishing.
             var id = Guid.NewGuid().ToString("N");
             return new OutgoingMessage { Id = id, CorrelationId = correlationId ?? id, ReplyTo = sendOnly ? null : configuration.Name,
-                Type = EndpointConfiguration.MessageType(typeof(T)), Exchange = exchange, RoutingKey = routingKey,
+                Type = WireName(typeof(T)), Exchange = exchange, RoutingKey = routingKey,
                 Mandatory = mandatory, Headers = copiedHeaders, Body = MessagePackSerializer.Serialize(typeof(T), message, SerializerOptions) };
         }
         Task Dispatch<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
@@ -424,7 +446,7 @@ namespace Bq.Messaging
                 try { cycle = RecoveryWire.Cycle(props); }
                 catch { unrecoverable = true; throw; }
                 if (string.IsNullOrEmpty(currentId)) throw new InvalidOperationException("Message ID is required.");
-                if (props.ContentType != ContentType || props.Type == null || !configuration.Handlers.TryGetValue(props.Type, out var registration))
+                if (props.ContentType != ContentType || props.Type == null || !receivers.TryGetValue(props.Type, out var registration))
                 { unrecoverable = true; throw new InvalidOperationException("Unknown message type or content type."); }
                 object message;
                 try { message = MessagePackSerializer.Deserialize(registration.Type, delivery.Body, SerializerOptions); }
@@ -681,7 +703,7 @@ namespace Bq.Messaging
             public Task Publish<T>(T message) => PublishWithHeaders(message, null);
             internal Task PublishWithHeaders<T>(T message, IDictionary<string, object> headers) =>
                 PersistenceSession.StoreOutgoing(endpoint.Prepare(message, endpoint.eventsExchange,
-                    EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false, headers));
+                    endpoint.WireName(typeof(T)), CorrelationId, false, headers));
             internal Task SendAtWithHeaders<T>(string destination, T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
                 endpoint.StoreScheduled(PersistenceSession, destination, message, dueAt.UtcDateTime, CorrelationId, headers);
             internal Task PublishAtWithHeaders<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
