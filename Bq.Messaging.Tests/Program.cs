@@ -683,11 +683,12 @@ namespace Bq.Messaging.Tests
             config.SendFailedMessagesTo(errorName);
             config.Recoverability()
                 .Immediate(retries => retries.NumberOfRetries(0))
-                .Delayed(retries => retries.NumberOfRetries(1).TimeIncrease(TimeSpan.FromSeconds(3)));
+                .Delayed(retries => retries.NumberOfRetries(1).TimeIncrease(TimeSpan.FromSeconds(3)))
+                .AddUnrecoverableException<FatalFailureException>();
             config.Recoverability.IsUnrecoverable = ex =>
             {
                 if (ex.Message == "persistent failure") throw new InvalidOperationException("test classifier failure");
-                return ex is FatalFailureException;
+                return false;
             };
             var policyCalls = 0;
             config.Recoverability.Policy = context =>

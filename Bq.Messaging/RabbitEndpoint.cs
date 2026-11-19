@@ -674,7 +674,7 @@ namespace Bq.Messaging
                 {
                     var config = new RecoverabilityConfig(new ImmediateConfig(options.ImmediateRetries),
                         new DelayedConfig(options.DelayedRetries),
-                        new FailedConfig(options.ErrorQueue ?? configuration.Name + ".error", new HashSet<Type>()));
+                        new FailedConfig(options.ErrorQueue ?? configuration.Name + ".error", options.UnrecoverableExceptionTypes));
                     var context = new ErrorContext(failure, attempt, cycle, new IncomingMessage(messageId, headers, body), extensions);
                     proposed = options.CompatiblePolicy(config, context)?.ToBqAction();
                 }
@@ -688,6 +688,7 @@ namespace Bq.Messaging
                 System.Diagnostics.Trace.TraceError("Recoverability policy failed: {0}", policyError);
             }
 
+            if (options.UnrecoverableExceptionTypes.Any(type => type.IsInstanceOfType(failure))) return RecoveryAction.MoveToError();
             if (allowImmediate && attempt < options.ImmediateRetries) return RecoveryAction.ImmediateRetry();
             return cycle < options.DelayedRetries.Length ? RecoveryAction.DelayedRetry(options.DelayedRetries[cycle])
                 : RecoveryAction.MoveToError();

@@ -45,21 +45,25 @@ namespace Bq.Messaging.Tests
                 transport.Body = new byte[] { 0x7e }.Concat(transport.Body).ToArray();
             };
             config.Recoverability.DelayedRetries = new[] { TimeSpan.FromHours(1) };
-            config.Recoverability().CustomPolicy((settings, failure) =>
-            {
-                if (failure.Exception.Message == "retry the unit")
+            config.Recoverability()
+                .AddUnrecoverableException(typeof(FatalFailureException))
+                .CustomPolicy((settings, failure) =>
                 {
-                    Assert(failure.ImmediateProcessingFailures == 1 && failure.DelayedDeliveriesPerformed == 0 &&
-                        failure.Message.Body.Length > 0 && failure.Message.MessageId != null &&
-                        failure.Extensions.Get<IncomingMessageContext>() != null,
-                        "custom policy receives counters, the wire message and attempt extensions");
-                    return RecoverabilityAction.ImmediateRetry();
-                }
-                if (failure.Exception.Message == "discard this message") return RecoverabilityAction.Discard("test drop");
-                if (failure.Exception.Message == "replacement: handler failure")
-                    return RecoverabilityAction.MoveToError(name + ".alternate-error");
-                return RecoverabilityAction.MoveToError(settings.Failed.ErrorQueue);
-            });
+                    if (failure.Exception.Message == "retry the unit")
+                    {
+                        Assert(failure.ImmediateProcessingFailures == 1 && failure.DelayedDeliveriesPerformed == 0 &&
+                            failure.Message.Body.Length > 0 && failure.Message.MessageId != null &&
+                            failure.Extensions.Get<IncomingMessageContext>() != null,
+                            "custom policy receives counters, the wire message and attempt extensions");
+                        return RecoverabilityAction.ImmediateRetry();
+                    }
+                    if (failure.Exception.Message == "unit of work save failed")
+                        return DefaultRecoverabilityPolicy.Invoke(settings, failure);
+                    if (failure.Exception.Message == "discard this message") return RecoverabilityAction.Discard("test drop");
+                    if (failure.Exception.Message == "replacement: handler failure")
+                        return RecoverabilityAction.MoveToError(name + ".alternate-error");
+                    return RecoverabilityAction.MoveToError(settings.Failed.ErrorQueue);
+                });
             var currentScope = new AsyncLocal<IncomingMessageContext>();
             var closedScopes = 0;
             var resolvedHandlers = 0;

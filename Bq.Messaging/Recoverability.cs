@@ -13,6 +13,20 @@ namespace Bq.Messaging
         public Func<RecoveryContext, RecoveryAction> Policy { get; set; }
         internal Func<RecoverabilityConfig, ErrorContext, RecoverabilityAction> CompatiblePolicy { get; private set; }
 
+        internal HashSet<Type> UnrecoverableExceptionTypes { get; } = new HashSet<Type>();
+
+        public RecoverabilityOptions AddUnrecoverableException<T>() where T : Exception =>
+            AddUnrecoverableException(typeof(T));
+
+        public RecoverabilityOptions AddUnrecoverableException(Type exceptionType)
+        {
+            if (exceptionType == null) throw new ArgumentNullException(nameof(exceptionType));
+            if (!typeof(Exception).IsAssignableFrom(exceptionType))
+                throw new ArgumentException("The type must derive from Exception.", nameof(exceptionType));
+            UnrecoverableExceptionTypes.Add(exceptionType);
+            return this;
+        }
+
         public RecoverabilityOptions CustomPolicy(Func<RecoverabilityConfig, ErrorContext, RecoverabilityAction> custom)
         {
             CompatiblePolicy = custom ?? throw new ArgumentNullException(nameof(custom));
