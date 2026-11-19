@@ -473,6 +473,7 @@ namespace Bq.Messaging.Tests
                         connectionConfigured = true;
                     };
                     producerConfig.SendOnly();
+                    producerConfig.OverridePublicReturnAddress(producerName + ".public");
                     using (var producer = RabbitEndpoint.Start(producerConfig))
                     {
                         Assert(connectionConfigured, "RabbitMQ connection customization runs at startup");
@@ -494,8 +495,9 @@ namespace Bq.Messaging.Tests
                             try
                             {
                                 await producer.SendLocal(new LocalMessage { Text = "shared endpoint" });
-                                Assert(queueOwner.BasicGet(producerName, true) != null,
-                                    "send-only local send reaches the existing named queue");
+                                var local = queueOwner.BasicGet(producerName, true);
+                                Assert(local != null && local.BasicProperties.ReplyTo == producerName + ".public",
+                                    "send-only local send advertises the configured return address while routing to the named queue");
                                 var delay = TimeSpan.FromMilliseconds(500);
                                 var options = new SendOptions();
                                 options.DelayDeliveryWith(delay);

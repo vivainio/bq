@@ -424,7 +424,7 @@ namespace Bq.Messaging
             RecoveryWire.EncodeHeaders(copiedHeaders); // Validate the AMQP field types before storing or publishing.
             var id = Guid.NewGuid().ToString("N");
             return new OutgoingMessage { Id = id, CorrelationId = correlationId ?? (string)customId ?? id,
-                ReplyTo = (string)replyAddress ?? (sendOnly ? null : configuration.Name),
+                ReplyTo = (string)replyAddress ?? configuration.PublicReturnAddress ?? (sendOnly ? null : configuration.Name),
                 Type = transport.TypeName, Exchange = exchange, RoutingKey = routingKey,
                 Mandatory = mandatory, Headers = copiedHeaders, Body = transport.Body };
         }

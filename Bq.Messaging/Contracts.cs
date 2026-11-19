@@ -124,6 +124,7 @@ namespace Bq.Messaging
         // If set, report the first sustained broker or dispatcher failure for this endpoint instance.
         public Func<string, Exception, Task> OnCriticalError { get; set; }
         internal Func<ICriticalErrorContext, Task> CriticalErrorAction { get; set; }
+        internal string PublicReturnAddress { get; set; }
         public TimeSpan CriticalErrorThreshold { get; set; } = TimeSpan.FromMinutes(10);
         public Action<TransportMessage> MutateIncoming { get; set; }
         public Action<TransportMessage> MutateOutgoing { get; set; }
