@@ -21,7 +21,7 @@ namespace Bq.Messaging.Tests
     public class OldContract { public string Text { get; set; } }
     public class NewContract { public string Text { get; set; } public int Added { get; set; } }
     public class OrderSaga { public string Status { get; set; } }
-    public class StartOrder { public string OrderId { get; set; } public int DelayMs { get; set; } public bool FailFirst { get; set; } }
+    public class StartOrder { public string OrderId { get; set; } public int DelayMs { get; set; } public DateTimeOffset? TimeoutAt { get; set; } public bool FailFirst { get; set; } }
     public class ChangeOrder { public string OrderId { get; set; } public bool Complete { get; set; } }
     public class OrderTimeout { public string OrderId { get; set; } }
     public class OrderState { public string Status { get; set; } public int TimeoutCount { get; set; } }
@@ -32,7 +32,8 @@ namespace Bq.Messaging.Tests
         public async Task Handle(StartOrder message, IMessageHandlerContext context)
         {
             Data.Status = "started";
-            if (message.DelayMs > 0) await RequestTimeout(TimeSpan.FromMilliseconds(message.DelayMs), new OrderTimeout { OrderId = message.OrderId });
+            if (message.TimeoutAt.HasValue) await RequestTimeout(message.TimeoutAt.Value, new OrderTimeout { OrderId = message.OrderId });
+            else if (message.DelayMs > 0) await RequestTimeout(TimeSpan.FromMilliseconds(message.DelayMs), new OrderTimeout { OrderId = message.OrderId });
             if (message.FailFirst && Interlocked.Increment(ref StartAttempts) == 1) throw new Exception("simulate rollback");
         }
         public Task Handle(ChangeOrder message, IMessageHandlerContext context)
@@ -478,9 +479,12 @@ namespace Bq.Messaging.Tests
                     using (var sagaEndpoint = RabbitEndpoint.Start(config))
                     {
                         await a.Send(new ChangeOrder { OrderId = "missing" });
-                        await a.Send(new StartOrder { OrderId = "restart", DelayMs = 3000, FailFirst = true });
+                        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(3).ToOffset(TimeSpan.FromHours(2));
+                        await a.Send(new StartOrder { OrderId = "restart", TimeoutAt = timeoutAt, FailFirst = true });
                         await WaitFor(async () => await ReadOrder(store, "restart") != null, "start saga");
                         Assert(OrderWorkflow.StartAttempts == 2, "handler retry starts new transaction");
+                        var pending = await store.ListPendingDispatches(DispatchKind.SagaTimeout);
+                        Assert(pending.Count == 1 && pending[0].DueAtUtc == timeoutAt.UtcDateTime, "absolute timeout preserves due time across retry");
                         Assert(await ReadOrder(store, "missing") == null && missingCount == 1, "non-start message invokes not-found callback");
                         Assert(otherHandlerCount == 1, "ordinary handler and saga share message");
                     }

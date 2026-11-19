@@ -15,17 +15,23 @@ namespace Bq.Messaging
     // A new saga object is constructed for each message attempt.
     public abstract class Saga<TData> where TData : class, new()
     {
-        Func<TimeSpan, object, Type, Task> requestTimeout;
+        Func<DateTimeOffset, object, Type, Task> requestTimeout;
         public TData Data { get; internal set; }
         internal bool Completed { get; private set; }
-        internal void Initialize(TData data, Func<TimeSpan, object, Type, Task> request) { Data = data; requestTimeout = request; }
+        internal void Initialize(TData data, Func<DateTimeOffset, object, Type, Task> request) { Data = data; requestTimeout = request; }
         protected void MarkAsComplete() { Completed = true; }
         protected Task RequestTimeout<T>(TimeSpan delay, T state)
         {
             if (requestTimeout == null) throw new InvalidOperationException("Timeouts can only be requested while handling a saga message.");
             if (delay < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(delay));
+            return RequestTimeout(DateTimeOffset.UtcNow.Add(delay), state);
+        }
+
+        protected Task RequestTimeout<T>(DateTimeOffset dueAt, T state)
+        {
+            if (requestTimeout == null) throw new InvalidOperationException("Timeouts can only be requested while handling a saga message.");
             if (state == null) throw new ArgumentNullException(nameof(state));
-            return requestTimeout(delay, state, typeof(T));
+            return requestTimeout(dueAt, state, typeof(T));
         }
     }
 
@@ -147,12 +153,12 @@ namespace Bq.Messaging
             var saga = factory() ?? throw new InvalidOperationException("Saga factory returned null.");
             try
             {
-                saga.Initialize(state.Data, (delay, timeoutState, timeoutType) =>
+                saga.Initialize(state.Data, (dueAt, timeoutState, timeoutType) =>
                 {
                     var typeName = EndpointConfiguration.MessageType(timeoutType);
                     if (!timeouts.ContainsKey(typeName)) throw new InvalidOperationException("Saga timeout type is not registered: " + typeName);
                     var timeout = new SagaTimeoutMessage { SagaType = sagaType, SagaKey = key, InstanceId = state.InstanceId, TimeoutType = typeName, State = MessagePackSerializer.Serialize(timeoutType, timeoutState, Options) };
-                    return ((RabbitEndpoint.HandlerContext)context).ScheduleSagaTimeout(timeout, DateTime.UtcNow.Add(delay));
+                    return ((RabbitEndpoint.HandlerContext)context).ScheduleSagaTimeout(timeout, dueAt.UtcDateTime);
                 });
                 await invoke(saga).ConfigureAwait(false);
                 if (saga.Completed)
