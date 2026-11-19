@@ -143,6 +143,7 @@ namespace Bq.Messaging.Tests
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             receiver.Handle(() => new Handler<Event>((message, context) =>
             {
+                Assert(context.GetHeader("migration-group") == "first", "publish option reaches the migrated subscriber");
                 received.TrySetResult(message.Text);
                 return Task.CompletedTask;
             }), subscribe: true);
@@ -167,7 +168,9 @@ namespace Bq.Messaging.Tests
                         channel.ConfirmSelect();
                         channel.BasicPublish(legacyExchange, contract, properties, System.Text.Encoding.UTF8.GetBytes(legacyXml));
                         Assert(channel.WaitForConfirms(TimeSpan.FromSeconds(5)), "legacy publication confirmed");
-                        await producer.Publish(new Event { Text = "pilot" });
+                        var publish = new PublishOptions();
+                        publish.SetHeader("migration-group", "first");
+                        await producer.CreateUniformSession().Publish(new Event { Text = "pilot" }, publish);
 
                         Assert(await Within(received.Task) == "pilot", "send-only Bq publisher reaches the migrated subscriber");
                         var legacy = channel.BasicGet(legacyQueue, true);

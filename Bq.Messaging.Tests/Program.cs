@@ -448,10 +448,21 @@ namespace Bq.Messaging.Tests
                                 await producer.SendLocal(new LocalMessage { Text = "shared endpoint" });
                                 Assert(queueOwner.BasicGet(producerName, true) != null,
                                     "send-only local send reaches the existing named queue");
-                                await producer.SendLocalAt(new LocalMessage { Text = "scheduled local" },
-                                    DateTimeOffset.UtcNow.AddMilliseconds(500));
-                                await WaitFor(() => Task.FromResult(queueOwner.BasicGet(producerName, true) != null),
-                                    "send-only scheduled local send reaches the existing named queue");
+                                var delay = TimeSpan.FromMilliseconds(500);
+                                var options = new SendOptions();
+                                options.DelayDeliveryWith(delay);
+                                options.SetHeader("relative-delay", true);
+                                var requestedAt = DateTimeOffset.UtcNow;
+                                await producer.CreateUniformSession().SendLocal(new LocalMessage { Text = "scheduled local" }, options);
+                                BasicGetResult scheduled = null;
+                                await WaitFor(() =>
+                                {
+                                    scheduled = queueOwner.BasicGet(producerName, true);
+                                    return Task.FromResult(scheduled != null);
+                                }, "send-only scheduled local send reaches the existing named queue");
+                                Assert(DateTimeOffset.UtcNow >= requestedAt.Add(delay) &&
+                                    Equals(scheduled.BasicProperties.Headers["relative-delay"], true),
+                                    "relative delivery delay and custom header survive durable scheduling");
                             }
                             finally { queueOwner.QueueDelete(producerName); }
                         }
