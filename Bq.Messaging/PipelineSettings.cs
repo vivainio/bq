@@ -11,6 +11,7 @@ namespace Bq.Messaging
     public interface IIncomingLogicalMessageContext : IIncomingContext
     {
         LogicalMessage Message { get; }
+        void UpdateMessageInstance(object newInstance);
     }
 
     public sealed class LogicalMessage
@@ -100,10 +101,10 @@ namespace Bq.Messaging
             public LogicalContext(IncomingMessageContext context)
             {
                 this.context = context;
-                Message = new LogicalMessage(context.MessageType, context.Message);
             }
 
-            public LogicalMessage Message { get; }
+            public LogicalMessage Message => new LogicalMessage(context.MessageType, context.Message);
+            public void UpdateMessageInstance(object newInstance) => context.UpdateMessageInstance(newInstance);
             public string MessageId => context.HandlerContext.MessageId;
             public string ReplyToAddress => context.HandlerContext.ReplyToAddress;
             public IReadOnlyDictionary<string, string> MessageHeaders => context.HandlerContext.MessageHeaders;

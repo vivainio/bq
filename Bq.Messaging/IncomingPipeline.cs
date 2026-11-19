@@ -19,7 +19,14 @@ namespace Bq.Messaging
             DelayedRetries = delayedRetries;
         }
 
-        public object Message { get; }
+        public object Message { get; private set; }
+        internal void UpdateMessageInstance(object newInstance)
+        {
+            if (newInstance == null) throw new ArgumentNullException(nameof(newInstance));
+            if (!MessageType.IsInstanceOfType(newInstance))
+                throw new ArgumentException("The replacement must implement the incoming message contract.", nameof(newInstance));
+            Message = newInstance;
+        }
         public Type MessageType { get; }
         public string ContractName { get; }
         public int ImmediateRetries { get; }

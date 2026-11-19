@@ -16,20 +16,30 @@ namespace Bq.Messaging.Tests
 
     public interface IPilotMessage { string Text { get; set; } }
     public interface IPilotEvent : IPilotMessage { int Count { get; set; } }
+    public sealed class ReplacementPilotEvent : IPilotEvent
+    {
+        public string Text { get; set; }
+        public int Count { get; set; }
+    }
 
     public sealed class ObservePilotEvent : Behavior<IIncomingLogicalMessageContext>
     {
         public override async Task Invoke(IIncomingLogicalMessageContext context, Func<Task> next)
         {
-            if (context.Message.MessageType == typeof(IPilotEvent) && context.Message.Instance is IPilotEvent)
+            if (context.Message.MessageType == typeof(IPilotEvent) && context.Message.Instance is IPilotEvent pilot)
             {
                 context.Extensions.TryGet<int>("pilot-behaviors", out var count);
                 context.Extensions.Set("pilot-behaviors", count + 1);
                 if (count == 0)
                 {
+                    context.UpdateMessageInstance(new ReplacementPilotEvent { Text = pilot.Text + " observed", Count = pilot.Count });
                     var options = new ReplyOptions();
                     options.SetDestination(context.GetHeader("migration-reply"));
                     await context.Reply<Response>(response => response.Text = context.MessageId, options);
+                }
+                else if (!(context.Message.Instance is ReplacementPilotEvent))
+                {
+                    throw new InvalidOperationException("The next behavior must see the replacement instance.");
                 }
             }
             await next();
@@ -436,7 +446,7 @@ namespace Bq.Messaging.Tests
                         object pilotCommand = new Command { Text = "pilot command" };
                         await messaging.Send(pilotCommand, new SendOptions());
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
-                        Assert(await Within(received.Task) == "pilot", "event convention subscribes the migrated receiver");
+                        Assert(await Within(received.Task) == "pilot observed", "the migrated handler receives the replacement event");
                         BasicGetResult behaviorReply = null;
                         await WaitFor(() =>
                         {

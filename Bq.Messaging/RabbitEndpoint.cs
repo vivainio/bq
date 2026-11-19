@@ -615,7 +615,7 @@ namespace Bq.Messaging
                                 try
                                 {
                                     var incomingContext = new IncomingMessageContext(message, context, registration.Type, typeName, attempt, cycle);
-                                    await incoming(incomingContext, () => registration.Invoke(message, context)).ConfigureAwait(false);
+                                    await incoming(incomingContext, () => registration.Invoke(incomingContext.Message, context)).ConfigureAwait(false);
                                 }
                                 finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; }
                             }
