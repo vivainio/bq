@@ -1,8 +1,8 @@
 using System;
 using System.Data.Common;
-using System.Threading;
 using System.Threading.Tasks;
 using Bq.Messaging;
+using Bq.Extensions.CastleWindsor;
 using Bq.Persistence.Sqlite;
 using Castle.MicroKernel.Registration;
 using Castle.MicroKernel.Lifestyle;
@@ -71,30 +71,6 @@ namespace Bq.Reference.Windsor
 
     // Explicit adapter: Bq calls the factory per attempt and Windsor owns the scoped objects.
     // The AsyncLocal context follows awaits and isolates concurrent message deliveries.
-    public static class WindsorHandlerScope
-    {
-        static readonly AsyncLocal<IMessageHandlerContext> current = new AsyncLocal<IMessageHandlerContext>();
-        public static IMessageHandlerContext Current => current.Value;
-        public static IHandleMessages<T> Create<T>(IWindsorContainer container, IMessageHandlerContext context) => new ScopedHandler<T>(container, context);
-        sealed class ScopedHandler<T> : IHandleMessages<T>
-        {
-            readonly IWindsorContainer container;
-            readonly IMessageHandlerContext context;
-            public ScopedHandler(IWindsorContainer container, IMessageHandlerContext context) { this.container = container; this.context = context; }
-            public async Task Handle(T message, IMessageHandlerContext ignored)
-            {
-                var previous = current.Value;
-                current.Value = context;
-                try
-                {
-                    using (container.BeginScope())
-                        await container.Resolve<IHandleMessages<T>>().Handle(message, context);
-                }
-                finally { current.Value = previous; }
-            }
-        }
-    }
-
     static class Program
     {
         static DbConnection Connection(string path)
@@ -126,21 +102,26 @@ namespace Bq.Reference.Windsor
             using (var container = new WindsorContainer())
             {
                 RabbitEndpoint endpoint = null;
+                var messaging = new WindsorMessaging(container, () => endpoint.CreateUniformSession());
                 container.Register(
-                    Component.For<IMessageHandlerContext>().UsingFactoryMethod(() => WindsorHandlerScope.Current ?? throw new InvalidOperationException("No active message scope.")).LifestyleScoped(),
-                    Component.For<IUniformSession>().UsingFactoryMethod(() => WindsorHandlerScope.Current != null ? WindsorHandlerScope.Current.UniformSession : endpoint.CreateUniformSession()).LifestyleScoped(),
                     Component.For<OrderMessages>().LifestyleScoped(),
                     Component.For<OrderRepository>().UsingFactoryMethod(() =>
                     {
-                        var persistenceSession = WindsorHandlerScope.Current?.PersistenceSession ??
-                            throw new InvalidOperationException("No active message scope.");
+                        var persistenceSession = messaging.Current.PersistenceSession;
                         return new OrderRepository(persistenceSession.Connection, persistenceSession.Transaction);
                     }).LifestyleScoped(),
                     Component.For<IHandleMessages<PlaceOrder>>().ImplementedBy<PlaceOrderHandler>().LifestyleScoped(),
                     Component.For<IHandleMessages<PrepareOrder>>().ImplementedBy<PrepareOrderHandler>().LifestyleScoped());
                 var config = new EndpointConfiguration(endpointName, uri) { Persistence = persistence };
-                config.Handle<PlaceOrder>(ctx => WindsorHandlerScope.Create<PlaceOrder>(container, ctx));
-                config.Handle<PrepareOrder>(ctx => WindsorHandlerScope.Create<PrepareOrder>(container, ctx));
+                messaging.Attach(config);
+                messaging.Handle<PlaceOrder>(config);
+                messaging.Handle<PrepareOrder>(config);
+                config.Incoming.BeforeCommit((incoming, session) =>
+                {
+                    if (!ReferenceEquals(container.Resolve<IMessageHandlerContext>(), incoming.HandlerContext))
+                        throw new InvalidOperationException("The handler context must remain in scope through before-commit.");
+                    return Task.CompletedTask;
+                });
                 endpoint = RabbitEndpoint.Start(config);
                 using (endpoint)
                 {

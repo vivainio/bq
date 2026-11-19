@@ -12,7 +12,7 @@ using RabbitMQ.Client.Events;
 
 namespace Bq.Messaging
 {
-    public sealed class RabbitEndpoint : IDisposable
+    public sealed class RabbitEndpoint : IEndpointInstance
     {
         readonly string eventsExchange;
         readonly string errorExchange;
@@ -213,7 +213,7 @@ namespace Bq.Messaging
             finally { CompleteActiveWork(); }
         }
 
-        sealed class TransactionalSession : ITransactionalSession
+        sealed class TransactionalSession : ITransactionalSession, IImmediateDispatch
         {
             readonly RabbitEndpoint endpoint;
             readonly IPersistenceSession persistence;
@@ -241,6 +241,8 @@ namespace Bq.Messaging
             public System.Data.Common.DbTransaction Transaction => ActivePersistence.Transaction;
             public IUniformSession WithHeader(string name, object value) =>
                 new TransactionalSession(endpoint, persistence, CancellationToken, root, AddHeader(headers, name, value));
+            public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
+            public Task Send(string message, SendOptions options) => Send<string>(message, options);
             public Task Send<T>(T message)
             {
                 if (!endpoint.configuration.Routes.TryGetValue(typeof(T), out var destination))
@@ -260,6 +262,11 @@ namespace Bq.Messaging
                 endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null, messageHeaders);
             public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
                 message, endpoint.eventsExchange, endpoint.WireName(typeof(T)), null, false, headers));
+            Task IImmediateDispatch.SendImmediately<T>(T message, string destination, bool local)
+            {
+                _ = ActivePersistence;
+                return endpoint.SendCore(message, null, local ? endpoint.configuration.Name : destination, headers);
+            }
             public void End() => root.ended = true;
         }
 
@@ -297,6 +304,9 @@ namespace Bq.Messaging
             IDictionary<string, object> headers = null) =>
             session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true, headers, deferred: true), dueUtc);
 
+        public Task Send<T>(T message, SendOptions options) => CreateUniformSession().Send(message, options);
+        public Task Send(string message, SendOptions options) => Send<string>(message, options);
+        public Task Publish<T>(T message, PublishOptions options) => CreateUniformSession().Publish(message, options);
         public Task Send<T>(T message) => SendCore(message, null, null);
         public Task Send<T>(string destination, T message) => SendCore(message, null, RequireDestination(destination));
         static string RequireDestination(string destination)
@@ -633,6 +643,8 @@ namespace Bq.Messaging
         }
         // Stops accepting new deliveries, waits for active handlers, and then closes the connection.
         // Cancellation forces closure and leaves unfinished deliveries for broker redelivery.
+        public Task Stop() => StopAsync();
+
         public Task StopAsync(CancellationToken cancellationToken = default)
         {
             lock (lifecycleLock)
@@ -699,7 +711,7 @@ namespace Bq.Messaging
             public HandlerContext Context { get; }
             public int Active;
         }
-        sealed class UniformSession : IUniformSession
+        sealed class UniformSession : IUniformSession, IImmediateDispatch
         {
             readonly RabbitEndpoint endpoint;
             readonly UniformScope scope;
@@ -724,6 +736,13 @@ namespace Bq.Messaging
                     return scope.Context;
                 }
             }
+            Task IImmediateDispatch.SendImmediately<T>(T message, string destination, bool local)
+            {
+                var context = Validate();
+                return endpoint.SendCore(message, context?.CorrelationId, local ? endpoint.configuration.Name : destination, headers);
+            }
+            public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
+            public Task Send(string message, SendOptions options) => Send<string>(message, options);
             public Task Send<T>(T message) { var context = Validate(); return context == null ? endpoint.SendCore(message, null, null, headers) : context.SendWithHeaders(message, null, headers); }
             public Task Send<T>(string destination, T message)
             {
@@ -772,6 +791,8 @@ namespace Bq.Messaging
             public string MessageId { get; }
             public string CorrelationId { get; }
             public IReadOnlyDictionary<string, object> Headers { get; }
+            public Task Send<T>(T message, SendOptions options) => UniformSession.Send(message, options);
+            public Task Send(string message, SendOptions options) => Send<string>(message, options);
             public Task Send<T>(T message) => SendWithHeaders(message, null, null);
             internal Task SendWithHeaders<T>(T message, string destination, IDictionary<string, object> headers)
             {

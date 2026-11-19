@@ -25,9 +25,24 @@ namespace Bq.Messaging
     {
         TimeSpan? delay;
         DateTimeOffset? deliverAt;
+        internal string Destination { get; private set; }
+        internal bool ImmediateDispatch { get; private set; }
+
+        public void SetDestination(string destination)
+        {
+            if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("Destination is required.", nameof(destination));
+            Destination = destination;
+        }
+
+        public void RequireImmediateDispatch()
+        {
+            if (delay.HasValue || deliverAt.HasValue) throw new InvalidOperationException("Immediate dispatch cannot be scheduled.");
+            ImmediateDispatch = true;
+        }
 
         public void DelayDeliveryWith(TimeSpan value)
         {
+            if (ImmediateDispatch) throw new InvalidOperationException("Immediate dispatch cannot be scheduled.");
             if (value < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(value));
             delay = value;
             deliverAt = null;
@@ -35,6 +50,7 @@ namespace Bq.Messaging
 
         public void DoNotDeliverBefore(DateTimeOffset value)
         {
+            if (ImmediateDispatch) throw new InvalidOperationException("Immediate dispatch cannot be scheduled.");
             deliverAt = value;
             delay = null;
         }
@@ -50,34 +66,46 @@ namespace Bq.Messaging
         Task ReplyWithHeaders<T>(T message, IDictionary<string, object> headers);
     }
 
+    internal interface IImmediateDispatch
+    {
+        Task SendImmediately<T>(T message, string destination, bool local);
+    }
+
     public static class MessageOptionsExtensions
     {
-        public static Task SendWithOptions<T>(this IUniformSession session, T message, SendOptions options)
+        public static Task SendWithOptions<T>(this IUniformSession session, T message, SendOptions options) =>
+            session.Send(message, options);
+
+        internal static Task SendUsingOptions<T>(IUniformSession session, T message, SendOptions options,
+            string destination = null, bool local = false)
         {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            if ((destination != null || local) && options.Destination != null)
+                throw new ArgumentException("A destination has already been supplied.", nameof(options));
+            destination = destination ?? options.Destination;
             var dueAt = options.DueAt;
             session = options.Apply(session);
+            if (options.ImmediateDispatch)
+            {
+                if (session is IImmediateDispatch immediate) return immediate.SendImmediately(message, destination, local);
+                throw new NotSupportedException("This session does not support immediate dispatch.");
+            }
+            if (local) return dueAt.HasValue ? session.SendLocalAt(message, dueAt.Value) : session.SendLocal(message);
+            if (destination != null) return dueAt.HasValue ? session.SendAt(destination, message, dueAt.Value) : session.Send(destination, message);
             return dueAt.HasValue ? session.SendAt(message, dueAt.Value) : session.Send(message);
         }
 
-        public static Task Send<T>(this IUniformSession session, string destination, T message, SendOptions options)
-        {
-            var dueAt = options.DueAt;
-            session = options.Apply(session);
-            return dueAt.HasValue ? session.SendAt(destination, message, dueAt.Value) : session.Send(destination, message);
-        }
+        public static Task Send<T>(this IUniformSession session, string destination, T message, SendOptions options) =>
+            SendUsingOptions(session, message, destination: destination ?? throw new ArgumentNullException(nameof(destination)), options: options);
 
-        public static Task SendLocal<T>(this IUniformSession session, T message, SendOptions options)
-        {
-            var dueAt = options.DueAt;
-            session = options.Apply(session);
-            return dueAt.HasValue ? session.SendLocalAt(message, dueAt.Value) : session.SendLocal(message);
-        }
+        public static Task SendLocal<T>(this IUniformSession session, T message, SendOptions options) =>
+            SendUsingOptions(session, message, options, local: true);
 
         public static Task Publish<T>(this IUniformSession session, T message, PublishOptions options) =>
             options.Apply(session).Publish(message);
 
         public static Task SendWithOptions<T>(this IMessageHandlerContext context, T message, SendOptions options) =>
-            context.UniformSession.SendWithOptions(message, options);
+            context.Send(message, options);
 
         public static Task Send<T>(this IMessageHandlerContext context, string destination, T message, SendOptions options) =>
             context.UniformSession.Send(destination, message, options);

@@ -19,6 +19,26 @@ namespace Bq.Messaging
         public TData Data { get; internal set; }
         internal bool Completed { get; private set; }
         internal void Initialize(TData data, Func<DateTimeOffset, object, Type, Task> request) { Data = data; requestTimeout = request; }
+        protected virtual void ConfigureHowToFindSaga(SagaPropertyMapper<TData> mapper) { }
+
+        protected SagaPropertyMapper<TData>.MessageMapping<TMessage> ConfigureMapping<TMessage>(
+            System.Linq.Expressions.Expression<Func<TMessage, object>> property) where TMessage : class =>
+            new SagaPropertyMapper<TData>.MessageMapping<TMessage>(property,
+                (data, message) => (configuringMapper ?? throw new InvalidOperationException("Configure mappings inside ConfigureHowToFindSaga."))
+                    .Add(data, message));
+
+        SagaPropertyMapper<TData> configuringMapper;
+        internal void ConfigureMappings(SagaPropertyMapper<TData> mapper)
+        {
+            configuringMapper = mapper;
+            try { ConfigureHowToFindSaga(mapper); }
+            finally { configuringMapper = null; }
+        }
+
+        protected Task RequestTimeout<T>(IMessageHandlerContext context, TimeSpan delay, T state) => RequestTimeout(delay, state);
+        protected Task RequestTimeout<T>(IMessageHandlerContext context, DateTime utcDueAt, T state) =>
+            RequestTimeout(new DateTimeOffset(utcDueAt), state);
+
         protected void MarkAsComplete() { Completed = true; }
         protected Task RequestTimeout<T>(TimeSpan delay, T state)
         {
@@ -75,6 +95,21 @@ namespace Bq.Messaging
                     (message, context) => runtime.HandleMessage((TMessage)message, context, correlation, start)));
             });
         }
+        internal void AddMappedMessage<TMessage>(Func<TMessage, (string Key, Action<TData> Initialize)> correlation) where TMessage : class
+        {
+            if (!typeof(IHandleMessages<TMessage>).IsAssignableFrom(typeof(TSaga)))
+                throw new InvalidOperationException(typeof(TSaga).FullName + " must handle " + typeof(TMessage).FullName);
+            var start = typeof(IAmStartedByMessages<TMessage>).IsAssignableFrom(typeof(TSaga));
+            var subscribe = typeof(IEvent).IsAssignableFrom(typeof(TMessage));
+            Messages.Add((configuration, runtime) => configuration.AddRegistration(EndpointConfiguration.MessageType(typeof(TMessage)),
+                new Registration(typeof(TMessage), subscribe, (message, context) =>
+                {
+                    var typed = (TMessage)message;
+                    var mapped = correlation(typed);
+                    return runtime.HandleMappedMessage(typed, context, mapped.Key, start, mapped.Initialize);
+                })));
+        }
+
         public void Timeout<TTimeout>() where TTimeout : class
         {
             if (!typeof(IHandleTimeouts<TTimeout>).IsAssignableFrom(typeof(TSaga))) throw new InvalidOperationException(typeof(TSaga).FullName + " must implement IHandleTimeouts<" + typeof(TTimeout).FullName + ">.");
@@ -84,6 +119,28 @@ namespace Bq.Messaging
 
     public static class SagaConfigurationExtensions
     {
+        public static void RegisterSaga<TSaga, TData>(this EndpointConfiguration endpoint)
+            where TSaga : Saga<TData>, new() where TData : class, new() =>
+            endpoint.RegisterSaga<TSaga, TData>(() => new TSaga());
+
+        public static void RegisterSaga<TSaga, TData>(this EndpointConfiguration endpoint, Func<TSaga> factory)
+            where TSaga : Saga<TData> where TData : class, new()
+        {
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
+            endpoint.RegisterSaga<TSaga, TData>(factory, mappings =>
+            {
+                var mapper = new SagaPropertyMapper<TData>();
+                var definition = factory() ?? throw new InvalidOperationException("Saga factory returned null.");
+                try { definition.ConfigureMappings(mapper); }
+                finally { (definition as IDisposable)?.Dispose(); }
+                mapper.Apply(mappings);
+                var register = typeof(SagaMappings<TSaga, TData>).GetMethod(nameof(SagaMappings<TSaga, TData>.Timeout));
+                foreach (var contract in typeof(TSaga).GetInterfaces())
+                    if (contract.IsGenericType && contract.GetGenericTypeDefinition() == typeof(IHandleTimeouts<>))
+                        register.MakeGenericMethod(contract.GetGenericArguments()[0]).Invoke(mappings, null);
+            });
+        }
+
         public static void RegisterSaga<TSaga, TData>(this EndpointConfiguration endpoint, Func<TSaga> factory, Action<SagaMappings<TSaga, TData>> configure)
             where TSaga : Saga<TData> where TData : class, new()
         {
@@ -125,6 +182,10 @@ namespace Bq.Messaging
             if (string.IsNullOrEmpty(key)) throw new InvalidOperationException("Saga correlation key must not be empty.");
             return Execute(key, null, canStart, context, (saga) => ((IHandleMessages<TMessage>)saga).Handle(message, context), message);
         }
+        public Task HandleMappedMessage<TMessage>(TMessage message, IMessageHandlerContext context, string key,
+            bool canStart, Action<TData> initialize) =>
+            Execute(key, null, canStart, context, saga => ((IHandleMessages<TMessage>)saga).Handle(message, context), message, initialize);
+
         public Task HandleTimeout(SagaTimeoutMessage timeout, IMessageHandlerContext context)
         {
             if (string.IsNullOrEmpty(timeout.SagaKey) || string.IsNullOrEmpty(timeout.InstanceId) || timeout.TimeoutType == null || timeout.State == null)
@@ -138,7 +199,7 @@ namespace Bq.Messaging
             var state = MessagePackSerializer.Deserialize(stateType, timeout.State, Options);
             return Execute(timeout.SagaKey, timeout.InstanceId, false, context, saga => invoke(saga, state, context));
         }
-        async Task Execute(string key, string expectedInstance, bool canStart, IMessageHandlerContext context, Func<TSaga, Task> invoke, object incomingMessage = null)
+        async Task Execute(string key, string expectedInstance, bool canStart, IMessageHandlerContext context, Func<TSaga, Task> invoke, object incomingMessage = null, Action<TData> initialize = null)
         {
             var session = context.PersistenceSession ?? throw new InvalidOperationException("Saga handling requires persistence.");
             var record = await session.LoadSaga(sagaType, key).ConfigureAwait(false);
@@ -150,6 +211,7 @@ namespace Bq.Messaging
             }
             var state = record == null ? new SagaStoredState<TData> { InstanceId = Guid.NewGuid().ToString("N"), Data = new TData() } : MessagePackSerializer.Deserialize<SagaStoredState<TData>>(record.Data, Options);
             if (expectedInstance != null && state.InstanceId != expectedInstance) return;
+            if (record == null) initialize?.Invoke(state.Data);
             var saga = factory() ?? throw new InvalidOperationException("Saga factory returned null.");
             try
             {

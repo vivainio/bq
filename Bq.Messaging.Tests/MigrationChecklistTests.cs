@@ -33,7 +33,7 @@ namespace Bq.Messaging.Tests
             var config = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
             config.MutateOutgoing = transport =>
             {
-                if (transport.TypeName != typeof(LocalMessage).FullName) return;
+                if (transport.TypeName != typeof(LocalMessage).FullName || transport.Headers.ContainsKey("immediate")) return;
                 Assert(transport.IncomingMessage != null, "outbox mutator sees the incoming handler context");
                 transport.TypeName = "migration.framed";
                 transport.Headers["migration-framing"] = "v1";
@@ -111,15 +111,26 @@ namespace Bq.Messaging.Tests
                     await InsertApplicationWork(context.PersistenceSession, message.Text + ":handler");
                     // An absent destination keeps the committed outbox entry available for inspection.
                     await context.Send(name + ".absent", new LocalMessage { Text = message.Text });
-                    if (message.Text == "replace") throw new InvalidOperationException("handler failure");
+                    if (message.Text == "replace")
+                    {
+                        var send = new SendOptions();
+                        send.SetDestination(name + ".immediate");
+                        send.SetHeader("immediate", true);
+                        send.RequireImmediateDispatch();
+                        await context.Send(new LocalMessage { Text = message.Text }, send);
+                        throw new InvalidOperationException("handler failure");
+                    }
                     if (message.Text == "swallow") throw new InvalidOperationException("caught handler failure");
                 });
             });
 
             try
             {
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var channel = connection.CreateModel())
                 using (var endpoint = RabbitEndpoint.Start(config))
                 {
+                    channel.QueueDeclare(name + ".immediate", false, true, true);
                     foreach (var scenario in new[] { "skip", "replace", "before-commit", "after-next", "commit", "retry", "swallow", "duplicate-next" })
                         await endpoint.SendLocal(new Command { Text = scenario });
 
@@ -154,6 +165,9 @@ namespace Bq.Messaging.Tests
                         }
                     }
 
+                    var direct = channel.BasicGet(name + ".immediate", true);
+                    Assert(direct != null && Equals(direct.BasicProperties.Headers["immediate"], true),
+                        "immediate send publishes with headers even when the handler transaction rolls back");
                     var pending = await store.NextOutgoing(name);
                     Assert(await CountMigrationRows(path, "bq_outbox") == 2 && pending?.RoutingKey == name + ".absent",
                         "only successful attempts committed outbox messages");
@@ -262,7 +276,8 @@ namespace Bq.Messaging.Tests
                     channel.QueueDeclare(legacyQueue, true, false, false);
                     var contract = typeof(Event).FullName;
                     channel.QueueBind(legacyQueue, legacyExchange, contract);
-                    using (var producer = RabbitEndpoint.Start(sender))
+                    IStartableEndpoint startable = await Endpoint.Create(sender);
+                    using (var producer = await startable.Start())
                     using (var subscriber = RabbitEndpoint.Start(receiver))
                     {
                         const string legacyXml = "<Event><Text>legacy</Text></Event>";
@@ -275,7 +290,7 @@ namespace Bq.Messaging.Tests
                         Assert(channel.WaitForConfirms(TimeSpan.FromSeconds(5)), "legacy publication confirmed");
                         var publish = new PublishOptions();
                         publish.SetHeader("migration-group", "first");
-                        await producer.CreateUniformSession().Publish(new Event { Text = "pilot" }, publish);
+                        await producer.Publish(new Event { Text = "pilot" }, publish);
 
                         await producer.Send(new Command { Text = "pilot command" });
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");

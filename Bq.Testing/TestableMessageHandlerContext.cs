@@ -27,6 +27,7 @@ namespace Bq.Testing
         public string Destination { get; }
         public DateTimeOffset? DueAt { get; }
         public IReadOnlyDictionary<string, object> Headers { get; }
+        public bool ImmediateDispatch { get; internal set; }
     }
 
     public sealed class TestableMessageHandlerContext : IMessageHandlerContext, IReplyWithHeaders
@@ -47,6 +48,8 @@ namespace Bq.Testing
         IReadOnlyDictionary<string, object> IMessageHandlerContext.Headers => new ReadOnlyDictionary<string, object>(Headers);
         public IPersistenceSession PersistenceSession { get; set; }
 
+        public Task Send<T>(T message, SendOptions options) => UniformSession.Send(message, options);
+        public Task Send(string message, SendOptions options) => Send<string>(message, options);
         public Task Send<T>(T message) => UniformSession.Send(message);
         public Task Send<T>(string destination, T message) => UniformSession.Send(destination, message);
         public Task SendLocal<T>(T message) => UniformSession.SendLocal(message);
@@ -63,7 +66,7 @@ namespace Bq.Testing
             return Task.CompletedTask;
         }
 
-        sealed class Session : IUniformSession
+        sealed class Session : IUniformSession, IImmediateDispatch
         {
             readonly ConcurrentQueue<RecordedMessage> messages;
             readonly IDictionary<string, object> headers;
@@ -78,6 +81,15 @@ namespace Bq.Testing
             {
                 if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Header name is required.", nameof(name));
                 return new Session(messages, new Dictionary<string, object>(headers) { [name] = value });
+            }
+
+            public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
+            public Task Send(string message, SendOptions options) => Send<string>(message, options);
+            Task IImmediateDispatch.SendImmediately<T>(T message, string destination, bool local)
+            {
+                messages.Enqueue(new RecordedMessage(local ? MessageOperation.SendLocal : MessageOperation.Send, message, destination, null, headers)
+                    { ImmediateDispatch = true });
+                return Task.CompletedTask;
             }
 
             public Task Send<T>(T message) => Record(MessageOperation.Send, message);

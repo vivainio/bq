@@ -12,6 +12,19 @@ Register incoming behaviors with `configuration.Incoming.Use`. They can share at
 
 Transport mutators can change headers, the contract name, or the body. The outbox stores the outgoing mutator’s final contract name, headers, and body. Bq preserves the received wire payload for [recovery and replay](recoverability.md). Incoming behaviors can read the contract name, retry counts, and deferred or saga-timeout flags from the incoming context. Use `FindHeader` or `GetHeader` for text values such as `MessageHeaders.TimeSent`.
 
+## API differences from NServiceBus 7
+
+The comparison uses the [NServiceBus 7.8.6 source tag](https://github.com/Particular/NServiceBus/tree/7.8.6). Use Bq’s namespaces when porting code.
+
+| Area | Bq API and remaining differences |
+| --- | --- |
+| Startup | `Endpoint.Create` returns an `IStartableEndpoint` whose `Start` returns an `IEndpointInstance`. `Endpoint.Start` starts directly. Bq still takes an explicit RabbitMQ URI and persistence provider. |
+| Routing and subscriptions | Register routes with `Route<T>` and handlers with `Handle<T>`. Subscribe through handler registration at startup. Assembly scanning and runtime subscribe and unsubscribe remain host concerns. |
+| Sends | Typed `Send(message, options)` supports destination selection, headers, scheduling, and immediate dispatch. An immediate send publishes outside the transaction and can be repeated by a handler retry. The NServiceBus object-based session and message-initializer overloads are a separate surface. |
+| Handler context | Bq exposes `Headers`, `PersistenceSession`, and `UniformSession`. Adapt code that used `MessageHeaders`, `SynchronizedStorageSession`, or the NServiceBus context bag. |
+| Sagas | Override `ConfigureHowToFindSaga` and use `MapSaga(...).ToMessage<T>(...)` or `ConfigureMapping<T>(...).ToSaga(...)`. Register the saga with `RegisterSaga<TSaga, TData>()` or supply a factory. Bq uses one scalar correlation property. Header mappings, custom finders, `IContainSagaData`, and originator metadata require separate adaptation. |
+| Castle Windsor | Use the optional `Bq.Extensions.CastleWindsor` package to attach the existing container. Register handlers explicitly. A scope covers handler resolution and before-commit callbacks. |
+
 ## Verify the migration locally
 
 Run `bash scripts/test-rabbitmq.sh` to exercise the following cases with RabbitMQ and SQLite. The [integration test instructions](testing.md) also show how to run the transport-free cases on their own.

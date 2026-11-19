@@ -17,6 +17,7 @@ namespace Bq.Messaging.Tests
 
     public sealed class FulfillmentState
     {
+        public string OrderId { get; set; }
         public bool Recorded { get; set; }
         public bool DeadlineReached { get; set; }
     }
@@ -24,10 +25,17 @@ namespace Bq.Messaging.Tests
     public sealed class FulfillmentSaga : Saga<FulfillmentState>, IAmStartedByMessages<BeginFulfillment>,
         IHandleMessages<FulfillmentRecorded>, IHandleTimeouts<FulfillmentDeadline>
     {
+        protected override void ConfigureHowToFindSaga(SagaPropertyMapper<FulfillmentState> mapper)
+        {
+            mapper.MapSaga(data => data.OrderId).ToMessage<BeginFulfillment>(message => message.OrderId);
+            mapper.ConfigureMapping<FulfillmentRecorded>(message => message.OrderId).ToSaga(data => data.OrderId);
+        }
+
         public async Task Handle(BeginFulfillment message, IMessageHandlerContext context)
         {
-            await context.Publish(new FulfillmentStarted { OrderId = message.OrderId });
-            await RequestTimeout(TimeSpan.FromMilliseconds(250), new FulfillmentDeadline { OrderId = message.OrderId });
+            if (Data.OrderId != message.OrderId) throw new InvalidOperationException("Saga data must start with its correlation property.");
+            await context.Publish(new FulfillmentStarted { OrderId = Data.OrderId });
+            await RequestTimeout(context, TimeSpan.FromMilliseconds(250), new FulfillmentDeadline { OrderId = Data.OrderId });
         }
 
         public Task Handle(FulfillmentRecorded message, IMessageHandlerContext context)
@@ -76,12 +84,7 @@ namespace Bq.Messaging.Tests
             intake.SendOnly();
             intake.Route<BeginFulfillment>(fulfillmentName);
             var fulfillment = new EndpointConfiguration(fulfillmentName, uri) { Persistence = fulfillmentStore, EventsExchange = exchange };
-            fulfillment.RegisterSaga<FulfillmentSaga, FulfillmentState>(() => new FulfillmentSaga(), mappings =>
-            {
-                mappings.Start<BeginFulfillment>(message => message.OrderId);
-                mappings.Handle<FulfillmentRecorded>(message => message.OrderId);
-                mappings.Timeout<FulfillmentDeadline>();
-            });
+            fulfillment.RegisterSaga<FulfillmentSaga, FulfillmentState>();
 
             var recording = new EndpointConfiguration(recordingName, uri)
             {

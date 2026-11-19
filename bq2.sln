@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Bq.Testing", "Bq.Testing\Bq
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Bq.Persistence.Oracle", "Bq.Persistence.Oracle\Bq.Persistence.Oracle.csproj", "{73CF4580-F920-48A6-89FA-AA29D6542C02}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Bq.Extensions.CastleWindsor", "Bq.Extensions.CastleWindsor\Bq.Extensions.CastleWindsor.csproj", "{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -153,6 +155,18 @@ Global
 		{73CF4580-F920-48A6-89FA-AA29D6542C02}.Release|x64.Build.0 = Release|Any CPU
 		{73CF4580-F920-48A6-89FA-AA29D6542C02}.Release|x86.ActiveCfg = Release|Any CPU
 		{73CF4580-F920-48A6-89FA-AA29D6542C02}.Release|x86.Build.0 = Release|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Debug|x64.Build.0 = Debug|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Debug|x86.Build.0 = Debug|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Release|x64.ActiveCfg = Release|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Release|x64.Build.0 = Release|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Release|x86.ActiveCfg = Release|Any CPU
+		{5B17DC90-1712-49D3-B1A6-DE7B1E2A4BDF}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
