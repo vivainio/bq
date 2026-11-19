@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.ExceptionServices;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Bq.Messaging
@@ -56,15 +57,24 @@ namespace Bq.Messaging
             {
                 var behavior = behaviors[index];
                 var next = pipeline;
-                pipeline = (context, invokeHandler) => behavior(context, async () =>
+                pipeline = (context, invokeHandler) =>
                 {
-                    try { await next(context, invokeHandler).ConfigureAwait(false); }
-                    catch (Exception failure)
+                    var invoked = 0;
+                    return behavior(context, async () =>
                     {
-                        context.DownstreamFailure = ExceptionDispatchInfo.Capture(failure);
-                        throw;
-                    }
-                });
+                        try
+                        {
+                            if (Interlocked.Exchange(ref invoked, 1) != 0)
+                                throw new InvalidOperationException("An incoming behavior can invoke next only once per attempt.");
+                            await next(context, invokeHandler).ConfigureAwait(false);
+                        }
+                        catch (Exception failure)
+                        {
+                            context.DownstreamFailure = ExceptionDispatchInfo.Capture(failure);
+                            throw;
+                        }
+                    });
+                };
             }
 
             return async (context, invokeHandler) =>

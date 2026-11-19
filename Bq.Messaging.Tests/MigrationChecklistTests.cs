@@ -57,7 +57,11 @@ namespace Bq.Messaging.Tests
                 if (message.Text == "retry")
                     incoming.Items.Add("retry", incoming.ImmediateRetries);
                 incoming.Items.Add("unit", message.Text);
-                try { await next(); }
+                try
+                {
+                    await next();
+                    if (message.Text == "duplicate-next") await next();
+                }
                 catch (InvalidOperationException ex) when (message.Text == "replace")
                 {
                     throw new FatalFailureException("replacement: " + ex.Message);
@@ -106,16 +110,18 @@ namespace Bq.Messaging.Tests
             {
                 using (var endpoint = RabbitEndpoint.Start(config))
                 {
-                    foreach (var scenario in new[] { "skip", "replace", "before-commit", "after-next", "commit", "retry", "swallow" })
+                    foreach (var scenario in new[] { "skip", "replace", "before-commit", "after-next", "commit", "retry", "swallow", "duplicate-next" })
                         await endpoint.SendLocal(new Command { Text = scenario });
 
-                    await WaitFor(async () => (await endpoint.ListErrors()).Count == 4 &&
+                    await WaitFor(async () => (await endpoint.ListErrors()).Count == 5 &&
                         await CountMigrationRows(path, "bq_inbox") == 3, "pipeline cases reach durable outcomes");
-                    Assert(Volatile.Read(ref closedScopes) == 8 && Volatile.Read(ref resolvedHandlers) == 7,
+                    Assert(Volatile.Read(ref closedScopes) == 9 && Volatile.Read(ref resolvedHandlers) == 8,
                         "each attempt closes its host scope and the short-circuited attempt skips handler resolution");
                     var errors = await endpoint.ListErrors();
-                    Assert(errors.Single(error => error.ExceptionType == typeof(InvalidOperationException).FullName)
-                        .ExceptionMessage == "caught handler failure", "recoverability sees the caught handler failure");
+                    Assert(errors.Where(error => error.ExceptionType == typeof(InvalidOperationException).FullName)
+                        .Select(error => error.ExceptionMessage).OrderBy(message => message).SequenceEqual(
+                            new[] { "An incoming behavior can invoke next only once per attempt.", "caught handler failure" }),
+                        "recoverability sees the caught failure and duplicate continuation");
                     Assert(errors.Where(error => error.ExceptionType == typeof(FatalFailureException).FullName)
                         .Select(error => error.ExceptionMessage).OrderBy(message => message).SequenceEqual(
                             new[] { "behavior failed after next", "replacement: handler failure", "unit of work save failed" }),
