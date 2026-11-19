@@ -11,6 +11,7 @@ namespace Bq.Messaging
     public interface IIncomingLogicalMessageContext : IIncomingContext
     {
         LogicalMessage Message { get; }
+        bool MessageHandled { get; set; }
         void UpdateMessageInstance(object newInstance);
     }
 
@@ -104,6 +105,11 @@ namespace Bq.Messaging
             }
 
             public LogicalMessage Message => new LogicalMessage(context.MessageType, context.Message);
+            public bool MessageHandled
+            {
+                get => context.MessageHandled;
+                set => context.MessageHandled = value;
+            }
             public void UpdateMessageInstance(object newInstance) => context.UpdateMessageInstance(newInstance);
             public string MessageId => context.HandlerContext.MessageId;
             public string ReplyToAddress => context.HandlerContext.ReplyToAddress;

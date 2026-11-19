@@ -37,6 +37,7 @@ namespace Bq.Messaging
         public IMessageHandlerContext HandlerContext { get; }
         public ContextBag Extensions => HandlerContext.Extensions;
         internal ExceptionDispatchInfo DownstreamFailure { get; set; }
+        internal bool MessageHandled { get; set; }
         public IDictionary<string, object> Items { get; } = new Dictionary<string, object>();
     }
 

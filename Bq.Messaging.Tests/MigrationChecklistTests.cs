@@ -42,7 +42,9 @@ namespace Bq.Messaging.Tests
                     throw new InvalidOperationException("The next behavior must see the replacement instance.");
                 }
             }
+            if (context.MessageHandled) throw new InvalidOperationException("The handler has not run yet.");
             await next();
+            if (!context.MessageHandled) throw new InvalidOperationException("The handler completed but the context did not report it.");
         }
     }
 
