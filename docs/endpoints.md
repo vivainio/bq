@@ -27,7 +27,7 @@ var tenantSession = context.UniformSession.WithHeader("tenant-id", "north");
 await tenantSession.SendLocal(new RebuildTenantIndex());
 ```
 
-Headers are copied when set and stored with outbox and scheduled messages, so they survive restarts and are preserved by retries. Values must use RabbitMQ field-table types: strings, booleans, numeric primitives, byte arrays, nested string-keyed tables, or lists of supported values. Received messages expose these as `context.Headers`.
+Each session view has its own header map. The `x-bq-` prefix is reserved. Headers are stored with outbox and scheduled messages, so they survive restarts and are preserved by retries. Values must use RabbitMQ field-table types: strings, booleans, numeric primitives, byte arrays, nested string-keyed tables, or lists of supported values. Received messages expose these as `context.Headers`.
 
 ## Concurrency and shutdown
 

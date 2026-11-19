@@ -218,10 +218,12 @@ namespace Bq.Messaging
             public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
             public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor<T>(), message, dueAt);
             public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.configuration.Name, message, dueAt);
-            public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
-                endpoint.StoreScheduled(ActivePersistence, destination, message, dueAt.UtcDateTime, null, headers);
-            public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
-                endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null, headers);
+            public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => SendAt(destination, message, dueAt, headers);
+            public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt, IDictionary<string, object> messageHeaders) =>
+                endpoint.StoreScheduled(ActivePersistence, destination, message, dueAt.UtcDateTime, null, messageHeaders);
+            public Task PublishAt<T>(T message, DateTimeOffset dueAt) => PublishAt(message, dueAt, headers);
+            public Task PublishAt<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> messageHeaders) =>
+                endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null, messageHeaders);
             public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
                 message, endpoint.eventsExchange, EndpointConfiguration.MessageType(typeof(T)), null, false, headers));
             public void End() => root.ended = true;
@@ -230,6 +232,10 @@ namespace Bq.Messaging
         static IDictionary<string, object> AddHeader(IDictionary<string, object> current, string name, object value)
         {
             if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Message header name cannot be empty.", nameof(name));
+            if (name.StartsWith("x-bq-", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("The x-bq- header prefix is reserved.", nameof(name));
+            if (Encoding.UTF8.GetByteCount(name) > 255)
+                throw new ArgumentException("Message header names cannot exceed 255 UTF-8 bytes.", nameof(name));
             var result = new Dictionary<string, object>(current);
             result[name] = value;
             return result;
@@ -241,13 +247,13 @@ namespace Bq.Messaging
             ExecuteTransaction(session => session.SendAt(destination, message, dueAt));
 
         Task SendAtWithHeaders<T>(string destination, T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
-            ExecuteTransaction(session => StoreScheduled(session as IPersistenceSession, destination, message, dueAt.UtcDateTime, null, headers));
+            ExecuteTransaction(session => ((TransactionalSession)session).SendAt(destination, message, dueAt, headers));
 
         public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
             ExecuteTransaction(session => session.PublishAt(message, dueAt));
 
         Task PublishAtWithHeaders<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
-            ExecuteTransaction(session => StoreScheduledEvent(session as IPersistenceSession, message, dueAt.UtcDateTime, null, headers));
+            ExecuteTransaction(session => ((TransactionalSession)session).PublishAt(message, dueAt, headers));
 
         Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
@@ -670,7 +676,7 @@ namespace Bq.Messaging
                 RequireDestination(destination);
                 return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true, headers));
             }
-            public Task Send<T>(string destination, T message) => SendWithHeaders(message, destination, null);
+            public Task Send<T>(string destination, T message) => SendWithHeaders(message, RequireDestination(destination), null);
             public Task SendLocal<T>(T message) => SendWithHeaders(message, endpoint.configuration.Name, null);
             public Task Publish<T>(T message) => PublishWithHeaders(message, null);
             internal Task PublishWithHeaders<T>(T message, IDictionary<string, object> headers) =>
