@@ -6,6 +6,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Bq.Messaging;
 using Bq.Persistence.Sqlite;
+using MessagePack;
+using MessagePack.Resolvers;
 using RabbitMQ.Client;
 
 namespace Bq.Messaging.Tests
@@ -29,6 +31,14 @@ namespace Bq.Messaging.Tests
             }
 
             var config = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
+            config.MutateOutgoing = transport =>
+            {
+                if (transport.TypeName != typeof(LocalMessage).FullName) return;
+                Assert(transport.IncomingMessage != null, "outbox mutator sees the incoming handler context");
+                transport.TypeName = "migration.framed";
+                transport.Headers["migration-framing"] = "v1";
+                transport.Body = new byte[] { 0x7e }.Concat(transport.Body).ToArray();
+            };
             config.Recoverability.DelayedRetries = new[] { TimeSpan.FromHours(1) };
             config.Recoverability.Policy = failure =>
             {
@@ -147,6 +157,12 @@ namespace Bq.Messaging.Tests
                     var pending = await store.NextOutgoing(name);
                     Assert(await CountMigrationRows(path, "bq_outbox") == 2 && pending?.RoutingKey == name + ".absent",
                         "only successful attempts committed outbox messages");
+                    Assert(pending.Type == "migration.framed" && pending.Body[0] == 0x7e &&
+                        Equals(pending.Headers["migration-framing"], "v1"),
+                        "outbox stores the mutated contract name, header, and wire body");
+                    var options = MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance);
+                    var storedMessage = MessagePackSerializer.Deserialize<LocalMessage>(pending.Body.Skip(1).ToArray(), options);
+                    Assert(storedMessage.Text == "commit", "stored wire body frames the committed message");
                 }
                 Console.WriteLine("Migration behavior and unit-of-work tests passed.");
             }
