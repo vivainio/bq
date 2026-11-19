@@ -30,6 +30,17 @@ namespace Bq.Messaging
             (configuration ?? throw new ArgumentNullException(nameof(configuration))).Recoverability;
     }
 
+    public sealed class RetryFailedSettings
+    {
+        internal Func<FailedMessage, Task> Notification { get; private set; }
+
+        public RetryFailedSettings OnMessageSentToErrorQueue(Func<FailedMessage, Task> notificationCallback)
+        {
+            Notification = notificationCallback ?? throw new ArgumentNullException(nameof(notificationCallback));
+            return this;
+        }
+    }
+
     public sealed class ImmediateRetriesSettings
     {
         internal int Count { get; private set; }

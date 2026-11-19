@@ -690,7 +690,14 @@ namespace Bq.Messaging.Tests
             config.SendFailedMessagesTo(errorName);
             var delayedNotification = new TaskCompletionSource<DelayedRetryMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
             var delayedNotifications = 0;
+            var failedNotification = new TaskCompletionSource<FailedMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
             config.Recoverability()
+                .Failed(failed => failed.OnMessageSentToErrorQueue(message =>
+                {
+                    if (message.Exception.Message != "permanent failure") return Task.CompletedTask;
+                    failedNotification.TrySetResult(message);
+                    throw new InvalidOperationException("test error queue notification failure");
+                }))
                 .Immediate(retries => retries.NumberOfRetries(0))
                 .Delayed(retries => retries.NumberOfRetries(1).TimeIncrease(TimeSpan.FromSeconds(3)))
                 .Delayed(retries => retries.OnMessageBeingRetried(retry =>
@@ -835,6 +842,11 @@ namespace Bq.Messaging.Tests
                         Assert(attempts == 3, "committed duplicate is skipped and fatal failure runs once");
                         BasicGetResult error = null;
                         await WaitFor(() => { error = channel.BasicGet(errorName, true); return Task.FromResult(error != null); }, "error queue delivery");
+                        var failedMessage = await Within(failedNotification.Task);
+                        Assert(failedMessage.MessageId == fatalProps.MessageId && failedMessage.ErrorQueue == errorName &&
+                            failedMessage.Body.SequenceEqual(protectedBody) &&
+                            (string)failedMessage.Exception.Data["ExceptionType"] == typeof(FatalFailureException).FullName,
+                            "error queue notification carries the published message and persisted failure");
                         Assert(error.BasicProperties.MessageId == fatalProps.MessageId, "error queue identity");
                         Assert(error.BasicProperties.Headers.ContainsKey("protected") && error.Body.Span[0] == protectedBody[0],
                             "recovery preserves the original wire body and headers");

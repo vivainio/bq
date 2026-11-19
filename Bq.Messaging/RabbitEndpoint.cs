@@ -488,9 +488,17 @@ namespace Bq.Messaging
             var persistence = configuration.Persistence;
             var endpoint = configuration.Name;
             if (persistence is ILockedDispatchPersistence locked)
-                return recoveries
-                    ? await locked.DispatchRecovery(endpoint, PublishRecovery).ConfigureAwait(false)
-                    : await locked.DispatchOutgoing(endpoint, PublishPrepared).ConfigureAwait(false);
+            {
+                if (!recoveries) return await locked.DispatchOutgoing(endpoint, PublishPrepared).ConfigureAwait(false);
+                RecoveryRecord published = null;
+                var dispatched = await locked.DispatchRecovery(endpoint, record =>
+                {
+                    PublishRecovery(record);
+                    published = record;
+                }).ConfigureAwait(false);
+                if (dispatched) await NotifyErrorQueue(published).ConfigureAwait(false);
+                return dispatched;
+            }
 
             if (recoveries)
             {
@@ -499,6 +507,7 @@ namespace Bq.Messaging
                 if (recovery == null) return false;
                 PublishRecovery(recovery);
                 await store.MarkRecoveryDispatched(endpoint, recovery.RecoveryId).ConfigureAwait(false);
+                await NotifyErrorQueue(recovery).ConfigureAwait(false);
             }
             else
             {
@@ -508,6 +517,27 @@ namespace Bq.Messaging
                 await persistence.MarkDispatched(endpoint, message.Id).ConfigureAwait(false);
             }
             return true;
+        }
+
+        async Task NotifyErrorQueue(RecoveryRecord record)
+        {
+            var notification = configuration.Recoverability.ErrorQueueNotification;
+            if (!record.IsError || notification == null) return;
+            try
+            {
+                var envelope = RecoveryWire.Decode(record.Payload);
+                var message = new IncomingMessage(record.MessageId, RecoveryWire.Headers(envelope), envelope.Body);
+                var exception = new Exception(record.ExceptionMessage);
+                exception.Data[nameof(record.ExceptionType)] = record.ExceptionType;
+                exception.Data[nameof(record.ExceptionDetail)] = record.ExceptionDetail;
+                await notification(new FailedMessage(message.MessageId, message.Headers, message.Body, exception,
+                    record.ErrorQueue)).ConfigureAwait(false);
+            }
+            catch (Exception notificationFailure)
+            {
+                System.Diagnostics.Trace.TraceError("Error queue notification failed for message {0}: {1}",
+                    record.MessageId, notificationFailure);
+            }
         }
 
         static string RecoveryId(string messageId, int cycle)

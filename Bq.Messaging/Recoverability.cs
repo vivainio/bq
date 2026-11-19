@@ -14,6 +14,7 @@ namespace Bq.Messaging
         internal Func<RecoverabilityConfig, ErrorContext, RecoverabilityAction> CompatiblePolicy { get; private set; }
         internal Func<ImmediateRetryMessage, Task> ImmediateRetryNotification { get; private set; }
         internal Func<DelayedRetryMessage, Task> DelayedRetryNotification { get; private set; }
+        internal Func<FailedMessage, Task> ErrorQueueNotification { get; private set; }
 
         internal HashSet<Type> UnrecoverableExceptionTypes { get; } = new HashSet<Type>();
 
@@ -32,6 +33,15 @@ namespace Bq.Messaging
         public RecoverabilityOptions CustomPolicy(Func<RecoverabilityConfig, ErrorContext, RecoverabilityAction> custom)
         {
             CompatiblePolicy = custom ?? throw new ArgumentNullException(nameof(custom));
+            return this;
+        }
+
+        public RecoverabilityOptions Failed(Action<RetryFailedSettings> customizations)
+        {
+            if (customizations == null) throw new ArgumentNullException(nameof(customizations));
+            var settings = new RetryFailedSettings();
+            customizations(settings);
+            ErrorQueueNotification = settings.Notification ?? ErrorQueueNotification;
             return this;
         }
 
@@ -101,6 +111,24 @@ namespace Bq.Messaging
         public byte[] Body { get; }
         public Exception Exception { get; }
         public int RetryAttempt { get; }
+    }
+
+    public class FailedMessage
+    {
+        public FailedMessage(string messageId, Dictionary<string, string> headers, byte[] body, Exception exception, string errorQueue)
+        {
+            MessageId = messageId;
+            Headers = headers;
+            Body = body;
+            Exception = exception;
+            ErrorQueue = errorQueue;
+        }
+
+        public string MessageId { get; }
+        public Dictionary<string, string> Headers { get; }
+        public byte[] Body { get; }
+        public Exception Exception { get; }
+        public string ErrorQueue { get; }
     }
 
     public sealed class RecoveryContext
