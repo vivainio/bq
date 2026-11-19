@@ -15,7 +15,7 @@ namespace Bq.Messaging.Tests
     public sealed class RuntimeSubscriptionEvent { public int Value { get; set; } }
 
     public interface IPilotMessage { string Text { get; set; } }
-    public interface IPilotEvent : IPilotMessage, IEvent { int Count { get; set; } }
+    public interface IPilotEvent : IPilotMessage { int Count { get; set; } }
 
     partial class Program
     {
@@ -337,14 +337,16 @@ namespace Bq.Messaging.Tests
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-            RegisterPilotHandler(sender, receiver, new Handler<IPilotEvent>((message, context) =>
+            receiver.Handle(() => new Handler<IPilotEvent>((message, context) =>
             {
                 Assert(context.MessageHeaders["migration-group"] == "first", "publish option reaches the migrated subscriber");
                 Assert(message.Count == 7, "interface event properties round-trip through MessagePack");
                 received.TrySetResult(message.Text);
                 return Task.CompletedTask;
             }));
-            RegisterPilotHandler(sender, receiver, new Handler<Command>((message, context) =>
+            sender.Conventions().DefiningCommandsAs(type => type == typeof(Command));
+            if (sender.Conventions().Conventions.IsCommandType(typeof(Command))) sender.Route(typeof(Command), receiverName);
+            receiver.Handle(() => new Handler<Command>((message, context) =>
             {
                 commandReceived.TrySetResult(message.Text);
                 return Task.CompletedTask;
@@ -363,7 +365,8 @@ namespace Bq.Messaging.Tests
             {
                 if (Interlocked.Increment(ref runtimeDeliveries) == 2) subscribed.TrySetResult(true);
                 return Task.CompletedTask;
-            }));
+            }), subscribe: false);
+            receiver.Conventions().DefiningEventsAs(type => type == typeof(IPilotEvent) || type == typeof(RuntimeSubscriptionEvent));
             receiver.Handle(() => new Handler<WorkflowBarrier>((message, context) =>
             {
                 barrier.TrySetResult(true);
@@ -410,6 +413,7 @@ namespace Bq.Messaging.Tests
                         Assert(channel.BasicGet(legacyQueue, true) == null && (await subscriber.ListErrors()).Count == 0,
                             "wire formats stay on their own exchanges during phased cutover");
 
+                        await messaging.Publish(new RuntimeSubscriptionEvent { Value = 0 }, new PublishOptions());
                         await subscriber.Subscribe<RuntimeSubscriptionEvent>();
                         await subscriber.Subscribe(typeof(RuntimeSubscriptionEvent), new SubscribeOptions());
                         await messaging.Publish(new RuntimeSubscriptionEvent { Value = 1 }, new PublishOptions());
@@ -446,13 +450,6 @@ namespace Bq.Messaging.Tests
             var options = MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance);
             channel.BasicPublish(exchange, route, properties, MessagePackSerializer.Serialize(message, options));
             Assert(channel.WaitForConfirms(TimeSpan.FromSeconds(5)), "subscription test publication confirmed");
-        }
-
-        static void RegisterPilotHandler<T>(EndpointConfiguration sender, EndpointConfiguration receiver, IHandleMessages<T> handler)
-            where T : IMessage
-        {
-            if (typeof(ICommand).IsAssignableFrom(typeof(T))) sender.Route<T>(receiver.Name);
-            receiver.Handle(() => handler, subscribe: typeof(IEvent).IsAssignableFrom(typeof(T)));
         }
 
         static async Task InsertApplicationWork(SynchronizedStorageSession session, string work)

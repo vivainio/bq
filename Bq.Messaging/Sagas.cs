@@ -130,14 +130,13 @@ namespace Bq.Messaging
             if (!typeof(IHandleMessages<TMessage>).IsAssignableFrom(typeof(TSaga)))
                 throw new InvalidOperationException(typeof(TSaga).FullName + " must handle " + typeof(TMessage).FullName);
             var start = typeof(IAmStartedByMessages<TMessage>).IsAssignableFrom(typeof(TSaga));
-            var subscribe = typeof(IEvent).IsAssignableFrom(typeof(TMessage));
             Messages.Add((configuration, runtime) => configuration.AddRegistration(EndpointConfiguration.MessageType(typeof(TMessage)),
-                new Registration(typeof(TMessage), subscribe, (message, context) =>
+                new Registration(typeof(TMessage), false, (message, context) =>
                 {
                     var typed = (TMessage)message;
                     var mapped = correlation(typed, context);
                     return runtime.HandleMappedMessage(typed, context, mapped.Key, start, mapped.Initialize);
-                })));
+                }, useEventConvention: true, subscribeByMarker: true)));
         }
 
         public void Timeout<TTimeout>() where TTimeout : class

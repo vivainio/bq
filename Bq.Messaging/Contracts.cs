@@ -120,29 +120,48 @@ namespace Bq.Messaging
         public IPersistenceProvider Persistence { get; set; }
         // Called for non-starting messages that do not match an active saga.
         public Func<Type, string, object, IMessageHandlerContext, Task> SagaNotFound { get; set; }
-        public void Route<T>(string endpoint)
+        readonly ConventionsBuilder conventions = new ConventionsBuilder();
+
+        public ConventionsBuilder Conventions() => conventions;
+
+        public void Route<T>(string endpoint) => Route(typeof(T), endpoint);
+
+        public void Route(Type messageType, string endpoint)
         {
+            if (messageType == null) throw new ArgumentNullException(nameof(messageType));
             if (string.IsNullOrWhiteSpace(endpoint))
                 throw new ArgumentException("A destination queue is required.", nameof(endpoint));
-            Routes[typeof(T)] = endpoint;
+            Routes[messageType] = endpoint;
         }
-        public void Handle<T>(Func<IHandleMessages<T>> factory, bool subscribe = false)
+        public void Handle<T>(Func<IHandleMessages<T>> factory) =>
+            RegisterHandler<T>(Adapt(factory), subscribe: null);
+
+        public void Handle<T>(Func<IHandleMessages<T>> factory, bool subscribe) =>
+            RegisterHandler<T>(Adapt(factory), subscribe);
+
+        static Func<IMessageHandlerContext, IHandleMessages<T>> Adapt<T>(Func<IHandleMessages<T>> factory)
         {
             if (factory == null) throw new ArgumentNullException(nameof(factory));
-            Handle<T>(_ => factory(), subscribe);
+            return _ => factory();
         }
-        // The factory runs inside the current message scope, allowing scoped services
-        // to receive its uniform session without relying on an endpoint startup race.
-        public void Handle<T>(Func<IMessageHandlerContext, IHandleMessages<T>> factory, bool subscribe = false)
+
+        public void Handle<T>(Func<IMessageHandlerContext, IHandleMessages<T>> factory) =>
+            RegisterHandler(factory, subscribe: null);
+
+        public void Handle<T>(Func<IMessageHandlerContext, IHandleMessages<T>> factory, bool subscribe) =>
+            RegisterHandler(factory, subscribe);
+
+        // Factories run inside the message scope and can resolve scoped services.
+        void RegisterHandler<T>(Func<IMessageHandlerContext, IHandleMessages<T>> factory, bool? subscribe)
         {
             if (factory == null) throw new ArgumentNullException(nameof(factory));
             var key = MessageType(typeof(T));
-            AddRegistration(key, new Registration(typeof(T), subscribe, async (message, context) =>
+            AddRegistration(key, new Registration(typeof(T), subscribe == true, async (message, context) =>
             {
                 var handler = factory(context) ?? throw new InvalidOperationException("Handler factory returned null.");
                 try { await handler.Handle((T)message, context).ConfigureAwait(false); }
                 finally { (handler as IDisposable)?.Dispose(); }
-            }));
+            }, useEventConvention: !subscribe.HasValue));
         }
         internal void AddRegistration(string name, Registration registration)
         {
@@ -172,14 +191,24 @@ namespace Bq.Messaging
     internal sealed class Registration
     {
         readonly List<Func<object, IMessageHandlerContext, Task>> invocations = new List<Func<object, IMessageHandlerContext, Task>>();
-        public Registration(Type type, bool subscribe, Func<object, IMessageHandlerContext, Task> invoke)
-        { Type = type; Subscribe = subscribe; invocations.Add(invoke); }
+        public Registration(Type type, bool subscribe, Func<object, IMessageHandlerContext, Task> invoke, bool useEventConvention = false, bool subscribeByMarker = false)
+        {
+            Type = type;
+            Subscribe = subscribe;
+            UseEventConvention = useEventConvention;
+            SubscribeByMarker = subscribeByMarker;
+            invocations.Add(invoke);
+        }
         public Type Type { get; }
         public bool Subscribe { get; private set; }
+        public bool UseEventConvention { get; private set; }
+        public bool SubscribeByMarker { get; private set; }
         public void Add(Registration registration)
         {
             if (Type != registration.Type) throw new InvalidOperationException("Message type name collision: " + Type.FullName);
             Subscribe |= registration.Subscribe;
+            UseEventConvention |= registration.UseEventConvention;
+            SubscribeByMarker |= registration.SubscribeByMarker;
             invocations.AddRange(registration.invocations);
         }
         public async Task Invoke(object message, IMessageHandlerContext context)

@@ -101,7 +101,11 @@ namespace Bq.Messaging
                         ["x-dead-letter-exchange"] = errorExchange,
                         ["x-dead-letter-routing-key"] = configuration.Name
                     });
-                    foreach (var entry in receivers.Where(x => x.Value.Subscribe))
+                    var conventions = configuration.Conventions().Conventions;
+                    var subscribed = new HashSet<Registration>(receivers.Values.Distinct().Where(registration =>
+                        registration.Subscribe || (registration.UseEventConvention && (conventions.EventRule != null || registration.SubscribeByMarker) &&
+                            conventions.IsEventType(registration.Type))));
+                    foreach (var entry in receivers.Where(entry => subscribed.Contains(entry.Value)))
                         consumerChannel.QueueBind(configuration.Name, eventsExchange, entry.Key);
                     consumerChannel.BasicQos(0, configuration.PrefetchCount ?? configuration.MaxConcurrency, false);
                     var consumer = new AsyncEventingBasicConsumer(consumerChannel);
