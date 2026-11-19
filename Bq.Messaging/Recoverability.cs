@@ -11,6 +11,13 @@ namespace Bq.Messaging
         public string ErrorQueue { get; set; }
         public Func<Exception, bool> IsUnrecoverable { get; set; }
         public Func<RecoveryContext, RecoveryAction> Policy { get; set; }
+        internal Func<RecoverabilityConfig, ErrorContext, RecoverabilityAction> CompatiblePolicy { get; private set; }
+
+        public RecoverabilityOptions CustomPolicy(Func<RecoverabilityConfig, ErrorContext, RecoverabilityAction> custom)
+        {
+            CompatiblePolicy = custom ?? throw new ArgumentNullException(nameof(custom));
+            return this;
+        }
 
         public RecoverabilityOptions Immediate(Action<ImmediateRetriesSettings> customizations)
         {
@@ -60,15 +67,24 @@ namespace Bq.Messaging
     {
         internal TimeSpan? Delay { get; }
         internal bool IsImmediate { get; }
+        internal string ErrorQueue { get; }
+        internal string DiscardReason { get; }
 
-        RecoveryAction(TimeSpan? delay, bool immediate = false)
+        RecoveryAction(TimeSpan? delay, bool immediate = false, string errorQueue = null, string discardReason = null)
         {
             Delay = delay;
             IsImmediate = immediate;
+            ErrorQueue = errorQueue;
+            DiscardReason = discardReason;
         }
 
         public static RecoveryAction ImmediateRetry() => new RecoveryAction(null, true);
         public static RecoveryAction MoveToError() => new RecoveryAction(null);
+        internal static RecoveryAction MoveToError(string queue) =>
+            new RecoveryAction(null, errorQueue: string.IsNullOrWhiteSpace(queue)
+                ? throw new ArgumentException("Error queue is required.", nameof(queue)) : queue);
+        internal static RecoveryAction Drop(string reason) =>
+            new RecoveryAction(null, discardReason: reason ?? throw new ArgumentNullException(nameof(reason)));
         public static RecoveryAction DelayedRetry(TimeSpan delay)
         {
             if (delay < TimeSpan.Zero || delay > TimeSpan.FromDays(24)) throw new ArgumentOutOfRangeException(nameof(delay));

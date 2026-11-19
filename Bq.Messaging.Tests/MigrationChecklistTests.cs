@@ -45,12 +45,21 @@ namespace Bq.Messaging.Tests
                 transport.Body = new byte[] { 0x7e }.Concat(transport.Body).ToArray();
             };
             config.Recoverability.DelayedRetries = new[] { TimeSpan.FromHours(1) };
-            config.Recoverability.Policy = failure =>
+            config.Recoverability().CustomPolicy((settings, failure) =>
             {
-                if (failure.Exception.Message == "retry the unit" && failure.ImmediateRetries == 0 && failure.DelayedRetries == 0)
-                    return RecoveryAction.ImmediateRetry();
-                return RecoveryAction.MoveToError();
-            };
+                if (failure.Exception.Message == "retry the unit")
+                {
+                    Assert(failure.ImmediateProcessingFailures == 1 && failure.DelayedDeliveriesPerformed == 0 &&
+                        failure.Message.Body.Length > 0 && failure.Message.MessageId != null &&
+                        failure.Extensions.Get<IncomingMessageContext>() != null,
+                        "custom policy receives counters, the wire message and attempt extensions");
+                    return RecoverabilityAction.ImmediateRetry();
+                }
+                if (failure.Exception.Message == "discard this message") return RecoverabilityAction.Discard("test drop");
+                if (failure.Exception.Message == "replacement: handler failure")
+                    return RecoverabilityAction.MoveToError(name + ".alternate-error");
+                return RecoverabilityAction.MoveToError(settings.Failed.ErrorQueue);
+            });
             var currentScope = new AsyncLocal<IncomingMessageContext>();
             var closedScopes = 0;
             var resolvedHandlers = 0;
@@ -139,6 +148,7 @@ namespace Bq.Messaging.Tests
                         await context.Reply(new Response { Text = message.Text }, reply);
                         throw new InvalidOperationException("handler failure");
                     }
+                    if (message.Text == "discard") throw new InvalidOperationException("discard this message");
                     if (message.Text == "swallow") throw new InvalidOperationException("caught handler failure");
                 });
             });
@@ -151,12 +161,13 @@ namespace Bq.Messaging.Tests
                 {
                     channel.QueueDeclare(name + ".immediate", false, true, true);
                     channel.QueueBind(name + ".immediate", config.EventsExchange, typeof(Event).FullName);
-                    foreach (var scenario in new[] { "skip", "replace", "before-commit", "after-next", "commit", "retry", "swallow", "duplicate-next" })
+                    channel.QueueDeclare(name + ".alternate-error", false, true, true);
+                    foreach (var scenario in new[] { "skip", "replace", "before-commit", "after-next", "commit", "retry", "swallow", "duplicate-next", "discard" })
                         await endpoint.SendLocal(new Command { Text = scenario });
 
                     await WaitFor(async () => (await endpoint.ListErrors()).Count == 5 &&
-                        await CountMigrationRows(path, "bq_inbox") == 3, "pipeline cases reach durable outcomes");
-                    Assert(Volatile.Read(ref closedScopes) == 9 && Volatile.Read(ref resolvedHandlers) == 8,
+                        await CountMigrationRows(path, "bq_inbox") == 4, "pipeline cases reach durable outcomes");
+                    Assert(Volatile.Read(ref closedScopes) == 10 && Volatile.Read(ref resolvedHandlers) == 9,
                         "each attempt closes its host scope and the short-circuited attempt skips handler resolution");
                     var errors = await endpoint.ListErrors();
                     Assert(errors.Where(error => error.ExceptionType == typeof(InvalidOperationException).FullName)
@@ -192,6 +203,15 @@ namespace Bq.Messaging.Tests
                             Equals(direct.BasicProperties.Headers["immediate"], true),
                             "immediate sends, publishes and replies survive handler rollback with their headers");
                     }
+                    BasicGetResult alternateError = null;
+                    await WaitFor(() =>
+                    {
+                        alternateError = channel.BasicGet(name + ".alternate-error", true);
+                        return Task.FromResult(alternateError != null);
+                    }, "custom policy routes the failed message to its alternate queue");
+                    Assert(errors.Single(error => error.ErrorQueue == name + ".alternate-error").MessageId ==
+                        alternateError.BasicProperties.MessageId, "the alternate error queue receives the recorded failure");
+
                     var pending = await store.NextOutgoing(name);
                     Assert(await CountMigrationRows(path, "bq_outbox") == 2 && pending?.RoutingKey == name + ".absent",
                         "only successful attempts committed outbox messages");

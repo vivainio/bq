@@ -574,6 +574,7 @@ namespace Bq.Messaging
                 catch (Exception ex) { unrecoverable = true; throw new InvalidOperationException("Message deserialization failed.", ex); }
                 for (var attempt = 0; ; attempt++)
                 {
+                    HandlerContext context = null;
                     try
                     {
                         using (var session = await configuration.Persistence.OpenSession().ConfigureAwait(false))
@@ -582,7 +583,7 @@ namespace Bq.Messaging
                             if (!await recovery.HasRecovery(configuration.Name, RecoveryId(currentId, cycle)).ConfigureAwait(false) &&
                                 await session.TryClaimMessage(configuration.Name, currentId).ConfigureAwait(false))
                             {
-                                var context = new HandlerContext(this, props, session, headers);
+                                context = new HandlerContext(this, props, session, headers);
                                 var previous = uniformScope.Value;
                                 var scope = new UniformScope(context);
                                 uniformScope.Value = scope;
@@ -600,7 +601,7 @@ namespace Bq.Messaging
                     }
                     catch (Exception ex) when (!forceStop.IsCancellationRequested)
                     {
-                        action = ChooseRecovery(ex, attempt, cycle, headers, allowImmediate: true);
+                        action = ChooseRecovery(ex, attempt, cycle, headers, currentId, delivery.Body, context?.Extensions, allowImmediate: true);
                         if (!action.IsImmediate) throw;
                         System.Diagnostics.Trace.TraceWarning("Immediate retry {0} for message {1}: {2}", attempt + 1, currentId, ex);
                         // Every attempt must deserialize afresh, since a failed handler may mutate the object.
@@ -617,7 +618,18 @@ namespace Bq.Messaging
             {
                 var options = configuration.Recoverability;
                 action = unrecoverable ? RecoveryAction.MoveToError()
-                    : action ?? ChooseRecovery(failure, 0, cycle, props.Headers, allowImmediate: false);
+                    : action ?? ChooseRecovery(failure, 0, cycle, props.Headers, currentId, delivery.Body, null, allowImmediate: false);
+                if (action.DiscardReason != null && !string.IsNullOrEmpty(currentId))
+                {
+                    using (var session = await configuration.Persistence.OpenSession().ConfigureAwait(false))
+                    {
+                        await session.TryClaimMessage(configuration.Name, currentId).ConfigureAwait(false);
+                        session.Commit();
+                    }
+                    System.Diagnostics.Trace.TraceWarning("Message {0} discarded: {1}", currentId, action.DiscardReason);
+                    AcknowledgeCommittedDelivery(delivery.DeliveryTag);
+                    return;
+                }
                 var isError = !action.Delay.HasValue;
                 var envelope = RecoveryWire.Capture(props, delivery.Body);
                 // A missing message ID cannot be deduplicated across redelivery, but the
@@ -627,7 +639,7 @@ namespace Bq.Messaging
                 if (!isError) RecoveryWire.SetCycle(envelope, checked(cycle + 1));
                 var now = DateTime.UtcNow;
                 var record = new RecoveryRecord { RecoveryId = RecoveryId(currentId, cycle), MessageId = currentId, Cycle = cycle,
-                    IsError = isError, ErrorQueue = options.ErrorQueue ?? configuration.Name + ".error", ExceptionType = failure.GetType().FullName,
+                    IsError = isError, ErrorQueue = action.ErrorQueue ?? options.ErrorQueue ?? configuration.Name + ".error", ExceptionType = failure.GetType().FullName,
                     ExceptionMessage = failure.Message, ExceptionDetail = failure.ToString(), FailedAtUtc = now,
                     DueAtUtc = isError ? now : now.Add(action.Delay.Value), Payload = RecoveryWire.Encode(envelope) };
                 using (var session = await configuration.Persistence.OpenSession().ConfigureAwait(false))
@@ -650,13 +662,25 @@ namespace Bq.Messaging
         }
 
         RecoveryAction ChooseRecovery(Exception failure, int attempt, int cycle,
-            IDictionary<string, object> headers, bool allowImmediate)
+            IDictionary<string, object> headers, string messageId, ReadOnlyMemory<byte> body,
+            ReadOnlyContextBag extensions, bool allowImmediate)
         {
             if (IsUnrecoverable(failure)) return RecoveryAction.MoveToError();
             var options = configuration.Recoverability;
             try
             {
-                var proposed = options.Policy?.Invoke(new RecoveryContext(failure, attempt, cycle, headers));
+                RecoveryAction proposed;
+                if (options.CompatiblePolicy != null)
+                {
+                    var config = new RecoverabilityConfig(new ImmediateConfig(options.ImmediateRetries),
+                        new DelayedConfig(options.DelayedRetries),
+                        new FailedConfig(options.ErrorQueue ?? configuration.Name + ".error", new HashSet<Type>()));
+                    var context = new ErrorContext(failure, attempt, cycle, new IncomingMessage(messageId, headers, body), extensions);
+                    proposed = options.CompatiblePolicy(config, context)?.ToBqAction();
+                }
+                else proposed = options.Policy?.Invoke(new RecoveryContext(failure, attempt, cycle, headers));
+                if (proposed?.ErrorQueue == configuration.Name)
+                    throw new InvalidOperationException("Error queue must differ from the endpoint queue.");
                 if (proposed != null && (allowImmediate || !proposed.IsImmediate)) return proposed;
             }
             catch (Exception policyError)
