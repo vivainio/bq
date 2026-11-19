@@ -131,7 +131,9 @@ namespace Bq.Messaging.Tests
                 Interlocked.Increment(ref resolvedHandlers);
                 return new Handler<Command>(async (message, context) =>
                 {
-                    await InsertApplicationWork(context.PersistenceSession, message.Text + ":handler");
+                    Assert(ReferenceEquals(context.SynchronizedStorageSession, context.PersistenceSession),
+                        "the synchronized storage view shares the handler transaction");
+                    await InsertApplicationWork(context.SynchronizedStorageSession, message.Text + ":handler");
                     // An absent destination keeps the committed outbox entry available for inspection.
                     await context.Send(name + ".absent", new LocalMessage { Text = message.Text });
                     if (message.Text == "replace")
@@ -421,7 +423,7 @@ namespace Bq.Messaging.Tests
             receiver.Handle(() => handler, subscribe: typeof(IEvent).IsAssignableFrom(typeof(T)));
         }
 
-        static async Task InsertApplicationWork(IPersistenceSession session, string work)
+        static async Task InsertApplicationWork(SynchronizedStorageSession session, string work)
         {
             using (var command = session.Connection.CreateCommand())
             {

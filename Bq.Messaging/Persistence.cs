@@ -24,12 +24,17 @@ namespace Bq.Messaging
         public byte[] Body { get; set; }
     }
 
-    // One session per processing attempt. The provider must make the inbox claim,
-    // application changes, saga operations and outbox inserts one local transaction.
-    public interface IPersistenceSession : IDisposable
+    // Application data access shares the connection and transaction owned by the endpoint.
+    public interface SynchronizedStorageSession
     {
         DbConnection Connection { get; }
         DbTransaction Transaction { get; }
+    }
+
+    // One session per processing attempt. The provider must make the inbox claim,
+    // application changes, saga operations and outbox inserts one local transaction.
+    public interface IPersistenceSession : SynchronizedStorageSession, IDisposable
+    {
         Task<bool> TryClaimMessage(string endpoint, string messageId);
         Task StoreOutgoing(OutgoingMessage message);
         Task StoreTimeout(OutgoingMessage message, DateTime dueUtc);

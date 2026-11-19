@@ -51,6 +51,7 @@ namespace Bq.Testing
         public IDictionary<string, object> Headers { get; } = new Dictionary<string, object>();
         IReadOnlyDictionary<string, object> IMessageHandlerContext.Headers => new ReadOnlyDictionary<string, object>(Headers);
         public IPersistenceSession PersistenceSession { get; set; }
+        public SynchronizedStorageSession SynchronizedStorageSession => PersistenceSession;
 
         public Task Send<T>(T message, SendOptions options) => UniformSession.Send(message, options);
         public Task Send(object message, SendOptions options) => Send<object>(message, options);

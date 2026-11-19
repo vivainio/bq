@@ -55,6 +55,7 @@ namespace Bq.Messaging
         string CorrelationId { get; }
         IReadOnlyDictionary<string, object> Headers { get; }
         IPersistenceSession PersistenceSession { get; }
+        SynchronizedStorageSession SynchronizedStorageSession { get; }
         Task Send<T>(T message);
         Task Send<T>(T message, SendOptions options);
         Task Send(object message, SendOptions options);
