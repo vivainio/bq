@@ -17,6 +17,7 @@ namespace Bq.Messaging
         readonly string eventsExchange;
         readonly string errorExchange;
         const string ContentType = "application/x-msgpack";
+        const string ForwardedMessageId = "x-bq-forwarded-message-id";
         static readonly MessagePackSerializerOptions SerializerOptions = MessagePackSerializerOptions.Standard
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly EndpointConfiguration configuration;
@@ -404,6 +405,7 @@ namespace Bq.Messaging
                 MessagePackSerializer.Serialize(serializationType, value, SerializerOptions), copiedHeaders,
                 scope != null && Volatile.Read(ref scope.Active) != 0 ? scope.Context : null);
             mutateOutgoing?.Invoke(transport);
+            transport.Headers.Remove(ForwardedMessageId);
             if (string.IsNullOrWhiteSpace(transport.TypeName) || transport.Body == null)
                 throw new InvalidOperationException("An outgoing transport message requires a type name and body.");
             foreach (var header in copiedHeaders.Keys)
@@ -433,7 +435,14 @@ namespace Bq.Messaging
                 props.Type = message.Type;
                 props.ContentType = ContentType;
                 if (message.Headers != null && message.Headers.Count > 0)
-                    props.Headers = new Dictionary<string, object>(message.Headers);
+                {
+                    var headers = new Dictionary<string, object>(message.Headers);
+                    // A forwarded delivery has its own outbox record ID but keeps its original wire ID.
+                    if (headers.TryGetValue(ForwardedMessageId, out var originalId) && originalId is string id)
+                        props.MessageId = id;
+                    headers.Remove(ForwardedMessageId);
+                    props.Headers = headers;
+                }
                 returned = false;
                 publisherChannel.BasicPublish(message.Exchange, message.RoutingKey, message.Mandatory, props, message.Body);
                 if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
@@ -587,7 +596,7 @@ namespace Bq.Messaging
                             if (!await recovery.HasRecovery(configuration.Name, RecoveryId(currentId, cycle)).ConfigureAwait(false) &&
                                 await session.TryClaimMessage(configuration.Name, currentId).ConfigureAwait(false))
                             {
-                                context = new HandlerContext(this, props, session, headers);
+                                context = new HandlerContext(this, props, delivery.Body, session, headers);
                                 var previous = uniformScope.Value;
                                 var scope = new UniformScope(context);
                                 uniformScope.Value = scope;
@@ -873,9 +882,15 @@ namespace Bq.Messaging
         {
             readonly RabbitEndpoint endpoint;
             readonly string replyTo;
-            public HandlerContext(RabbitEndpoint endpoint, IBasicProperties properties, IPersistenceSession session, IDictionary<string, object> headers)
+            readonly IBasicProperties wireProperties;
+            readonly ReadOnlyMemory<byte> wireBody;
+
+            public HandlerContext(RabbitEndpoint endpoint, IBasicProperties properties, ReadOnlyMemory<byte> wireBody,
+                IPersistenceSession session, IDictionary<string, object> headers)
             {
                 this.endpoint = endpoint;
+                wireProperties = properties;
+                this.wireBody = wireBody;
                 PersistenceSession = session;
                 replyTo = properties.ReplyTo;
                 MessageId = properties.MessageId;
@@ -930,6 +945,24 @@ namespace Bq.Messaging
                 if (PersistenceSession == null) throw new InvalidOperationException("Saga timeouts require persistence.");
                 return endpoint.StoreScheduled(PersistenceSession, endpoint.configuration.Name, timeout, dueUtc, CorrelationId);
             }
+            public Task ForwardCurrentMessageTo(string destination)
+            {
+                var scope = endpoint.uniformScope.Value;
+                if (scope == null || !ReferenceEquals(scope.Context, this) || Volatile.Read(ref scope.Active) == 0)
+                    throw new InvalidOperationException("Forwarding requires the active message handling scope.");
+                RequireDestination(destination);
+                var headers = new Dictionary<string, object>(wireProperties.Headers ?? new Dictionary<string, object>())
+                {
+                    [ForwardedMessageId] = MessageId
+                };
+                return PersistenceSession.StoreOutgoing(new OutgoingMessage
+                {
+                    Id = Guid.NewGuid().ToString("N"), CorrelationId = wireProperties.CorrelationId, ReplyTo = replyTo,
+                    Type = wireProperties.Type, Exchange = "", RoutingKey = destination,
+                    Mandatory = true, Headers = headers, Body = wireBody.ToArray()
+                });
+            }
+
             public Task Reply<T>(T message, ReplyOptions options) => MessageOptionsExtensions.Reply(this, message, options);
             public Task Reply(object message, ReplyOptions options) => Reply<object>(message, options);
             public Task Reply<T>(Action<T> initialize, ReplyOptions options) =>

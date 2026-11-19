@@ -8,7 +8,7 @@ using Bq.Messaging;
 
 namespace Bq.Testing
 {
-    public enum MessageOperation { Send, SendLocal, Publish, Reply }
+    public enum MessageOperation { Send, SendLocal, Publish, Reply, Forward }
 
     public sealed class RecordedMessage
     {
@@ -70,6 +70,13 @@ namespace Bq.Testing
         public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => UniformSession.SendAt(destination, message, dueAt);
         public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => UniformSession.SendLocalAt(message, dueAt);
         public Task PublishAt<T>(T message, DateTimeOffset dueAt) => UniformSession.PublishAt(message, dueAt);
+        public Task ForwardCurrentMessageTo(string destination)
+        {
+            if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("Destination is required.", nameof(destination));
+            messages.Enqueue(new RecordedMessage(MessageOperation.Forward, null, destination, null, Headers));
+            return Task.CompletedTask;
+        }
+
         public Task Reply<T>(T message, ReplyOptions options) => MessageOptionsExtensions.Reply(this, message, options);
         public Task Reply(object message, ReplyOptions options) => Reply<object>(message, options);
         public Task Reply<T>(Action<T> initialize, ReplyOptions options) =>

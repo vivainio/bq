@@ -66,6 +66,8 @@ namespace Bq.Messaging.Tests
                 });
             var currentScope = new AsyncLocal<IncomingMessageContext>();
             var closedScopes = 0;
+            string forwardedId = null;
+            var forwardDestinations = new[] { name + ".forward.first", name + ".forward.second" };
             var resolvedHandlers = 0;
             config.Incoming.Use(async (incoming, next) =>
             {
@@ -134,6 +136,11 @@ namespace Bq.Messaging.Tests
                     Assert(ReferenceEquals(context.SynchronizedStorageSession, context.PersistenceSession),
                         "the synchronized storage view shares the handler transaction");
                     await InsertApplicationWork(context.SynchronizedStorageSession, message.Text + ":handler");
+                    if (message.Text == "commit" || message.Text == "replace")
+                    {
+                        if (message.Text == "commit") forwardedId = context.MessageId;
+                        foreach (var destination in forwardDestinations) await context.ForwardCurrentMessageTo(destination);
+                    }
                     // An absent destination keeps the committed outbox entry available for inspection.
                     await context.Send(name + ".absent", new LocalMessage { Text = message.Text });
                     if (message.Text == "replace")
@@ -165,6 +172,8 @@ namespace Bq.Messaging.Tests
                 using (var channel = connection.CreateModel())
                 using (var endpoint = RabbitEndpoint.Start(config))
                 {
+                    foreach (var destination in forwardDestinations)
+                        channel.QueueDeclare(destination, false, true, true);
                     channel.QueueDeclare(name + ".immediate", false, true, true);
                     channel.QueueBind(name + ".immediate", config.EventsExchange, typeof(Event).FullName);
                     channel.QueueDeclare(name + ".alternate-error", false, true, true);
@@ -217,6 +226,26 @@ namespace Bq.Messaging.Tests
                     }, "custom policy routes the failed message to its alternate queue");
                     Assert(errors.Single(error => error.ErrorQueue == name + ".alternate-error").MessageId ==
                         alternateError.BasicProperties.MessageId, "the alternate error queue receives the recorded failure");
+
+                    var serialized = MessagePackSerializer.Serialize(new Command { Text = "commit" },
+                        MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance));
+                    foreach (var destination in forwardDestinations)
+                    {
+                        BasicGetResult forwarded = null;
+                        await WaitFor(() =>
+                        {
+                            forwarded = channel.BasicGet(destination, true);
+                            return Task.FromResult(forwarded != null);
+                        }, "forwarded command reaches " + destination);
+                        Assert(forwarded.BasicProperties.MessageId == forwardedId &&
+                            forwarded.BasicProperties.Type == typeof(Command).FullName &&
+                            !forwarded.BasicProperties.Headers.ContainsKey("x-bq-forwarded-message-id") &&
+                            forwarded.Body.ToArray().SequenceEqual(serialized),
+                            "both forwards preserve the original identity and wire body");
+                        Assert(channel.BasicGet(destination, true) == null, "the failed attempt did not forward a message");
+                    }
+                    await WaitFor(async () => await CountMigrationRows(path, "bq_outbox") == 2,
+                        "the broker confirmed both forward records");
 
                     var pending = await store.NextOutgoing(name);
                     Assert(await CountMigrationRows(path, "bq_outbox") == 2 && pending?.RoutingKey == name + ".absent",

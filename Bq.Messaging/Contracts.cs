@@ -70,6 +70,7 @@ namespace Bq.Messaging
         Task Reply<T>(T message);
         Task Reply<T>(T message, ReplyOptions options);
         Task Reply(object message, ReplyOptions options);
+        Task ForwardCurrentMessageTo(string destination);
         Task Reply<T>(Action<T> initialize, ReplyOptions options);
         Task SendAt<T>(T message, DateTimeOffset dueAt);
         Task SendAt<T>(string destination, T message, DateTimeOffset dueAt);
