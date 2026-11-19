@@ -453,6 +453,7 @@ namespace Bq.Messaging
             var cycle = 0;
             var currentId = props.MessageId;
             Exception failure = null;
+            RecoveryAction action = null;
             var unrecoverable = false;
             try
             {
@@ -503,10 +504,13 @@ namespace Bq.Messaging
                         }
                         break;
                     }
-                    catch (Exception ex) when (!forceStop.IsCancellationRequested && attempt < configuration.ImmediateRetries && !IsUnrecoverable(ex))
+                    catch (Exception ex) when (!forceStop.IsCancellationRequested)
                     {
+                        action = ChooseRecovery(ex, attempt, cycle, headers, allowImmediate: true);
+                        if (!action.IsImmediate) throw;
                         System.Diagnostics.Trace.TraceWarning("Immediate retry {0} for message {1}: {2}", attempt + 1, currentId, ex);
                         // Every attempt must deserialize afresh, since a failed handler may mutate the object.
+                        action = null;
                         message = MessagePackSerializer.Deserialize(registration.Type, body, SerializerOptions);
                     }
                 }
@@ -518,8 +522,9 @@ namespace Bq.Messaging
             try
             {
                 var options = configuration.Recoverability;
-                unrecoverable = unrecoverable || IsUnrecoverable(failure);
-                var isError = unrecoverable || cycle >= options.DelayedRetries.Length;
+                action = unrecoverable ? RecoveryAction.MoveToError()
+                    : action ?? ChooseRecovery(failure, 0, cycle, props.Headers, allowImmediate: false);
+                var isError = !action.Delay.HasValue;
                 var envelope = RecoveryWire.Capture(props, delivery.Body);
                 // A missing message ID cannot be deduplicated across redelivery, but the
                 // failed message can still be persisted without losing its body.
@@ -530,7 +535,7 @@ namespace Bq.Messaging
                 var record = new RecoveryRecord { RecoveryId = RecoveryId(currentId, cycle), MessageId = currentId, Cycle = cycle,
                     IsError = isError, ErrorQueue = options.ErrorQueue ?? configuration.Name + ".error", ExceptionType = failure.GetType().FullName,
                     ExceptionMessage = failure.Message, ExceptionDetail = failure.ToString(), FailedAtUtc = now,
-                    DueAtUtc = isError ? now : now.Add(options.DelayedRetries[cycle]), Payload = RecoveryWire.Encode(envelope) };
+                    DueAtUtc = isError ? now : now.Add(action.Delay.Value), Payload = RecoveryWire.Encode(envelope) };
                 using (var session = await configuration.Persistence.OpenSession().ConfigureAwait(false))
                 {
                     var recovery = session as IRecoverySession ?? throw new InvalidOperationException("Persistence session does not support recovery.");
@@ -548,6 +553,26 @@ namespace Bq.Messaging
                 return;
             }
             AcknowledgeCommittedDelivery(delivery.DeliveryTag);
+        }
+
+        RecoveryAction ChooseRecovery(Exception failure, int attempt, int cycle,
+            IDictionary<string, object> headers, bool allowImmediate)
+        {
+            if (IsUnrecoverable(failure)) return RecoveryAction.MoveToError();
+            var options = configuration.Recoverability;
+            try
+            {
+                var proposed = options.Policy?.Invoke(new RecoveryContext(failure, attempt, cycle, headers));
+                if (proposed != null && (allowImmediate || !proposed.IsImmediate)) return proposed;
+            }
+            catch (Exception policyError)
+            {
+                System.Diagnostics.Trace.TraceError("Recoverability policy failed: {0}", policyError);
+            }
+
+            if (allowImmediate && attempt < options.ImmediateRetries) return RecoveryAction.ImmediateRetry();
+            return cycle < options.DelayedRetries.Length ? RecoveryAction.DelayedRetry(options.DelayedRetries[cycle])
+                : RecoveryAction.MoveToError();
         }
 
         bool IsUnrecoverable(Exception failure)

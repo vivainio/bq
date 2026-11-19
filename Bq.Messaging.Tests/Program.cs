@@ -518,6 +518,15 @@ namespace Bq.Messaging.Tests
                 if (ex.Message == "persistent failure") throw new InvalidOperationException("test classifier failure");
                 return ex is FatalFailureException;
             };
+            var policyCalls = 0;
+            config.Recoverability.Policy = context =>
+            {
+                if (context.Exception.Message != "temporary failure") return null;
+                Assert(context.ImmediateRetries == 0 && context.DelayedRetries == 0, "initial retry policy counters");
+                Assert(context.Headers.ContainsKey("custom"), "retry policy sees incoming headers");
+                Interlocked.Increment(ref policyCalls);
+                return RecoveryAction.DelayedRetry(TimeSpan.FromSeconds(2));
+            };
             var attempts = 0;
             var successes = 0;
             var replayAllowed = false;
@@ -603,7 +612,7 @@ namespace Bq.Messaging.Tests
                         // Duplicate the same delivery after the decision has committed. It must not run again.
                         channel.BasicPublish("", name, props, body);
                         await Task.Delay(400);
-                        Assert(attempts == 1, "duplicate original skipped after retry decision");
+                        Assert(attempts == 1 && policyCalls == 1, "duplicate original skipped after retry decision");
                     }
                     await Task.Delay(3200);
                     using (var endpoint = RabbitEndpoint.Start(config))
