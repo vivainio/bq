@@ -148,6 +148,27 @@ namespace Bq.Messaging.Tests
         }
         static async Task TestingSupportTests()
         {
+            var sendOptions = new SendOptions();
+            Assert(sendOptions.GetDestination() == null && !sendOptions.IsRoutingToThisEndpoint() && sendOptions.GetMessageId() == null,
+                "unset send options report no explicit routing or identity");
+            sendOptions.RouteToThisEndpoint();
+            sendOptions.SetMessageId("custom-id");
+            sendOptions.RouteReplyTo("reply");
+            sendOptions.SetHeader("attempt", 3);
+            sendOptions.DelayDeliveryWith(TimeSpan.FromSeconds(2));
+            Assert(sendOptions.IsRoutingToThisEndpoint() && sendOptions.GetMessageId() == "custom-id" && sendOptions.GetReplyToRoute() == "reply" &&
+                sendOptions.GetHeaders()["attempt"] == "3" && sendOptions.GetDeliveryDelay() == TimeSpan.FromSeconds(2) && sendOptions.GetDeliveryDate() == null,
+                "send option readers expose explicitly configured values");
+            var deliveryDate = DateTimeOffset.UtcNow.AddMinutes(1);
+            sendOptions.DoNotDeliverBefore(deliveryDate);
+            Assert(sendOptions.GetDeliveryDelay() == null && sendOptions.GetDeliveryDate() == deliveryDate,
+                "absolute scheduling replaces the relative delay");
+            var replyOptions = new ReplyOptions();
+            replyOptions.SetDestination("receiver");
+            replyOptions.RouteReplyTo("return");
+            Assert(replyOptions.GetDestination() == "receiver" && replyOptions.GetReplyToRoute() == "return",
+                "reply readers distinguish destination and return address");
+
             var configuration = new EndpointConfiguration("config-test", new Uri("amqp://localhost"));
             configuration.LimitMessageProcessingConcurrencyTo(4);
             configuration.SendFailedMessagesTo("config-test.error");

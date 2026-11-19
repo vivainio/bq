@@ -96,6 +96,8 @@ namespace Bq.Messaging
         }
 
         internal DateTimeOffset? DueAt => delay.HasValue ? DateTimeOffset.UtcNow.Add(delay.Value) : deliverAt;
+        internal TimeSpan? DeliveryDelay => delay;
+        internal DateTimeOffset? DeliveryDate => deliverAt;
     }
 
     public sealed class PublishOptions : MessageOptions { }
@@ -131,6 +133,16 @@ namespace Bq.Messaging
 
     public static class MessageOptionsExtensions
     {
+        public static string GetMessageId(this MessageOptions options) => options.MessageId;
+        public static IReadOnlyDictionary<string, string> GetHeaders(this MessageOptions options) => MessageHeaders.AsText(options.Headers);
+        public static string GetDestination(this SendOptions options) => options.Destination;
+        public static string GetDestination(this ReplyOptions options) => options.Destination;
+        public static string GetReplyToRoute(this SendOptions options) => options.ReplyAddress;
+        public static string GetReplyToRoute(this ReplyOptions options) => options.ReplyAddress;
+        public static bool IsRoutingToThisEndpoint(this SendOptions options) => options.Local;
+        public static TimeSpan? GetDeliveryDelay(this SendOptions options) => options.DeliveryDelay;
+        public static DateTimeOffset? GetDeliveryDate(this SendOptions options) => options.DeliveryDate;
+
         internal static T Initialize<T>(Action<T> initialize)
         {
             if (initialize == null) throw new ArgumentNullException(nameof(initialize));
