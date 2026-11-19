@@ -353,7 +353,8 @@ namespace Bq.Messaging.Tests
                 gotCommand.TrySetResult(m.Text);
                 var options = new ReplyOptions();
                 options.SetHeader("reply-option", true);
-                await c.Reply(new Response { Text = m.Text }, options);
+                object response = new Response { Text = m.Text };
+                await c.Reply(response, options);
                 await c.SendLocal(new LocalMessage { Text = m.Text });
             }));
             receiver.Handle(() => new Handler<LocalMessage>((m, c) => { gotLocal.TrySetResult(m.Text); return Task.CompletedTask; }));

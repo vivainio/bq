@@ -290,9 +290,11 @@ namespace Bq.Messaging.Tests
                         Assert(channel.WaitForConfirms(TimeSpan.FromSeconds(5)), "legacy publication confirmed");
                         var publish = new PublishOptions();
                         publish.SetHeader("migration-group", "first");
-                        await producer.Publish(new Event { Text = "pilot" }, publish);
-
-                        await producer.Send(new Command { Text = "pilot command" });
+                        IMessageSession messaging = producer;
+                        object pilotEvent = new Event { Text = "pilot" };
+                        await messaging.Publish(pilotEvent, publish);
+                        object pilotCommand = new Command { Text = "pilot command" };
+                        await messaging.Send(pilotCommand, new SendOptions());
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
                         Assert(await Within(received.Task) == "pilot", "event convention subscribes the migrated receiver");
                         var legacy = channel.BasicGet(legacyQueue, true);

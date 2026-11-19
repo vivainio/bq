@@ -3,10 +3,17 @@ using System.Threading.Tasks;
 
 namespace Bq.Messaging
 {
-    public interface IEndpointInstance : IDisposable
+    public interface IMessageSession
+    {
+        Task Send(object message, SendOptions options);
+        Task Publish(object message, PublishOptions options);
+    }
+
+    public interface IEndpointInstance : IMessageSession, IDisposable
     {
         Task Send<T>(T message);
         Task Send<T>(T message, SendOptions options);
+        Task Send(string message, SendOptions options);
         Task Publish<T>(T message);
         Task Publish<T>(T message, PublishOptions options);
         Task Stop();

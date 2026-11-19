@@ -23,10 +23,13 @@ namespace Bq.Messaging
         IUniformSession WithHeader(string name, object value);
         Task Send<T>(T message);
         Task Send<T>(T message, SendOptions options);
+        Task Send(object message, SendOptions options);
         Task Send(string message, SendOptions options);
         Task Send<T>(string destination, T message);
         Task SendLocal<T>(T message);
         Task Publish<T>(T message);
+        Task Publish<T>(T message, PublishOptions options);
+        Task Publish(object message, PublishOptions options);
         Task SendAt<T>(T message, DateTimeOffset dueAt);
         Task SendAt<T>(string destination, T message, DateTimeOffset dueAt);
         Task SendLocalAt<T>(T message, DateTimeOffset dueAt);
@@ -52,11 +55,16 @@ namespace Bq.Messaging
         IPersistenceSession PersistenceSession { get; }
         Task Send<T>(T message);
         Task Send<T>(T message, SendOptions options);
+        Task Send(object message, SendOptions options);
         Task Send(string message, SendOptions options);
         Task Send<T>(string destination, T message);
         Task SendLocal<T>(T message);
         Task Publish<T>(T message);
+        Task Publish<T>(T message, PublishOptions options);
+        Task Publish(object message, PublishOptions options);
         Task Reply<T>(T message);
+        Task Reply<T>(T message, ReplyOptions options);
+        Task Reply(object message, ReplyOptions options);
         Task SendAt<T>(T message, DateTimeOffset dueAt);
         Task SendAt<T>(string destination, T message, DateTimeOffset dueAt);
         Task SendLocalAt<T>(T message, DateTimeOffset dueAt);

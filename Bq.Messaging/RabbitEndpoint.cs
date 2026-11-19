@@ -242,17 +242,18 @@ namespace Bq.Messaging
             public IUniformSession WithHeader(string name, object value) =>
                 new TransactionalSession(endpoint, persistence, CancellationToken, root, AddHeader(headers, name, value));
             public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
+            public Task Send(object message, SendOptions options) => Send<object>(message, options);
             public Task Send(string message, SendOptions options) => Send<string>(message, options);
+            public Task Publish<T>(T message, PublishOptions options) => MessageOptionsExtensions.Publish(this, message, options);
+            public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
             public Task Send<T>(T message)
             {
-                if (!endpoint.configuration.Routes.TryGetValue(typeof(T), out var destination))
-                    throw new InvalidOperationException("No route for " + typeof(T).FullName);
-                return Send(destination, message);
+                return Send(endpoint.RouteFor(message), message);
             }
             public Task Send<T>(string destination, T message) =>
                 ActivePersistence.StoreOutgoing(endpoint.Prepare(message, "", RequireDestination(destination), null, true, headers));
             public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
-            public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor<T>(), message, dueAt);
+            public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor(message), message, dueAt);
             public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.configuration.Name, message, dueAt);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => SendAt(destination, message, dueAt, headers);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt, IDictionary<string, object> messageHeaders) =>
@@ -261,7 +262,7 @@ namespace Bq.Messaging
             public Task PublishAt<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> messageHeaders) =>
                 endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null, messageHeaders);
             public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
-                message, endpoint.eventsExchange, endpoint.WireName(typeof(T)), null, false, headers));
+                message, endpoint.eventsExchange, endpoint.WireName(ContractType(message)), null, false, headers));
             Task IImmediateDispatch.SendImmediately<T>(T message, string destination, bool local)
             {
                 _ = ActivePersistence;
@@ -282,7 +283,7 @@ namespace Bq.Messaging
             return result;
         }
 
-        public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(RouteFor<T>(), message, dueAt);
+        public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(RouteFor(message), message, dueAt);
         public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(configuration.Name, message, dueAt);
         public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
             ExecuteTransaction(session => session.SendAt(destination, message, dueAt));
@@ -298,15 +299,17 @@ namespace Bq.Messaging
 
         Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
-            session.StoreTimeout(Prepare(message, eventsExchange, WireName(typeof(T)), correlationId, false, headers, deferred: true), dueUtc);
+            session.StoreTimeout(Prepare(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers, deferred: true), dueUtc);
 
         Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
             session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true, headers, deferred: true), dueUtc);
 
         public Task Send<T>(T message, SendOptions options) => CreateUniformSession().Send(message, options);
+        public Task Send(object message, SendOptions options) => Send<object>(message, options);
         public Task Send(string message, SendOptions options) => Send<string>(message, options);
         public Task Publish<T>(T message, PublishOptions options) => CreateUniformSession().Publish(message, options);
+        public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
         public Task Send<T>(T message) => SendCore(message, null, null);
         public Task Send<T>(string destination, T message) => SendCore(message, null, RequireDestination(destination));
         static string RequireDestination(string destination)
@@ -318,19 +321,24 @@ namespace Bq.Messaging
         public Task Publish<T>(T message) => PublishCore(message, null);
         internal Task SendCore<T>(T message, string correlationId, string destination, IDictionary<string, object> headers = null)
         {
-            return Dispatch(message, "", destination ?? RouteFor<T>(), correlationId, true, headers);
+            return Dispatch(message, "", destination ?? RouteFor(message), correlationId, true, headers);
         }
-        string RouteFor<T>()
+        static Type ContractType<T>(T message) => typeof(T) == typeof(object)
+            ? (message ?? throw new ArgumentNullException(nameof(message))).GetType()
+            : typeof(T);
+
+        string RouteFor<T>(T message)
         {
-            if (configuration.Routes.TryGetValue(typeof(T), out var destination)) return destination;
-            throw new InvalidOperationException("No route for " + typeof(T).FullName);
+            var contract = ContractType(message);
+            if (configuration.Routes.TryGetValue(contract, out var destination)) return destination;
+            throw new InvalidOperationException("No route for " + contract.FullName);
         }
 
         string WireName(Type type) => wireNames.TryGetValue(type, out var name)
             ? name : EndpointConfiguration.MessageType(type);
 
         internal Task PublishCore<T>(T message, string correlationId, IDictionary<string, object> headers = null) =>
-            Dispatch(message, eventsExchange, WireName(typeof(T)), correlationId, false, headers);
+            Dispatch(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers);
         OutgoingMessage Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
             IDictionary<string, object> headers = null, bool deferred = false)
         {
@@ -339,8 +347,9 @@ namespace Bq.Messaging
             copiedHeaders[MessageHeaders.TimeSent] = DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
             if (deferred) copiedHeaders[MessageHeaders.Deferred] = true;
             var scope = uniformScope.Value;
-            var transport = new TransportMessage(WireName(typeof(T)),
-                MessagePackSerializer.Serialize(typeof(T), message, SerializerOptions), copiedHeaders,
+            var contract = ContractType(message);
+            var transport = new TransportMessage(WireName(contract),
+                MessagePackSerializer.Serialize(contract, message, SerializerOptions), copiedHeaders,
                 scope != null && Volatile.Read(ref scope.Active) != 0 ? scope.Context : null);
             mutateOutgoing?.Invoke(transport);
             if (string.IsNullOrWhiteSpace(transport.TypeName) || transport.Body == null)
@@ -742,7 +751,10 @@ namespace Bq.Messaging
                 return endpoint.SendCore(message, context?.CorrelationId, local ? endpoint.configuration.Name : destination, headers);
             }
             public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
+            public Task Send(object message, SendOptions options) => Send<object>(message, options);
             public Task Send(string message, SendOptions options) => Send<string>(message, options);
+            public Task Publish<T>(T message, PublishOptions options) => MessageOptionsExtensions.Publish(this, message, options);
+            public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
             public Task Send<T>(T message) { var context = Validate(); return context == null ? endpoint.SendCore(message, null, null, headers) : context.SendWithHeaders(message, null, headers); }
             public Task Send<T>(string destination, T message)
             {
@@ -753,8 +765,7 @@ namespace Bq.Messaging
             public Task Publish<T>(T message) { var context = Validate(); return context == null ? endpoint.PublishCore(message, null, headers) : context.PublishWithHeaders(message, headers); }
             public Task SendAt<T>(T message, DateTimeOffset dueAt)
             {
-                var context = Validate();
-                return context == null ? endpoint.SendAtWithHeaders(endpoint.RouteFor<T>(), message, dueAt, headers) : context.SendAtWithHeaders(endpoint.RouteFor<T>(), message, dueAt, headers);
+                return SendAt(endpoint.RouteFor(message), message, dueAt);
             }
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt)
             {
@@ -796,12 +807,14 @@ namespace Bq.Messaging
             public string CorrelationId { get; }
             public IReadOnlyDictionary<string, object> Headers { get; }
             public Task Send<T>(T message, SendOptions options) => UniformSession.Send(message, options);
+            public Task Send(object message, SendOptions options) => Send<object>(message, options);
             public Task Send(string message, SendOptions options) => Send<string>(message, options);
+            public Task Publish<T>(T message, PublishOptions options) => MessageOptionsExtensions.Publish(this, message, options);
+            public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
             public Task Send<T>(T message) => SendWithHeaders(message, null, null);
             internal Task SendWithHeaders<T>(T message, string destination, IDictionary<string, object> headers)
             {
-                if (destination == null && !endpoint.configuration.Routes.TryGetValue(typeof(T), out destination))
-                    throw new InvalidOperationException("No route for " + typeof(T).FullName);
+                destination = destination ?? endpoint.RouteFor(message);
                 RequireDestination(destination);
                 return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true, headers));
             }
@@ -810,12 +823,12 @@ namespace Bq.Messaging
             public Task Publish<T>(T message) => PublishWithHeaders(message, null);
             internal Task PublishWithHeaders<T>(T message, IDictionary<string, object> headers) =>
                 PersistenceSession.StoreOutgoing(endpoint.Prepare(message, endpoint.eventsExchange,
-                    endpoint.WireName(typeof(T)), CorrelationId, false, headers));
+                    endpoint.WireName(ContractType(message)), CorrelationId, false, headers));
             internal Task SendAtWithHeaders<T>(string destination, T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
                 endpoint.StoreScheduled(PersistenceSession, destination, message, dueAt.UtcDateTime, CorrelationId, headers);
             internal Task PublishAtWithHeaders<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
                 endpoint.StoreScheduledEvent(PersistenceSession, message, dueAt.UtcDateTime, CorrelationId, headers);
-            public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor<T>(), message, dueAt);
+            public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor(message), message, dueAt);
             public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.configuration.Name, message, dueAt);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => SendAtWithHeaders(destination, message, dueAt, null);
             public Task PublishAt<T>(T message, DateTimeOffset dueAt) => PublishAtWithHeaders(message, dueAt, null);
@@ -825,6 +838,8 @@ namespace Bq.Messaging
                 if (PersistenceSession == null) throw new InvalidOperationException("Saga timeouts require persistence.");
                 return endpoint.StoreScheduled(PersistenceSession, endpoint.configuration.Name, timeout, dueUtc, CorrelationId);
             }
+            public Task Reply<T>(T message, ReplyOptions options) => MessageOptionsExtensions.Reply(this, message, options);
+            public Task Reply(object message, ReplyOptions options) => Reply<object>(message, options);
             public Task Reply<T>(T message) => ((IReplyWithHeaders)this).ReplyWithHeaders(message, null);
 
             Task IReplyWithHeaders.ReplyWithHeaders<T>(T message, IDictionary<string, object> headers)
