@@ -250,17 +250,19 @@ namespace Bq.Messaging.Tests
             await store.Initialize();
 
             var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var notification = new TaskCompletionSource<(string Source, Exception Error)>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var notification = new TaskCompletionSource<ICriticalErrorContext>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var stopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var config = new EndpointConfiguration(name, uri)
             {
                 Persistence = new FaultPersistence(store) { OutgoingGate = release.Task },
-                CriticalErrorThreshold = TimeSpan.FromMilliseconds(250),
-                OnCriticalError = (source, error) =>
-                {
-                    notification.TrySetResult((source, error));
-                    return Task.CompletedTask;
-                }
+                CriticalErrorThreshold = TimeSpan.FromMilliseconds(250)
             };
+            config.DefineCriticalErrorAction(async failure =>
+            {
+                notification.TrySetResult(failure);
+                await failure.Stop();
+                stopped.TrySetResult(true);
+            });
             config.SendOnly();
 
             try
@@ -270,7 +272,7 @@ namespace Bq.Messaging.Tests
                     try
                     {
                         var failure = await Within(notification.Task);
-                        Assert(failure.Source == "Outbox dispatcher" && failure.Error is TimeoutException && !release.Task.IsCompleted,
+                        Assert(failure.Error == "Outbox dispatcher" && failure.Exception is TimeoutException && !release.Task.IsCompleted,
                             "critical error callback identifies an outbox poll that has not returned");
                     }
                     finally
@@ -278,6 +280,7 @@ namespace Bq.Messaging.Tests
                         release.TrySetResult(true);
                         await endpoint.StopAsync();
                     }
+                    Assert(await Within(stopped.Task), "the critical error action can stop the endpoint");
                 }
             }
             finally

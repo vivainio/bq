@@ -107,14 +107,17 @@ namespace Bq.Messaging
                     consumer.Received += OnReceived;
                     consumerTag = consumerChannel.BasicConsume(configuration.Name, false, consumer);
                 }
-                if (configuration.OnCriticalError != null)
-                {
-                    criticalErrors = new CriticalErrorMonitor(configuration.OnCriticalError, configuration.CriticalErrorThreshold, stopping.Token);
-                    // A host callback can stop the endpoint, so shutdown must not wait for the callback.
-                    _ = Task.Run(() => criticalErrors.Run(() => connection.IsOpen));
-                }
+                var callback = configuration.OnCriticalError;
+                var contextCallback = configuration.CriticalErrorAction;
+                if (contextCallback != null)
+                    callback = (error, exception) => contextCallback(new CriticalErrorContext(Stop, error, exception));
+                if (callback != null)
+                    criticalErrors = new CriticalErrorMonitor(callback, configuration.CriticalErrorThreshold, stopping.Token);
+
                 var outbox = Task.Run(() => DispatchPending(false, stopping.Token));
                 dispatcher = sendOnly ? outbox : Task.WhenAll(outbox, Task.Run(() => DispatchPending(true, stopping.Token)));
+                // A host callback can stop the endpoint, so shutdown must not wait for the callback.
+                if (criticalErrors != null) _ = Task.Run(() => criticalErrors.Run(() => connection.IsOpen));
             }
             catch { connection.Dispose(); throw; }
         }
@@ -144,7 +147,8 @@ namespace Bq.Messaging
             if (configuration.NetworkRecoveryInterval < TimeSpan.FromMilliseconds(1) ||
                 configuration.NetworkRecoveryInterval > TimeSpan.FromMilliseconds(int.MaxValue))
                 throw new ArgumentOutOfRangeException(nameof(configuration.NetworkRecoveryInterval));
-            if (configuration.OnCriticalError != null && configuration.CriticalErrorThreshold <= TimeSpan.Zero)
+            if ((configuration.OnCriticalError != null || configuration.CriticalErrorAction != null) &&
+                configuration.CriticalErrorThreshold <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(configuration.CriticalErrorThreshold));
             if (configuration.MaxConcurrency == 0) throw new ArgumentOutOfRangeException(nameof(configuration.MaxConcurrency));
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));

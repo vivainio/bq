@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 
 namespace Bq.Messaging
 {
@@ -17,6 +18,12 @@ namespace Bq.Messaging
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
             if (string.IsNullOrWhiteSpace(errorQueue)) throw new ArgumentException("Error queue is required.", nameof(errorQueue));
             configuration.Recoverability.ErrorQueue = errorQueue;
+        }
+
+        public static void DefineCriticalErrorAction(this EndpointConfiguration configuration, Func<ICriticalErrorContext, Task> onCriticalError)
+        {
+            if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            configuration.CriticalErrorAction = onCriticalError ?? throw new ArgumentNullException(nameof(onCriticalError));
         }
 
         public static RecoverabilityOptions Recoverability(this EndpointConfiguration configuration) =>
