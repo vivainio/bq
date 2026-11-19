@@ -9,6 +9,7 @@ edit_uri = "edit/master/docs/"
 
 nav = [
   { "Introduction" = "index.md" },
+  { "An order workflow with Bq" = "order-workflow.md" },
   { "Getting started" = "getting-started.md" },
   { "Messaging" = [
     { "Endpoints and sessions" = "endpoints.md" },

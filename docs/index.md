@@ -2,6 +2,7 @@
 
 Bq runs message handlers and sagas on RabbitMQ with a transactional database inbox and outbox. Messages are ordinary .NET classes serialized with MessagePack. The libraries target .NET Standard 2.0 and the integration suite runs under Mono on .NET Framework 4.7.2.
 
+- [An order workflow with Bq](order-workflow.md) introduces messaging through a three-endpoint example.
 - [Getting started](getting-started.md) walks through endpoint registration and SQLite setup.
 - [Phased NServiceBus migration](migration.md) covers routing isolation, transaction hooks, and local verification.
 - [Endpoints and sessions](endpoints.md) covers routing, local sends, uniform sessions, concurrency, and shutdown.

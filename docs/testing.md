@@ -14,7 +14,7 @@ podman run -d --name bq-rabbitmq -p 127.0.0.1:5672:5672 -p 127.0.0.1:15672:15672
 
 ## Cross-endpoint workflow
 
-The order workflow test uses three endpoints with separate SQLite databases and one RabbitMQ broker. It checks that intake commits an order with its command, fulfillment runs a saga and durable timeout, and a downstream handler rolls back and retries after an endpoint restart. It also redelivers both the original event and its successful retry to verify that the workflow completes once.
+The [order workflow tutorial](order-workflow.md) explains the scenario. The test uses three endpoints with separate SQLite databases and one RabbitMQ broker. It checks that intake commits an order with its command, fulfillment runs a saga and durable timeout, and a downstream handler rolls back and retries after an endpoint restart. It also redelivers both the original event and its successful retry to verify that the workflow completes once.
 
 Use `Bq.Testing` for fast handler and saga logic tests. The cross-endpoint test uses RabbitMQ to cover queue routing, confirms, and redelivery.
 
