@@ -143,6 +143,41 @@ namespace Bq.Messaging
         public static TimeSpan? GetDeliveryDelay(this SendOptions options) => options.DeliveryDelay;
         public static DateTimeOffset? GetDeliveryDate(this SendOptions options) => options.DeliveryDate;
 
+        public static Task Send(this IMessageSession session, object message) => session.Send(message, new SendOptions());
+        public static Task Publish(this IMessageSession session, object message) => session.Publish(message, new PublishOptions());
+
+        public static Task Send(this IMessageSession session, string destination, object message) =>
+            session.Send(message, DestinationOptions(destination));
+        public static Task Send<T>(this IMessageSession session, string destination, Action<T> initialize) =>
+            session.Send(initialize, DestinationOptions(destination));
+        public static Task SendLocal(this IMessageSession session, object message) =>
+            session.Send(message, LocalOptions());
+        public static Task SendLocal<T>(this IMessageSession session, Action<T> initialize) =>
+            session.Send(initialize, LocalOptions());
+
+        public static Task Send(this IPipelineContext context, string destination, object message) =>
+            context.Send(message, DestinationOptions(destination));
+        public static Task Send<T>(this IPipelineContext context, string destination, Action<T> initialize) =>
+            context.Send(initialize, DestinationOptions(destination));
+        public static Task SendLocal(this IPipelineContext context, object message) =>
+            context.Send(message, LocalOptions());
+        public static Task SendLocal<T>(this IPipelineContext context, Action<T> initialize) =>
+            context.Send(initialize, LocalOptions());
+
+        static SendOptions DestinationOptions(string destination)
+        {
+            var options = new SendOptions();
+            options.SetDestination(destination);
+            return options;
+        }
+
+        static SendOptions LocalOptions()
+        {
+            var options = new SendOptions();
+            options.RouteToThisEndpoint();
+            return options;
+        }
+
         internal static T Initialize<T>(Action<T> initialize)
         {
             if (initialize == null) throw new ArgumentNullException(nameof(initialize));

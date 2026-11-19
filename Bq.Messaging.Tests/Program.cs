@@ -213,6 +213,15 @@ namespace Bq.Messaging.Tests
 
             send.SetDestination("orders");
             var initialized = new TestableMessageHandlerContext();
+            var pipelineRecorder = new TestableMessageHandlerContext();
+            IPipelineContext pipeline = pipelineRecorder;
+            await pipeline.Send<Command>("orders", command => command.Text = "direct");
+            await pipeline.SendLocal<Command>(command => command.Text = "local");
+            Assert(pipelineRecorder.Messages[0].Destination == "orders" &&
+                ((Command)pipelineRecorder.Messages[0].Message).Text == "direct" &&
+                pipelineRecorder.Messages[1].Operation == MessageOperation.SendLocal &&
+                ((Command)pipelineRecorder.Messages[1].Message).Text == "local",
+                "pipeline send shortcuts preserve destination and initializer");
             IMessageHandlerContext initializerContext = initialized;
             await initializerContext.Send<Command>(command => command.Text = "created", send);
             await initializerContext.Publish<IPilotEvent>(message => message.Text = "published");
@@ -515,7 +524,8 @@ namespace Bq.Messaging.Tests
                             queueOwner.QueueDeclare(producerName, true, false, false);
                             try
                             {
-                                await producer.SendLocal(new LocalMessage { Text = "shared endpoint" });
+                                IMessageSession session = producer;
+                                await session.SendLocal<LocalMessage>(message => message.Text = "shared endpoint");
                                 var local = queueOwner.BasicGet(producerName, true);
                                 Assert(local != null && local.BasicProperties.ReplyTo == producerName + ".public",
                                     "send-only local send advertises the configured return address while routing to the named queue");
