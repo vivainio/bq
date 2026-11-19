@@ -12,6 +12,7 @@ namespace Bq.Messaging
         public Func<Exception, bool> IsUnrecoverable { get; set; }
         public Func<RecoveryContext, RecoveryAction> Policy { get; set; }
         internal Func<RecoverabilityConfig, ErrorContext, RecoverabilityAction> CompatiblePolicy { get; private set; }
+        internal Func<ImmediateRetryMessage, Task> ImmediateRetryNotification { get; private set; }
 
         internal HashSet<Type> UnrecoverableExceptionTypes { get; } = new HashSet<Type>();
 
@@ -39,6 +40,7 @@ namespace Bq.Messaging
             var settings = new ImmediateRetriesSettings(ImmediateRetries);
             customizations(settings);
             ImmediateRetries = settings.Count;
+            ImmediateRetryNotification = settings.Notification ?? ImmediateRetryNotification;
             return this;
         }
 
@@ -57,6 +59,25 @@ namespace Bq.Messaging
             DelayedRetries = delays;
             return this;
         }
+    }
+
+    public class ImmediateRetryMessage
+    {
+        public ImmediateRetryMessage(string messageId, Dictionary<string, string> headers, byte[] body,
+            Exception exception, int retryAttempt)
+        {
+            MessageId = messageId;
+            Headers = headers;
+            Body = body;
+            Exception = exception;
+            RetryAttempt = retryAttempt;
+        }
+
+        public string MessageId { get; }
+        public Dictionary<string, string> Headers { get; }
+        public byte[] Body { get; }
+        public Exception Exception { get; }
+        public int RetryAttempt { get; }
     }
 
     public sealed class RecoveryContext

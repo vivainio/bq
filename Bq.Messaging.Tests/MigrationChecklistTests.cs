@@ -74,7 +74,14 @@ namespace Bq.Messaging.Tests
                 transport.Body = new byte[] { 0x7e }.Concat(transport.Body).ToArray();
             };
             config.Recoverability.DelayedRetries = new[] { TimeSpan.FromHours(1) };
+            ImmediateRetryMessage retryNotification = null;
             config.Recoverability()
+                .Immediate(settings => settings.OnMessageBeingRetried(retry =>
+                {
+                    retryNotification = retry;
+                    Array.Clear(retry.Body, 0, retry.Body.Length);
+                    throw new InvalidOperationException("notification failure");
+                }))
                 .AddUnrecoverableException(typeof(FatalFailureException))
                 .CustomPolicy((settings, failure) =>
                 {
@@ -116,7 +123,13 @@ namespace Bq.Messaging.Tests
                 var message = (Command)incoming.Message;
                 if (message.Text == "skip") return;
                 if (message.Text == "retry")
+                {
                     incoming.Items.Add("retry", incoming.ImmediateRetries);
+                    if (incoming.ImmediateRetries == 1)
+                        Assert(retryNotification?.RetryAttempt == 1 && retryNotification.MessageId == incoming.HandlerContext.MessageId &&
+                            retryNotification.Exception.Message == "retry the unit" && retryNotification.Body.Length > 0,
+                            "retry notification receives the failure and its snapshot before the next attempt");
+                }
                 incoming.Items.Add("unit", message.Text);
                 try
                 {

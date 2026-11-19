@@ -33,12 +33,19 @@ namespace Bq.Messaging
     public sealed class ImmediateRetriesSettings
     {
         internal int Count { get; private set; }
+        internal Func<ImmediateRetryMessage, Task> Notification { get; private set; }
         internal ImmediateRetriesSettings(int count) { Count = count; }
 
         public void NumberOfRetries(int numberOfRetries)
         {
             if (numberOfRetries < 0) throw new ArgumentOutOfRangeException(nameof(numberOfRetries));
             Count = numberOfRetries;
+        }
+
+        public ImmediateRetriesSettings OnMessageBeingRetried(Func<ImmediateRetryMessage, Task> notificationCallback)
+        {
+            Notification = notificationCallback ?? throw new ArgumentNullException(nameof(notificationCallback));
+            return this;
         }
     }
 

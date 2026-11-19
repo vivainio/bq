@@ -629,6 +629,21 @@ namespace Bq.Messaging
                         action = ChooseRecovery(ex, attempt, cycle, headers, currentId, delivery.Body, context?.Extensions, allowImmediate: true);
                         if (!action.IsImmediate) throw;
                         System.Diagnostics.Trace.TraceWarning("Immediate retry {0} for message {1}: {2}", attempt + 1, currentId, ex);
+                        var notification = configuration.Recoverability.ImmediateRetryNotification;
+                        if (notification != null)
+                        {
+                            try
+                            {
+                                var snapshot = new IncomingMessage(currentId, headers, delivery.Body);
+                                await notification(new ImmediateRetryMessage(snapshot.MessageId, snapshot.Headers, snapshot.Body,
+                                    ex, attempt + 1)).ConfigureAwait(false);
+                            }
+                            catch (Exception notificationFailure)
+                            {
+                                System.Diagnostics.Trace.TraceError("Immediate retry notification failed for message {0}: {1}",
+                                    currentId, notificationFailure);
+                            }
+                        }
                         // Every attempt must deserialize afresh, since a failed handler may mutate the object.
                         action = null;
                         message = MessagePackSerializer.Deserialize(InterfaceMessage.SerializationType(registration.Type), body, SerializerOptions);
