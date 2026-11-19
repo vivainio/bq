@@ -72,6 +72,7 @@ namespace Bq.Messaging
     public sealed class PublishOptions : MessageOptions { }
     public sealed class ReplyOptions : MessageOptions
     {
+        internal string CorrelationId { get; set; }
         internal string Destination { get; private set; }
 
         public void SetDestination(string destination)
@@ -177,7 +178,7 @@ namespace Bq.Messaging
         {
             if (options == null) throw new ArgumentNullException(nameof(options));
             if (context is IReplyWithOptions handler) return handler.ReplyWithOptions(message, options);
-            if (options.Headers.Count == 0 && options.Destination == null && !options.ImmediateDispatch)
+            if (options.Headers.Count == 0 && options.Destination == null && options.CorrelationId == null && !options.ImmediateDispatch)
                 return context.Reply(message);
             throw new NotSupportedException("This handler context does not support reply options.");
         }

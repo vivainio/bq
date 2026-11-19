@@ -12,6 +12,20 @@ namespace Bq.Messaging
         Task Timeout(T state, IMessageHandlerContext context);
     }
 
+    public interface IContainSagaData
+    {
+        Guid Id { get; set; }
+        string Originator { get; set; }
+        string OriginalMessageId { get; set; }
+    }
+
+    public abstract class ContainSagaData : IContainSagaData
+    {
+        public Guid Id { get; set; }
+        public string Originator { get; set; }
+        public string OriginalMessageId { get; set; }
+    }
+
     // A new saga object is constructed for each message attempt.
     public abstract class Saga<TData> where TData : class, new()
     {
@@ -44,6 +58,16 @@ namespace Bq.Messaging
         protected Task RequestTimeout<T>(IMessageHandlerContext context, TimeSpan delay, T state) => RequestTimeout(delay, state);
         protected Task RequestTimeout<T>(IMessageHandlerContext context, DateTime utcDueAt, T state) =>
             RequestTimeout(new DateTimeOffset(utcDueAt), state);
+
+        protected Task ReplyToOriginator(IMessageHandlerContext context, object message)
+        {
+            if (context == null) throw new ArgumentNullException(nameof(context));
+            if (!(Data is IContainSagaData data) || string.IsNullOrEmpty(data.Originator))
+                throw new InvalidOperationException("The saga has no recorded originator.");
+            var options = new ReplyOptions { CorrelationId = data.OriginalMessageId };
+            options.SetDestination(data.Originator);
+            return context.Reply(message, options);
+        }
 
         protected void MarkAsComplete() { Completed = true; }
         protected Task RequestTimeout<T>(TimeSpan delay, T state)
@@ -217,7 +241,16 @@ namespace Bq.Messaging
             }
             var state = record == null ? new SagaStoredState<TData> { InstanceId = Guid.NewGuid().ToString("N"), Data = new TData() } : MessagePackSerializer.Deserialize<SagaStoredState<TData>>(record.Data, Options);
             if (expectedInstance != null && state.InstanceId != expectedInstance) return;
-            if (record == null) initialize?.Invoke(state.Data);
+            if (record == null)
+            {
+                initialize?.Invoke(state.Data);
+                if (state.Data is IContainSagaData data)
+                {
+                    data.Id = Guid.ParseExact(state.InstanceId, "N");
+                    data.Originator = context.ReplyToAddress;
+                    data.OriginalMessageId = context.MessageId;
+                }
+            }
             var saga = factory() ?? throw new InvalidOperationException("Saga factory returned null.");
             try
             {

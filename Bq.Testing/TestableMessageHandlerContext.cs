@@ -28,6 +28,7 @@ namespace Bq.Testing
         public DateTimeOffset? DueAt { get; }
         public IReadOnlyDictionary<string, object> Headers { get; }
         public bool ImmediateDispatch { get; internal set; }
+        public string CorrelationId { get; internal set; }
     }
 
     public sealed class TestableMessageHandlerContext : IMessageHandlerContext, IReplyWithOptions
@@ -76,7 +77,8 @@ namespace Bq.Testing
         Task IReplyWithOptions.ReplyWithOptions<T>(T message, ReplyOptions options)
         {
             messages.Enqueue(new RecordedMessage(MessageOperation.Reply, message, options?.Destination ?? ReplyToAddress, null,
-                options?.Headers ?? new Dictionary<string, object>()) { ImmediateDispatch = options?.ImmediateDispatch == true });
+                options?.Headers ?? new Dictionary<string, object>())
+                { ImmediateDispatch = options?.ImmediateDispatch == true, CorrelationId = options?.CorrelationId ?? CorrelationId });
             return Task.CompletedTask;
         }
 

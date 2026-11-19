@@ -15,7 +15,7 @@ namespace Bq.Messaging.Tests
     public sealed class FulfillmentCompleted { public string OrderId { get; set; } }
     public sealed class WorkflowBarrier { }
 
-    public sealed class FulfillmentState
+    public sealed class FulfillmentState : ContainSagaData
     {
         public string OrderId { get; set; }
         public bool Recorded { get; set; }
@@ -33,7 +33,9 @@ namespace Bq.Messaging.Tests
 
         public async Task Handle(BeginFulfillment message, IMessageHandlerContext context)
         {
-            if (Data.OrderId != message.OrderId) throw new InvalidOperationException("Saga data must start with its correlation property.");
+            if (Data.OrderId != message.OrderId || Data.Id == Guid.Empty ||
+                Data.Originator != context.ReplyToAddress || Data.OriginalMessageId != context.MessageId)
+                throw new InvalidOperationException("New saga data must have its correlation and originator metadata.");
             await context.Publish(new FulfillmentStarted { OrderId = Data.OrderId });
             await RequestTimeout(context, TimeSpan.FromMilliseconds(250), new FulfillmentDeadline { OrderId = Data.OrderId });
         }
@@ -54,6 +56,7 @@ namespace Bq.Messaging.Tests
         {
             if (!Data.Recorded || !Data.DeadlineReached) return;
             await context.Publish(new FulfillmentCompleted { OrderId = orderId });
+            await ReplyToOriginator(context, new FulfillmentRecorded { OrderId = orderId });
             MarkAsComplete();
         }
     }
@@ -81,9 +84,21 @@ namespace Bq.Messaging.Tests
             await CreateWorkflowTable(recordingPath);
 
             var intake = new EndpointConfiguration(intakeName, uri) { Persistence = intakeStore, EventsExchange = exchange };
-            intake.SendOnly();
+            var originatorReply = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            intake.Handle(() => new Handler<FulfillmentRecorded>((message, context) =>
+            {
+                Assert(message.OrderId == "order-1", "saga replies with the original order ID");
+                originatorReply.TrySetResult(context.CorrelationId);
+                return Task.CompletedTask;
+            }));
             intake.Route<BeginFulfillment>(fulfillmentName);
             var fulfillment = new EndpointConfiguration(fulfillmentName, uri) { Persistence = fulfillmentStore, EventsExchange = exchange };
+            var starterId = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            fulfillment.Incoming.Use((incoming, next) =>
+            {
+                if (incoming.Message is BeginFulfillment) starterId.TrySetResult(incoming.HandlerContext.MessageId);
+                return next();
+            });
             fulfillment.RegisterSaga<FulfillmentSaga, FulfillmentState>();
 
             var recording = new EndpointConfiguration(recordingName, uri)
@@ -168,6 +183,8 @@ namespace Bq.Messaging.Tests
                             Assert(completion.BasicProperties.Type == typeof(FulfillmentCompleted).FullName &&
                                 MessagePack.MessagePackSerializer.Deserialize<FulfillmentCompleted>(completion.Body, options).OrderId == orderId,
                                 "the saga publishes one correlated completion after confirmation and timeout");
+                            Assert(await Within(originatorReply.Task) == await Within(starterId.Task),
+                                "saga replies to the intake endpoint with the starting message ID as correlation");
                             Assert(await CountMigrationRows(fulfillmentPath, "bq_saga") == 0 &&
                                 await CountMigrationRows(fulfillmentPath, "bq_saga_timeout") == 0,
                                 "completion removes persisted saga state and the timeout is consumed");
@@ -191,7 +208,7 @@ namespace Bq.Messaging.Tests
                 }
                 finally
                 {
-                    foreach (var queue in new[] { fulfillmentName, recordingName })
+                    foreach (var queue in new[] { intakeName, fulfillmentName, recordingName })
                     {
                         channel.QueueDelete(queue);
                         channel.QueueDelete(queue + ".error");

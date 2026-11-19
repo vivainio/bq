@@ -18,11 +18,12 @@ sequenceDiagram
     R->>F: Send FulfillmentRecorded
     Note over F: Wait for confirmation and timeout
     F->>E: Publish FulfillmentCompleted
+    F->>I: Reply to the original sender
 ```
 
 ## 1. Accept the order
 
-Intake saves the order and sends `BeginFulfillment` to the fulfillment endpoint. A **command** asks a specific endpoint to do something. Intake is send-only, so it has no incoming queue.
+Intake saves the order and sends `BeginFulfillment` to the fulfillment endpoint. A **command** asks a specific endpoint to do something. Intake also handles the saga’s final reply.
 
 Intake writes the order and the outgoing command in the same database transaction. The **outbox** is the table that holds the command until Bq can publish it. If the transaction rolls back, neither write survives. If it commits while RabbitMQ is unavailable, the command stays in the outbox for the dispatcher to send later. Intake can return after the commit while fulfillment continues in the background.
 
@@ -38,7 +39,7 @@ The saga also schedules a durable timeout. This example requires both a recordin
 
 Recording saves its own business row and sends the `FulfillmentRecorded` command back to fulfillment. The test forces the first attempt to fail after both writes. Bq rolls back the row and the outgoing confirmation, then durably schedules a retry. The test stops Recording after that retry has been stored and starts a new instance using the same database.
 
-The retried handler commits the business row and confirmation. Once the saga has both the confirmation and the timeout, it publishes `FulfillmentCompleted` and removes its saved state.
+The retried handler commits the business row and confirmation. Once the saga has both the confirmation and the timeout, it publishes `FulfillmentCompleted`, replies to Intake using the starting message ID for correlation, and removes its saved state.
 
 RabbitMQ can deliver a message more than once. Bq’s **inbox** records successfully processed message IDs in the same transaction as the handler’s writes. The test redelivers the original event and its retry with the same identity and checks that Recording still has one business row and fulfillment publishes no extra completion event.
 

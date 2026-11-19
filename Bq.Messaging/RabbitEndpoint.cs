@@ -909,9 +909,10 @@ namespace Bq.Messaging
             {
                 var destination = options?.Destination ?? replyTo;
                 if (string.IsNullOrEmpty(destination)) throw new InvalidOperationException("Message has no reply address.");
+                var correlationId = options?.CorrelationId ?? CorrelationId;
                 if (PersistenceSession == null || options?.ImmediateDispatch == true)
-                    return endpoint.SendCore(message, CorrelationId, destination, options?.Headers);
-                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true, options?.Headers));
+                    return endpoint.SendCore(message, correlationId, destination, options?.Headers);
+                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, correlationId, true, options?.Headers));
             }
         }
     }
