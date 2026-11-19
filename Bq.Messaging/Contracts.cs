@@ -80,6 +80,9 @@ namespace Bq.Messaging
         public TimeSpan DispatchPollInterval { get; set; } = TimeSpan.FromSeconds(1);
         public TimeSpan NetworkRecoveryInterval { get; set; } = TimeSpan.FromSeconds(5);
         public TimeSpan PublisherConfirmTimeout { get; set; } = TimeSpan.FromSeconds(10);
+        // If set, report the first sustained broker or dispatcher failure for this endpoint instance.
+        public Func<string, Exception, Task> OnCriticalError { get; set; }
+        public TimeSpan CriticalErrorThreshold { get; set; } = TimeSpan.FromMinutes(10);
         public Action<TransportMessage> MutateIncoming { get; set; }
         public Action<TransportMessage> MutateOutgoing { get; set; }
         public IncomingPipeline Incoming { get; } = new IncomingPipeline();

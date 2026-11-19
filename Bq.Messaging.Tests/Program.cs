@@ -530,6 +530,13 @@ namespace Bq.Messaging.Tests
             await store.Initialize();
             var faultStore = new FaultPersistence(store);
             var config = new EndpointConfiguration(name, uri) { Persistence = faultStore };
+            var criticalError = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            config.CriticalErrorThreshold = TimeSpan.FromSeconds(1);
+            config.OnCriticalError = (source, error) =>
+            {
+                criticalError.TrySetResult(source);
+                return Task.CompletedTask;
+            };
             config.ImmediateRetries = 0;
             config.Recoverability.DelayedRetries = new[] { TimeSpan.FromSeconds(3) };
             config.Recoverability.ErrorQueue = errorName;
@@ -677,6 +684,7 @@ namespace Bq.Messaging.Tests
                         await WaitFor(async () => (await endpoint.ListErrors()).Count == 1, "error retained while destination unavailable");
                         await Task.Delay(1500);
                         Assert(await store.NextRecovery(name) != null, "unroutable error remains pending");
+                        Assert(await Within(criticalError.Task) == "Recovery dispatcher", "sustained dispatch failure invokes critical error callback");
                         await endpoint.SendLocal(new Command { Text = "outbox probe" });
                         await WaitFor(() => Task.FromResult(outboxProbe.Task.IsCompleted),
                             "ordinary outbox dispatch while error queue is missing");

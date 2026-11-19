@@ -27,6 +27,7 @@ namespace Bq.Messaging
         readonly Dictionary<string, Registration> receivers = new Dictionary<string, Registration>();
         readonly bool sendOnly;
         readonly TimeSpan dispatchPollInterval;
+        readonly CriticalErrorMonitor criticalErrors;
         readonly TimeSpan publisherConfirmTimeout;
         readonly IConnection connection;
         readonly IModel consumerChannel;
@@ -106,6 +107,12 @@ namespace Bq.Messaging
                     consumer.Received += OnReceived;
                     consumerTag = consumerChannel.BasicConsume(configuration.Name, false, consumer);
                 }
+                if (configuration.OnCriticalError != null)
+                {
+                    criticalErrors = new CriticalErrorMonitor(configuration.OnCriticalError, configuration.CriticalErrorThreshold, stopping.Token);
+                    // A host callback can stop the endpoint, so shutdown must not wait for the callback.
+                    _ = Task.Run(() => criticalErrors.Run(() => connection.IsOpen));
+                }
                 var outbox = Task.Run(() => DispatchPending(false, stopping.Token));
                 dispatcher = sendOnly ? outbox : Task.WhenAll(outbox, Task.Run(() => DispatchPending(true, stopping.Token)));
             }
@@ -137,6 +144,8 @@ namespace Bq.Messaging
             if (configuration.NetworkRecoveryInterval < TimeSpan.FromMilliseconds(1) ||
                 configuration.NetworkRecoveryInterval > TimeSpan.FromMilliseconds(int.MaxValue))
                 throw new ArgumentOutOfRangeException(nameof(configuration.NetworkRecoveryInterval));
+            if (configuration.OnCriticalError != null && configuration.CriticalErrorThreshold <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(configuration.CriticalErrorThreshold));
             if (configuration.MaxConcurrency == 0) throw new ArgumentOutOfRangeException(nameof(configuration.MaxConcurrency));
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));
             return new RabbitEndpoint(configuration);
@@ -360,13 +369,22 @@ namespace Bq.Messaging
         }
         async Task DispatchPending(bool recoveries, CancellationToken cancellation)
         {
+            var probe = recoveries ? criticalErrors?.Recovery : criticalErrors?.Outbox;
             while (!cancellation.IsCancellationRequested)
             {
                 try
                 {
-                    if (await DispatchNext(recoveries).ConfigureAwait(false)) continue;
+                    probe?.Started();
+                    var dispatched = await DispatchNext(recoveries).ConfigureAwait(false);
+                    probe?.Succeeded();
+                    if (dispatched) continue;
                 }
-                catch (Exception ex) { if (!cancellation.IsCancellationRequested) System.Diagnostics.Trace.TraceError("{0} dispatch failed: {1}", recoveries ? "Recovery" : "Outbox", ex); }
+                catch (Exception ex)
+                {
+                    probe?.Failed(ex);
+                    if (!cancellation.IsCancellationRequested)
+                        System.Diagnostics.Trace.TraceError("{0} dispatch failed: {1}", recoveries ? "Recovery" : "Outbox", ex);
+                }
                 try { await Task.Delay(dispatchPollInterval, cancellation).ConfigureAwait(false); }
                 catch (OperationCanceledException) { break; }
             }
