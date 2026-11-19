@@ -148,6 +148,17 @@ namespace Bq.Messaging.Tests
         }
         static async Task TestingSupportTests()
         {
+            var configuration = new EndpointConfiguration("config-test", new Uri("amqp://localhost"));
+            configuration.LimitMessageProcessingConcurrencyTo(4);
+            configuration.SendFailedMessagesTo("config-test.error");
+            configuration.Recoverability()
+                .Immediate(retries => retries.NumberOfRetries(1))
+                .Delayed(retries => retries.NumberOfRetries(2).TimeIncrease(TimeSpan.FromSeconds(3)));
+            Assert(configuration.MaxConcurrency == 4 && configuration.Recoverability.ErrorQueue == "config-test.error" &&
+                configuration.ImmediateRetries == 1 &&
+                configuration.Recoverability.DelayedRetries.SequenceEqual(new[] { TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(6) }),
+                "fluent configuration applies concurrency, error queue, and retry settings");
+
             var context = new TestableMessageHandlerContext();
             IMessageHandlerContext handler = context;
             handler.Extensions.Set("shared", 4);
@@ -669,9 +680,10 @@ namespace Bq.Messaging.Tests
                 criticalError.TrySetResult(source);
                 return Task.CompletedTask;
             };
-            config.ImmediateRetries = 0;
-            config.Recoverability.DelayedRetries = new[] { TimeSpan.FromSeconds(3) };
-            config.Recoverability.ErrorQueue = errorName;
+            config.SendFailedMessagesTo(errorName);
+            config.Recoverability()
+                .Immediate(retries => retries.NumberOfRetries(0))
+                .Delayed(retries => retries.NumberOfRetries(1).TimeIncrease(TimeSpan.FromSeconds(3)));
             config.Recoverability.IsUnrecoverable = ex =>
             {
                 if (ex.Message == "persistent failure") throw new InvalidOperationException("test classifier failure");

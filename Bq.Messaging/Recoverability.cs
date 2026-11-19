@@ -11,6 +11,31 @@ namespace Bq.Messaging
         public string ErrorQueue { get; set; }
         public Func<Exception, bool> IsUnrecoverable { get; set; }
         public Func<RecoveryContext, RecoveryAction> Policy { get; set; }
+
+        public RecoverabilityOptions Immediate(Action<ImmediateRetriesSettings> customizations)
+        {
+            if (customizations == null) throw new ArgumentNullException(nameof(customizations));
+            var settings = new ImmediateRetriesSettings(ImmediateRetries);
+            customizations(settings);
+            ImmediateRetries = settings.Count;
+            return this;
+        }
+
+        public RecoverabilityOptions Delayed(Action<DelayedRetriesSettings> customizations)
+        {
+            if (customizations == null) throw new ArgumentNullException(nameof(customizations));
+            var settings = new DelayedRetriesSettings(DelayedRetries ?? Array.Empty<TimeSpan>());
+            customizations(settings);
+            if (!settings.Changed) return this;
+            var ticks = settings.Increment.Ticks;
+            if (ticks > 0 && settings.Count > TimeSpan.FromDays(24).Ticks / ticks)
+                throw new ArgumentOutOfRangeException(nameof(customizations), "Delayed retry intervals cannot exceed 24 days.");
+            var delays = new TimeSpan[settings.Count];
+            for (var index = 0; index < delays.Length; index++)
+                delays[index] = TimeSpan.FromTicks(ticks * (index + 1));
+            DelayedRetries = delays;
+            return this;
+        }
     }
 
     public sealed class RecoveryContext
