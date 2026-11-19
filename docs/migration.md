@@ -10,7 +10,7 @@ Use the `Bq.Messaging` APIs in the selected C# projects. Bq provides optional `I
 
 Register incoming behaviors with `configuration.Incoming.Use`. They can share attempt-local state, short-circuit processing, and wrap handler execution. Use `configuration.Incoming.BeforeCommit` for application work that must commit with the inbox claim and outbox entries. Pass the supplied connection and transaction to the application data layer. An exception from the handler, callback, or surrounding behavior rolls back the transaction.
 
-Transport mutators can change headers, the contract name, or the body. Bq runs the outgoing mutator before storing an outbox message and preserves the received wire payload for [recovery and replay](recoverability.md). Code that used NServiceBus headers can read Bq's delivery metadata and use `FindHeader` or `GetHeader` for text values.
+Transport mutators can change headers, the contract name, or the body. Bq runs the outgoing mutator before storing an outbox message and preserves the received wire payload for [recovery and replay](recoverability.md). Incoming behaviors can read the contract name, retry counts, and deferred or saga-timeout flags from the incoming context. Use `FindHeader` or `GetHeader` for text values such as `MessageHeaders.TimeSent`.
 
 ## Verify the migration locally
 

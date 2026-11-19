@@ -545,6 +545,19 @@ namespace Bq.Messaging.Tests
             var config = new EndpointConfiguration(endpointName, uri) { Persistence = store };
             config.SagaNotFound = (sagaType, key, message, context) => { if (key == "missing") Interlocked.Increment(ref missingCount); return Task.CompletedTask; };
             config.Handle(() => new Handler<ChangeOrder>((message, context) => { Interlocked.Increment(ref otherHandlerCount); return Task.CompletedTask; }));
+            config.Incoming.Use((incoming, next) =>
+            {
+                if (incoming.Message is SagaTimeoutMessage)
+                {
+                    Assert(incoming.IsSagaTimeout && incoming.IsDeferred, "saga timeout is classified as deferred");
+                    Assert(incoming.ContractName == typeof(SagaTimeoutMessage).FullName &&
+                        incoming.ImmediateRetries == 0 && incoming.DelayedRetries == 0,
+                        "fresh saga timeout carries its contract and zero retry counts");
+                    Assert(DateTimeOffset.TryParse(incoming.HandlerContext.GetHeader(MessageHeaders.TimeSent), out _),
+                        "saga timeout retains the time it was requested");
+                }
+                return next();
+            });
             config.RegisterSaga<OrderWorkflow, OrderState>(() => new OrderWorkflow(), mappings =>
             {
                 mappings.Start<StartOrder>(m => m.OrderId);
@@ -666,6 +679,13 @@ namespace Bq.Messaging.Tests
             };
             config.Incoming.Use(async (context, next) =>
             {
+                if (context.Message is RecoverCommand retry && retry.Text == "retry")
+                {
+                    var expectedCycle = Volatile.Read(ref attempts) == 0 ? 0 : 1;
+                    Assert(context.ImmediateRetries == 0 && context.DelayedRetries == expectedCycle &&
+                        context.IsDeferred == (expectedCycle == 1) && !context.IsSagaTimeout,
+                        "recovery cycle populates incoming retry and deferred metadata");
+                }
                 if (context.Message is Command) context.Items["stage"] = "before handler";
                 await next();
                 if (context.Message is Command)
