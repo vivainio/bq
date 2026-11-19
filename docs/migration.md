@@ -14,6 +14,15 @@ Transport mutators can change headers, the contract name, or the body. The outbo
 
 ## Verify the migration locally
 
-Use `Bq.Testing` to record sends, publications, replies, and saga timeouts without RabbitMQ. Run `bash scripts/test-rabbitmq.sh` for the [integration suite](testing.md). Its migration cases exercise per-attempt handler scopes, transaction rollback, policy-selected retries, provider-controlled dispatch after broker confirmation, critical-error notification for a stalled persistence poll, and an isolated MessagePack flow alongside a simulated legacy XML flow. The phased fixture uses host-defined marker conventions to set up both a command route and an event subscription.
+Run `bash scripts/test-rabbitmq.sh` to exercise the following cases with RabbitMQ and SQLite. The [integration test instructions](testing.md) also show how to run the transport-free cases on their own.
 
-The local fixtures use SQLite and representative Bq endpoints. Production cutover still requires verification against the consuming application's contracts, topology, and database. The Oracle provider and shared EF6 transaction verification are deferred.
+| Migration concern | What the tests verify |
+| --- | --- |
+| Routing and cutover | A send-only producer uses host-defined markers to route a command and publish an event. The migrated subscriber receives MessagePack while the simulated legacy consumer receives XML on a separate exchange. |
+| Behaviors and application transactions | Each attempt resolves handlers and runs before-commit work in the same host scope. Short-circuiting skips handler resolution. A failed attempt rolls back the inbox claim, application writes, and outbox entries. |
+| Send options and metadata | Relative and absolute delays, send and reply headers, publish headers, stable contract names, and incoming retry and saga-timeout metadata survive the expected transport or persistence path. |
+| Transport mutation and replay | The outbox stores the mutated wire payload before publishing. Recovery retains the original received bytes so replay can run the incoming mutator again. |
+| Recoverability and outages | Policies select immediate retry, delayed retry, or direct error routing. A retry gets a freshly deserialized message. Failed publications stay pending, and the critical-error hook reports a stalled dispatcher or sustained broker outage. |
+| Sagas and test doubles | Saga correlation, completion, and durable timeouts run through RabbitMQ. Transport-free tests capture messages and timeout requests with `Bq.Testing`. |
+
+The local fixtures use representative Bq endpoints. Production cutover still requires verification against the consuming application's contracts, topology, and database. The Oracle provider and shared EF6 transaction verification are deferred.
