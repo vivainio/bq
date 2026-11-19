@@ -5,6 +5,11 @@ using System.Threading.Tasks;
 
 namespace Bq.Messaging
 {
+    // Optional markers for host-defined message discovery and routing conventions.
+    public interface IMessage { }
+    public interface ICommand : IMessage { }
+    public interface IEvent : IMessage { }
+
     // This is a deliberately small, source-compatible subset, not the NServiceBus assembly.
     public interface IHandleMessages<T>
     {
