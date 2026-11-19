@@ -28,11 +28,19 @@ namespace Bq.Messaging.Tests
             }
 
             var config = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
-            config.Recoverability.DelayedRetries = Array.Empty<TimeSpan>();
+            config.Recoverability.DelayedRetries = new[] { TimeSpan.FromHours(1) };
+            config.Recoverability.Policy = failure =>
+            {
+                if (failure.Exception.Message == "retry the unit" && failure.ImmediateRetries == 0 && failure.DelayedRetries == 0)
+                    return RecoveryAction.ImmediateRetry();
+                return RecoveryAction.MoveToError();
+            };
             config.Incoming.Use(async (incoming, next) =>
             {
                 var message = (Command)incoming.Message;
                 if (message.Text == "skip") return;
+                if (message.Text == "retry")
+                    incoming.Items.Add("retry", incoming.ImmediateRetries);
                 incoming.Items.Add("unit", message.Text);
                 try { await next(); }
                 catch (InvalidOperationException ex) when (message.Text == "replace")
@@ -52,6 +60,11 @@ namespace Bq.Messaging.Tests
                 var unit = (string)incoming.Items["unit"];
                 await InsertApplicationWork(session, unit + ":commit");
                 if (unit == "before-commit") throw new FatalFailureException("unit of work save failed");
+                if (unit == "retry" && (int)incoming.Items["retry"] == 0)
+                {
+                    ((Command)incoming.Message).Text = "mutated during failed attempt";
+                    throw new InvalidOperationException("retry the unit");
+                }
             });
             config.Handle(() => new Handler<Command>(async (message, context) =>
             {
@@ -65,11 +78,11 @@ namespace Bq.Messaging.Tests
             {
                 using (var endpoint = RabbitEndpoint.Start(config))
                 {
-                    foreach (var scenario in new[] { "skip", "replace", "before-commit", "after-next", "commit" })
+                    foreach (var scenario in new[] { "skip", "replace", "before-commit", "after-next", "commit", "retry" })
                         await endpoint.SendLocal(new Command { Text = scenario });
 
                     await WaitFor(async () => (await endpoint.ListErrors()).Count == 3 &&
-                        await CountMigrationRows(path, "bq_inbox") == 2, "pipeline cases reach durable outcomes");
+                        await CountMigrationRows(path, "bq_inbox") == 3, "pipeline cases reach durable outcomes");
                     var errors = await endpoint.ListErrors();
                     Assert(errors.All(error => error.ExceptionType == typeof(FatalFailureException).FullName) &&
                         errors.Select(error => error.ExceptionMessage).OrderBy(message => message).SequenceEqual(
@@ -86,14 +99,16 @@ namespace Bq.Messaging.Tests
                             {
                                 Assert(await reader.ReadAsync() && reader.GetString(0) == "commit:commit", "successful callback committed");
                                 Assert(await reader.ReadAsync() && reader.GetString(0) == "commit:handler", "successful handler committed");
+                                Assert(await reader.ReadAsync() && reader.GetString(0) == "retry:commit", "retried callback uses the original message");
+                                Assert(await reader.ReadAsync() && reader.GetString(0) == "retry:handler", "retry reruns work in a new transaction");
                                 Assert(!await reader.ReadAsync(), "failed and short-circuited paths left no application rows");
                             }
                         }
                     }
 
                     var pending = await store.NextOutgoing(name);
-                    Assert(await CountMigrationRows(path, "bq_outbox") == 1 && pending?.RoutingKey == name + ".absent",
-                        "only the successful handler committed an outbox message");
+                    Assert(await CountMigrationRows(path, "bq_outbox") == 2 && pending?.RoutingKey == name + ".absent",
+                        "only successful attempts committed outbox messages");
                 }
                 Console.WriteLine("Migration behavior and unit-of-work tests passed.");
             }
