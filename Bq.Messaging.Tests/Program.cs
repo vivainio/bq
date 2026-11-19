@@ -245,7 +245,12 @@ namespace Bq.Messaging.Tests
             var sender = new EndpointConfiguration(senderName, uri) { Persistence = senderStore };
             sender.Route<Command>(receiverName);
             sender.Route<Failed>(receiverName);
-            sender.Handle(() => new Handler<Response>((m, c) => { gotReply.TrySetResult(m.Text); return Task.CompletedTask; }));
+            sender.Handle(() => new Handler<Response>((m, c) =>
+            {
+                Assert(c.Headers.ContainsKey("reply-option"), "reply carries option headers");
+                gotReply.TrySetResult(m.Text);
+                return Task.CompletedTask;
+            }));
             var dbPath = Path.Combine(Path.GetTempPath(), "bq-broker-" + suffix + ".db");
             var store = new SqlitePersistence(() => Sqlite(dbPath), receiverName);
             await store.Initialize();
@@ -254,7 +259,15 @@ namespace Bq.Messaging.Tests
             var receiver = new EndpointConfiguration(receiverName, uri)
                 { Persistence = store, EventsExchange = eventsExchange, ErrorExchange = errorExchange };
             receiver.InputQueueArguments["x-message-ttl"] = 120000;
-            receiver.Handle(() => new Handler<Command>(async (m, c) => { gotCommand.TrySetResult(m.Text); await c.Reply(new Response { Text = m.Text }); await c.SendLocal(new LocalMessage { Text = m.Text }); }));
+            receiver.Handle(() => new Handler<Command>(async (m, c) =>
+            {
+                if (m.Text == "command") Assert(c.Headers.ContainsKey("scheduled-option"), "scheduled send carries option headers");
+                gotCommand.TrySetResult(m.Text);
+                var options = new ReplyOptions();
+                options.SetHeader("reply-option", true);
+                await c.Reply(new Response { Text = m.Text }, options);
+                await c.SendLocal(new LocalMessage { Text = m.Text });
+            }));
             receiver.Handle(() => new Handler<LocalMessage>((m, c) => { gotLocal.TrySetResult(m.Text); return Task.CompletedTask; }));
             receiver.Handle(() => new Handler<Event>((m, c) => { gotEvent1.TrySetResult(m.Text); return Task.CompletedTask; }), true);
             receiver.Recoverability.DelayedRetries = new TimeSpan[0];
@@ -316,7 +329,10 @@ namespace Bq.Messaging.Tests
                             sql.CommandText = "CREATE TABLE transaction_probe(value TEXT); INSERT INTO transaction_probe VALUES ('committed')";
                             await sql.ExecuteNonQueryAsync();
                         }
-                        await a.CreateUniformSession().SendAt(new Command { Text = "command" }, dueAt);
+                        var options = new SendOptions();
+                        options.DoNotDeliverBefore(dueAt);
+                        options.SetHeader("scheduled-option", true);
+                        await a.CreateUniformSession().SendWithOptions(new Command { Text = "command" }, options);
                         return "committed";
                     });
                     using (var db = Sqlite(senderPath))

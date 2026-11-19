@@ -780,11 +780,13 @@ namespace Bq.Messaging
                 if (PersistenceSession == null) throw new InvalidOperationException("Saga timeouts require persistence.");
                 return endpoint.StoreScheduled(PersistenceSession, endpoint.configuration.Name, timeout, dueUtc, CorrelationId);
             }
-            public Task Reply<T>(T message)
+            public Task Reply<T>(T message) => ReplyWithHeaders(message, null);
+
+            internal Task ReplyWithHeaders<T>(T message, IDictionary<string, object> headers)
             {
                 if (string.IsNullOrEmpty(replyTo)) throw new InvalidOperationException("Message has no reply address.");
-                return PersistenceSession == null ? endpoint.SendCore(message, CorrelationId, replyTo) :
-                    PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", replyTo, CorrelationId, true));
+                return PersistenceSession == null ? endpoint.SendCore(message, CorrelationId, replyTo, headers) :
+                    PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", replyTo, CorrelationId, true, headers));
             }
         }
     }
