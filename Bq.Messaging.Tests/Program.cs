@@ -688,9 +688,18 @@ namespace Bq.Messaging.Tests
                 return Task.CompletedTask;
             };
             config.SendFailedMessagesTo(errorName);
+            var delayedNotification = new TaskCompletionSource<DelayedRetryMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var delayedNotifications = 0;
             config.Recoverability()
                 .Immediate(retries => retries.NumberOfRetries(0))
                 .Delayed(retries => retries.NumberOfRetries(1).TimeIncrease(TimeSpan.FromSeconds(3)))
+                .Delayed(retries => retries.OnMessageBeingRetried(retry =>
+                {
+                    if (retry.Exception.Message != "temporary failure") return Task.CompletedTask;
+                    Interlocked.Increment(ref delayedNotifications);
+                    delayedNotification.TrySetResult(retry);
+                    throw new InvalidOperationException("test delayed notification failure");
+                }))
                 .AddUnrecoverableException<FatalFailureException>();
             config.Recoverability.IsUnrecoverable = ex =>
             {
@@ -795,10 +804,15 @@ namespace Bq.Messaging.Tests
                     {
                         channel.BasicPublish("", name, props, body);
                         await WaitFor(async () => { using (var c = Sqlite(path)) { await c.OpenAsync(); using (var cmd = c.CreateCommand()) { cmd.CommandText = "SELECT COUNT(*) FROM bq_recovery WHERE cycle=0"; return Convert.ToInt32(await cmd.ExecuteScalarAsync()) == 1; } } }, "retry persisted");
+                        var notification = await Within(delayedNotification.Task);
+                        Assert(notification.MessageId == props.MessageId && notification.RetryAttempt == 1 &&
+                            notification.Headers["custom"] == "hello" && notification.Body.SequenceEqual(body),
+                            "delayed retry notification identifies the failed delivery");
                         // Duplicate the same delivery after the decision has committed. It must not run again.
                         channel.BasicPublish("", name, props, body);
                         await Task.Delay(400);
-                        Assert(attempts == 1 && policyCalls == 1, "duplicate original skipped after retry decision");
+                        Assert(attempts == 1 && policyCalls == 1 && delayedNotifications == 1,
+                            "duplicate original skipped after retry decision");
                     }
                     await Task.Delay(3200);
                     using (var endpoint = RabbitEndpoint.Start(config))

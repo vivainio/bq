@@ -689,7 +689,21 @@ namespace Bq.Messaging
                     session.Commit();
                 }
                 System.Diagnostics.Trace.TraceError("Message {0} failed; {1}: {2}", currentId, isError ? "error queue" : "delayed retry", failure);
-
+                var notification = options.DelayedRetryNotification;
+                if (!isError && notification != null)
+                {
+                    try
+                    {
+                        var snapshot = new IncomingMessage(currentId, props.Headers, delivery.Body);
+                        await notification(new DelayedRetryMessage(snapshot.MessageId, snapshot.Headers, snapshot.Body,
+                            failure, cycle + 1)).ConfigureAwait(false);
+                    }
+                    catch (Exception notificationFailure)
+                    {
+                        System.Diagnostics.Trace.TraceError("Delayed retry notification failed for message {0}: {1}",
+                            currentId, notificationFailure);
+                    }
+                }
             }
             catch (Exception handoffError)
             {

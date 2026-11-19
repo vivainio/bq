@@ -13,6 +13,7 @@ namespace Bq.Messaging
         public Func<RecoveryContext, RecoveryAction> Policy { get; set; }
         internal Func<RecoverabilityConfig, ErrorContext, RecoverabilityAction> CompatiblePolicy { get; private set; }
         internal Func<ImmediateRetryMessage, Task> ImmediateRetryNotification { get; private set; }
+        internal Func<DelayedRetryMessage, Task> DelayedRetryNotification { get; private set; }
 
         internal HashSet<Type> UnrecoverableExceptionTypes { get; } = new HashSet<Type>();
 
@@ -49,14 +50,17 @@ namespace Bq.Messaging
             if (customizations == null) throw new ArgumentNullException(nameof(customizations));
             var settings = new DelayedRetriesSettings(DelayedRetries ?? Array.Empty<TimeSpan>());
             customizations(settings);
-            if (!settings.Changed) return this;
-            var ticks = settings.Increment.Ticks;
-            if (ticks > 0 && settings.Count > TimeSpan.FromDays(24).Ticks / ticks)
-                throw new ArgumentOutOfRangeException(nameof(customizations), "Delayed retry intervals cannot exceed 24 days.");
-            var delays = new TimeSpan[settings.Count];
-            for (var index = 0; index < delays.Length; index++)
-                delays[index] = TimeSpan.FromTicks(ticks * (index + 1));
-            DelayedRetries = delays;
+            if (settings.Changed)
+            {
+                var ticks = settings.Increment.Ticks;
+                if (ticks > 0 && settings.Count > TimeSpan.FromDays(24).Ticks / ticks)
+                    throw new ArgumentOutOfRangeException(nameof(customizations), "Delayed retry intervals cannot exceed 24 days.");
+                var delays = new TimeSpan[settings.Count];
+                for (var index = 0; index < delays.Length; index++)
+                    delays[index] = TimeSpan.FromTicks(ticks * (index + 1));
+                DelayedRetries = delays;
+            }
+            DelayedRetryNotification = settings.Notification ?? DelayedRetryNotification;
             return this;
         }
     }
@@ -64,6 +68,25 @@ namespace Bq.Messaging
     public class ImmediateRetryMessage
     {
         public ImmediateRetryMessage(string messageId, Dictionary<string, string> headers, byte[] body,
+            Exception exception, int retryAttempt)
+        {
+            MessageId = messageId;
+            Headers = headers;
+            Body = body;
+            Exception = exception;
+            RetryAttempt = retryAttempt;
+        }
+
+        public string MessageId { get; }
+        public Dictionary<string, string> Headers { get; }
+        public byte[] Body { get; }
+        public Exception Exception { get; }
+        public int RetryAttempt { get; }
+    }
+
+    public class DelayedRetryMessage
+    {
+        public DelayedRetryMessage(string messageId, Dictionary<string, string> headers, byte[] body,
             Exception exception, int retryAttempt)
         {
             MessageId = messageId;

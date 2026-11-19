@@ -54,6 +54,7 @@ namespace Bq.Messaging
         internal int Count { get; private set; }
         internal TimeSpan Increment { get; private set; }
         internal bool Changed { get; private set; }
+        internal Func<DelayedRetryMessage, Task> Notification { get; private set; }
 
         internal DelayedRetriesSettings(TimeSpan[] delays)
         {
@@ -75,6 +76,12 @@ namespace Bq.Messaging
                 throw new ArgumentOutOfRangeException(nameof(timeIncrease));
             Increment = timeIncrease;
             Changed = true;
+            return this;
+        }
+
+        public DelayedRetriesSettings OnMessageBeingRetried(Func<DelayedRetryMessage, Task> notificationCallback)
+        {
+            Notification = notificationCallback ?? throw new ArgumentNullException(nameof(notificationCallback));
             return this;
         }
     }
