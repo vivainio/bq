@@ -272,6 +272,11 @@ namespace Bq.Messaging
                 _ = ActivePersistence;
                 return endpoint.SendCore(message, null, local ? endpoint.configuration.Name : destination, headers);
             }
+            Task IImmediateDispatch.PublishImmediately<T>(T message)
+            {
+                _ = ActivePersistence;
+                return endpoint.PublishCore(message, null, headers);
+            }
             public void End() => root.ended = true;
         }
 
@@ -793,6 +798,11 @@ namespace Bq.Messaging
                 var context = Validate();
                 return endpoint.SendCore(message, context?.CorrelationId, local ? endpoint.configuration.Name : destination, headers);
             }
+            Task IImmediateDispatch.PublishImmediately<T>(T message)
+            {
+                var context = Validate();
+                return endpoint.PublishCore(message, context?.CorrelationId, headers);
+            }
             public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
             public Task Send(object message, SendOptions options) => Send<object>(message, options);
             public Task Send<T>(Action<T> initialize, SendOptions options) =>
@@ -830,7 +840,7 @@ namespace Bq.Messaging
                 return context == null ? endpoint.PublishAtWithHeaders(message, dueAt, headers) : context.PublishAtWithHeaders(message, dueAt, headers);
             }
         }
-        internal sealed class HandlerContext : IMessageHandlerContext, IReplyWithHeaders
+        internal sealed class HandlerContext : IMessageHandlerContext, IReplyWithOptions
         {
             readonly RabbitEndpoint endpoint;
             readonly string replyTo;
@@ -893,13 +903,15 @@ namespace Bq.Messaging
             public Task Reply(object message, ReplyOptions options) => Reply<object>(message, options);
             public Task Reply<T>(Action<T> initialize, ReplyOptions options) =>
                 Reply(MessageOptionsExtensions.Initialize(initialize), options);
-            public Task Reply<T>(T message) => ((IReplyWithHeaders)this).ReplyWithHeaders(message, null);
+            public Task Reply<T>(T message) => ((IReplyWithOptions)this).ReplyWithOptions(message, null);
 
-            Task IReplyWithHeaders.ReplyWithHeaders<T>(T message, IDictionary<string, object> headers)
+            Task IReplyWithOptions.ReplyWithOptions<T>(T message, ReplyOptions options)
             {
-                if (string.IsNullOrEmpty(replyTo)) throw new InvalidOperationException("Message has no reply address.");
-                return PersistenceSession == null ? endpoint.SendCore(message, CorrelationId, replyTo, headers) :
-                    PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", replyTo, CorrelationId, true, headers));
+                var destination = options?.Destination ?? replyTo;
+                if (string.IsNullOrEmpty(destination)) throw new InvalidOperationException("Message has no reply address.");
+                if (PersistenceSession == null || options?.ImmediateDispatch == true)
+                    return endpoint.SendCore(message, CorrelationId, destination, options?.Headers);
+                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true, options?.Headers));
             }
         }
     }

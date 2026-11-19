@@ -123,6 +123,15 @@ namespace Bq.Messaging.Tests
                         send.SetHeader("immediate", true);
                         send.RequireImmediateDispatch();
                         await context.Send(new LocalMessage { Text = message.Text }, send);
+                        var publish = new PublishOptions();
+                        publish.SetHeader("immediate", true);
+                        publish.RequireImmediateDispatch();
+                        await context.Publish(new Event { Text = message.Text }, publish);
+                        var reply = new ReplyOptions();
+                        reply.SetDestination(name + ".immediate");
+                        reply.SetHeader("immediate", true);
+                        reply.RequireImmediateDispatch();
+                        await context.Reply(new Response { Text = message.Text }, reply);
                         throw new InvalidOperationException("handler failure");
                     }
                     if (message.Text == "swallow") throw new InvalidOperationException("caught handler failure");
@@ -136,6 +145,7 @@ namespace Bq.Messaging.Tests
                 using (var endpoint = RabbitEndpoint.Start(config))
                 {
                     channel.QueueDeclare(name + ".immediate", false, true, true);
+                    channel.QueueBind(name + ".immediate", config.EventsExchange, typeof(Event).FullName);
                     foreach (var scenario in new[] { "skip", "replace", "before-commit", "after-next", "commit", "retry", "swallow", "duplicate-next" })
                         await endpoint.SendLocal(new Command { Text = scenario });
 
@@ -170,9 +180,13 @@ namespace Bq.Messaging.Tests
                         }
                     }
 
-                    var direct = channel.BasicGet(name + ".immediate", true);
-                    Assert(direct != null && Equals(direct.BasicProperties.Headers["immediate"], true),
-                        "immediate send publishes with headers even when the handler transaction rolls back");
+                    foreach (var contract in new[] { typeof(LocalMessage), typeof(Event), typeof(Response) })
+                    {
+                        var direct = channel.BasicGet(name + ".immediate", true);
+                        Assert(direct != null && direct.BasicProperties.Type == contract.FullName &&
+                            Equals(direct.BasicProperties.Headers["immediate"], true),
+                            "immediate sends, publishes and replies survive handler rollback with their headers");
+                    }
                     var pending = await store.NextOutgoing(name);
                     Assert(await CountMigrationRows(path, "bq_outbox") == 2 && pending?.RoutingKey == name + ".absent",
                         "only successful attempts committed outbox messages");

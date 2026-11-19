@@ -30,7 +30,7 @@ namespace Bq.Testing
         public bool ImmediateDispatch { get; internal set; }
     }
 
-    public sealed class TestableMessageHandlerContext : IMessageHandlerContext, IReplyWithHeaders
+    public sealed class TestableMessageHandlerContext : IMessageHandlerContext, IReplyWithOptions
     {
         readonly ConcurrentQueue<RecordedMessage> messages = new ConcurrentQueue<RecordedMessage>();
 
@@ -71,11 +71,12 @@ namespace Bq.Testing
         public Task Reply(object message, ReplyOptions options) => Reply<object>(message, options);
         public Task Reply<T>(Action<T> initialize, ReplyOptions options) =>
             Reply(MessageOptionsExtensions.Initialize(initialize), options);
-        public Task Reply<T>(T message) => ((IReplyWithHeaders)this).ReplyWithHeaders(message, null);
+        public Task Reply<T>(T message) => ((IReplyWithOptions)this).ReplyWithOptions(message, null);
 
-        Task IReplyWithHeaders.ReplyWithHeaders<T>(T message, IDictionary<string, object> headers)
+        Task IReplyWithOptions.ReplyWithOptions<T>(T message, ReplyOptions options)
         {
-            messages.Enqueue(new RecordedMessage(MessageOperation.Reply, message, null, null, headers ?? new Dictionary<string, object>()));
+            messages.Enqueue(new RecordedMessage(MessageOperation.Reply, message, options?.Destination ?? ReplyToAddress, null,
+                options?.Headers ?? new Dictionary<string, object>()) { ImmediateDispatch = options?.ImmediateDispatch == true });
             return Task.CompletedTask;
         }
 
@@ -109,6 +110,12 @@ namespace Bq.Testing
             {
                 messages.Enqueue(new RecordedMessage(local ? MessageOperation.SendLocal : MessageOperation.Send, message, destination, null, headers)
                     { ImmediateDispatch = true });
+                return Task.CompletedTask;
+            }
+
+            Task IImmediateDispatch.PublishImmediately<T>(T message)
+            {
+                messages.Enqueue(new RecordedMessage(MessageOperation.Publish, message, null, null, headers) { ImmediateDispatch = true });
                 return Task.CompletedTask;
             }
 

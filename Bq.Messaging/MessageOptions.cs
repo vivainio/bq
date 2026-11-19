@@ -6,6 +6,10 @@ namespace Bq.Messaging
 {
     public abstract class MessageOptions
     {
+        internal bool ImmediateDispatch { get; private set; }
+
+        public virtual void RequireImmediateDispatch() => ImmediateDispatch = true;
+
         internal IDictionary<string, object> Headers { get; } = new Dictionary<string, object>();
 
         public void SetHeader(string name, object value)
@@ -26,18 +30,25 @@ namespace Bq.Messaging
         TimeSpan? delay;
         DateTimeOffset? deliverAt;
         internal string Destination { get; private set; }
-        internal bool ImmediateDispatch { get; private set; }
+        internal bool Local { get; private set; }
 
         public void SetDestination(string destination)
         {
             if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("Destination is required.", nameof(destination));
+            if (Local) throw new InvalidOperationException("A local destination has already been selected.");
             Destination = destination;
         }
 
-        public void RequireImmediateDispatch()
+        public void RouteToThisEndpoint()
+        {
+            if (Destination != null) throw new InvalidOperationException("An explicit destination has already been selected.");
+            Local = true;
+        }
+
+        public override void RequireImmediateDispatch()
         {
             if (delay.HasValue || deliverAt.HasValue) throw new InvalidOperationException("Immediate dispatch cannot be scheduled.");
-            ImmediateDispatch = true;
+            base.RequireImmediateDispatch();
         }
 
         public void DelayDeliveryWith(TimeSpan value)
@@ -59,16 +70,26 @@ namespace Bq.Messaging
     }
 
     public sealed class PublishOptions : MessageOptions { }
-    public sealed class ReplyOptions : MessageOptions { }
-
-    internal interface IReplyWithHeaders
+    public sealed class ReplyOptions : MessageOptions
     {
-        Task ReplyWithHeaders<T>(T message, IDictionary<string, object> headers);
+        internal string Destination { get; private set; }
+
+        public void SetDestination(string destination)
+        {
+            if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("Destination is required.", nameof(destination));
+            Destination = destination;
+        }
+    }
+
+    internal interface IReplyWithOptions
+    {
+        Task ReplyWithOptions<T>(T message, ReplyOptions options);
     }
 
     internal interface IImmediateDispatch
     {
         Task SendImmediately<T>(T message, string destination, bool local);
+        Task PublishImmediately<T>(T message);
     }
 
     public static class MessageOptionsExtensions
@@ -109,9 +130,10 @@ namespace Bq.Messaging
             string destination = null, bool local = false)
         {
             if (options == null) throw new ArgumentNullException(nameof(options));
-            if ((destination != null || local) && options.Destination != null)
+            if ((destination != null || local) && (options.Destination != null || options.Local))
                 throw new ArgumentException("A destination has already been supplied.", nameof(options));
             destination = destination ?? options.Destination;
+            local = local || options.Local;
             var dueAt = options.DueAt;
             session = options.Apply(session);
             if (options.ImmediateDispatch)
@@ -130,8 +152,14 @@ namespace Bq.Messaging
         public static Task SendLocal<T>(this IUniformSession session, T message, SendOptions options) =>
             SendUsingOptions(session, message, options, local: true);
 
-        public static Task Publish<T>(this IUniformSession session, T message, PublishOptions options) =>
-            options.Apply(session).Publish(message);
+        public static Task Publish<T>(this IUniformSession session, T message, PublishOptions options)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            session = options.Apply(session);
+            if (!options.ImmediateDispatch) return session.Publish(message);
+            if (session is IImmediateDispatch immediate) return immediate.PublishImmediately(message);
+            throw new NotSupportedException("This session does not support immediate dispatch.");
+        }
 
         public static Task SendWithOptions<T>(this IMessageHandlerContext context, T message, SendOptions options) =>
             context.Send(message, options);
@@ -147,9 +175,11 @@ namespace Bq.Messaging
 
         public static Task Reply<T>(this IMessageHandlerContext context, T message, ReplyOptions options)
         {
-            if (options.Headers.Count == 0) return context.Reply(message);
-            if (context is IReplyWithHeaders handler) return handler.ReplyWithHeaders(message, options.Headers);
-            throw new NotSupportedException("This handler context does not support reply headers.");
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            if (context is IReplyWithOptions handler) return handler.ReplyWithOptions(message, options);
+            if (options.Headers.Count == 0 && options.Destination == null && !options.ImmediateDispatch)
+                return context.Reply(message);
+            throw new NotSupportedException("This handler context does not support reply options.");
         }
     }
 }

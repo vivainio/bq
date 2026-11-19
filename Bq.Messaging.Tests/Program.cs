@@ -483,7 +483,8 @@ namespace Bq.Messaging.Tests
                                 options.DelayDeliveryWith(delay);
                                 options.SetHeader("relative-delay", true);
                                 var requestedAt = DateTimeOffset.UtcNow;
-                                await producer.CreateUniformSession().SendLocal(new LocalMessage { Text = "scheduled local" }, options);
+                                options.RouteToThisEndpoint();
+                                await producer.CreateUniformSession().Send(new LocalMessage { Text = "scheduled local" }, options);
                                 BasicGetResult scheduled = null;
                                 await WaitFor(() =>
                                 {
