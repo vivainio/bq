@@ -73,6 +73,35 @@ namespace Bq.Messaging
 
     public static class MessageOptionsExtensions
     {
+        internal static T Initialize<T>(Action<T> initialize) where T : class, new()
+        {
+            if (initialize == null) throw new ArgumentNullException(nameof(initialize));
+            var message = new T();
+            initialize(message);
+            return message;
+        }
+
+        public static Task Send<T>(this IMessageSession session, Action<T> initialize) where T : class, new() =>
+            session.Send(initialize, new SendOptions());
+
+        public static Task Publish<T>(this IMessageSession session, Action<T> initialize) where T : class, new() =>
+            session.Publish(initialize, new PublishOptions());
+
+        public static Task Send<T>(this IMessageHandlerContext context, Action<T> initialize) where T : class, new() =>
+            context.Send(initialize, new SendOptions());
+
+        public static Task Publish<T>(this IMessageHandlerContext context, Action<T> initialize) where T : class, new() =>
+            context.Publish(initialize, new PublishOptions());
+
+        public static Task Reply<T>(this IMessageHandlerContext context, Action<T> initialize) where T : class, new() =>
+            context.Reply(initialize, new ReplyOptions());
+
+        public static Task Send<T>(this IUniformSession session, Action<T> initialize) where T : class, new() =>
+            session.Send(initialize, new SendOptions());
+
+        public static Task Publish<T>(this IUniformSession session, Action<T> initialize) where T : class, new() =>
+            session.Publish(initialize, new PublishOptions());
+
         public static Task SendWithOptions<T>(this IUniformSession session, T message, SendOptions options) =>
             session.Send(message, options);
 

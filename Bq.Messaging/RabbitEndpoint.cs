@@ -243,9 +243,13 @@ namespace Bq.Messaging
                 new TransactionalSession(endpoint, persistence, CancellationToken, root, AddHeader(headers, name, value));
             public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
             public Task Send(object message, SendOptions options) => Send<object>(message, options);
+            public Task Send<T>(Action<T> initialize, SendOptions options) where T : class, new() =>
+                Send(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Send(string message, SendOptions options) => Send<string>(message, options);
             public Task Publish<T>(T message, PublishOptions options) => MessageOptionsExtensions.Publish(this, message, options);
             public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
+            public Task Publish<T>(Action<T> initialize, PublishOptions options) where T : class, new() =>
+                Publish(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Send<T>(T message)
             {
                 return Send(endpoint.RouteFor(message), message);
@@ -307,9 +311,13 @@ namespace Bq.Messaging
 
         public Task Send<T>(T message, SendOptions options) => CreateUniformSession().Send(message, options);
         public Task Send(object message, SendOptions options) => Send<object>(message, options);
+        public Task Send<T>(Action<T> initialize, SendOptions options) where T : class, new() =>
+            Send(MessageOptionsExtensions.Initialize(initialize), options);
         public Task Send(string message, SendOptions options) => Send<string>(message, options);
         public Task Publish<T>(T message, PublishOptions options) => CreateUniformSession().Publish(message, options);
         public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
+        public Task Publish<T>(Action<T> initialize, PublishOptions options) where T : class, new() =>
+            Publish(MessageOptionsExtensions.Initialize(initialize), options);
         public Task Send<T>(T message) => SendCore(message, null, null);
         public Task Send<T>(string destination, T message) => SendCore(message, null, RequireDestination(destination));
         static string RequireDestination(string destination)
@@ -752,9 +760,13 @@ namespace Bq.Messaging
             }
             public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
             public Task Send(object message, SendOptions options) => Send<object>(message, options);
+            public Task Send<T>(Action<T> initialize, SendOptions options) where T : class, new() =>
+                Send(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Send(string message, SendOptions options) => Send<string>(message, options);
             public Task Publish<T>(T message, PublishOptions options) => MessageOptionsExtensions.Publish(this, message, options);
             public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
+            public Task Publish<T>(Action<T> initialize, PublishOptions options) where T : class, new() =>
+                Publish(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Send<T>(T message) { var context = Validate(); return context == null ? endpoint.SendCore(message, null, null, headers) : context.SendWithHeaders(message, null, headers); }
             public Task Send<T>(string destination, T message)
             {
@@ -808,9 +820,13 @@ namespace Bq.Messaging
             public IReadOnlyDictionary<string, object> Headers { get; }
             public Task Send<T>(T message, SendOptions options) => UniformSession.Send(message, options);
             public Task Send(object message, SendOptions options) => Send<object>(message, options);
+            public Task Send<T>(Action<T> initialize, SendOptions options) where T : class, new() =>
+                Send(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Send(string message, SendOptions options) => Send<string>(message, options);
             public Task Publish<T>(T message, PublishOptions options) => MessageOptionsExtensions.Publish(this, message, options);
             public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
+            public Task Publish<T>(Action<T> initialize, PublishOptions options) where T : class, new() =>
+                Publish(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Send<T>(T message) => SendWithHeaders(message, null, null);
             internal Task SendWithHeaders<T>(T message, string destination, IDictionary<string, object> headers)
             {
@@ -840,6 +856,8 @@ namespace Bq.Messaging
             }
             public Task Reply<T>(T message, ReplyOptions options) => MessageOptionsExtensions.Reply(this, message, options);
             public Task Reply(object message, ReplyOptions options) => Reply<object>(message, options);
+            public Task Reply<T>(Action<T> initialize, ReplyOptions options) where T : class, new() =>
+                Reply(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Reply<T>(T message) => ((IReplyWithHeaders)this).ReplyWithHeaders(message, null);
 
             Task IReplyWithHeaders.ReplyWithHeaders<T>(T message, IDictionary<string, object> headers)

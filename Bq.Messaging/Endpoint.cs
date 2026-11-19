@@ -6,7 +6,9 @@ namespace Bq.Messaging
     public interface IMessageSession
     {
         Task Send(object message, SendOptions options);
+        Task Send<T>(Action<T> initialize, SendOptions options) where T : class, new();
         Task Publish(object message, PublishOptions options);
+        Task Publish<T>(Action<T> initialize, PublishOptions options) where T : class, new();
     }
 
     public interface IEndpointInstance : IMessageSession, IDisposable

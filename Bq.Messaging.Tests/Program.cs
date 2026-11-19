@@ -172,6 +172,18 @@ namespace Bq.Messaging.Tests
             Assert(messages[1].Operation == MessageOperation.Reply && (string)messages[1].Headers["tenant"] == "two" &&
                 messages[2].Operation == MessageOperation.Publish && messages[2].Headers.Count == 0, "handler testing captures reply and publish");
 
+            send.SetDestination("orders");
+            var initialized = new TestableMessageHandlerContext();
+            IMessageHandlerContext initializerContext = initialized;
+            await initializerContext.Send<Command>(command => command.Text = "created", send);
+            await initializerContext.Publish<Event>(message => message.Text = "published");
+            await initializerContext.Reply<Response>(response => response.Text = "replied", reply);
+            Assert(((Command)initialized.Messages[0].Message).Text == "created" &&
+                initialized.Messages[0].Destination == "orders" && initialized.Messages[0].DueAt == dueAt, "message initializer preserves send options");
+            Assert(((Event)initialized.Messages[1].Message).Text == "published" &&
+                ((Response)initialized.Messages[2].Message).Text == "replied" &&
+                (string)initialized.Messages[2].Headers["tenant"] == "two", "publish and reply initializers populate their contracts");
+
             var saga = new SagaTest<OrderWorkflow, OrderState>(new OrderWorkflow());
             await saga.Handle(new StartOrder { OrderId = "unit", TimeoutAt = dueAt });
             Assert(saga.Data.Status == "started" && saga.Timeouts.Count == 1 && saga.Timeouts[0].DueAt == dueAt,

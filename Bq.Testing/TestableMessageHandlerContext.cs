@@ -52,9 +52,13 @@ namespace Bq.Testing
 
         public Task Send<T>(T message, SendOptions options) => UniformSession.Send(message, options);
         public Task Send(object message, SendOptions options) => Send<object>(message, options);
+        public Task Send<T>(Action<T> initialize, SendOptions options) where T : class, new() =>
+            Send(MessageOptionsExtensions.Initialize(initialize), options);
         public Task Send(string message, SendOptions options) => Send<string>(message, options);
         public Task Publish<T>(T message, PublishOptions options) => MessageOptionsExtensions.Publish(this, message, options);
         public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
+        public Task Publish<T>(Action<T> initialize, PublishOptions options) where T : class, new() =>
+            Publish(MessageOptionsExtensions.Initialize(initialize), options);
         public Task Send<T>(T message) => UniformSession.Send(message);
         public Task Send<T>(string destination, T message) => UniformSession.Send(destination, message);
         public Task SendLocal<T>(T message) => UniformSession.SendLocal(message);
@@ -65,6 +69,8 @@ namespace Bq.Testing
         public Task PublishAt<T>(T message, DateTimeOffset dueAt) => UniformSession.PublishAt(message, dueAt);
         public Task Reply<T>(T message, ReplyOptions options) => MessageOptionsExtensions.Reply(this, message, options);
         public Task Reply(object message, ReplyOptions options) => Reply<object>(message, options);
+        public Task Reply<T>(Action<T> initialize, ReplyOptions options) where T : class, new() =>
+            Reply(MessageOptionsExtensions.Initialize(initialize), options);
         public Task Reply<T>(T message) => ((IReplyWithHeaders)this).ReplyWithHeaders(message, null);
 
         Task IReplyWithHeaders.ReplyWithHeaders<T>(T message, IDictionary<string, object> headers)
@@ -92,9 +98,13 @@ namespace Bq.Testing
 
             public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
             public Task Send(object message, SendOptions options) => Send<object>(message, options);
+            public Task Send<T>(Action<T> initialize, SendOptions options) where T : class, new() =>
+                Send(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Send(string message, SendOptions options) => Send<string>(message, options);
             public Task Publish<T>(T message, PublishOptions options) => MessageOptionsExtensions.Publish(this, message, options);
             public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
+            public Task Publish<T>(Action<T> initialize, PublishOptions options) where T : class, new() =>
+                Publish(MessageOptionsExtensions.Initialize(initialize), options);
             Task IImmediateDispatch.SendImmediately<T>(T message, string destination, bool local)
             {
                 messages.Enqueue(new RecordedMessage(local ? MessageOperation.SendLocal : MessageOperation.Send, message, destination, null, headers)

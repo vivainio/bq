@@ -98,7 +98,7 @@ namespace Bq.Messaging.Tests
             recording.Handle(() => new Handler<FulfillmentStarted>(async (message, context) =>
             {
                 await InsertApplicationWork(context.PersistenceSession, message.OrderId);
-                await context.Send(new FulfillmentRecorded { OrderId = message.OrderId });
+                await context.Send<FulfillmentRecorded>(recorded => recorded.OrderId = message.OrderId);
                 if (Interlocked.Increment(ref attempts) == 1) throw new InvalidOperationException("recording temporarily unavailable");
                 retryMessageId.TrySetResult(context.MessageId);
             }), subscribe: true);
