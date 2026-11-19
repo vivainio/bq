@@ -13,8 +13,8 @@ using RabbitMQ.Client;
 
 namespace Bq.Messaging.Tests
 {
-    public class Command { public string Text { get; set; } }
-    public class Event { public string Text { get; set; } }
+    public class Command : ICommand { public string Text { get; set; } }
+    public class Event : IEvent { public string Text { get; set; } }
     public class LocalMessage { public string Text { get; set; } }
     public class Response { public string Text { get; set; } }
     public class Failed { public string Text { get; set; } }

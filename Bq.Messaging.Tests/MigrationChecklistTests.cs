@@ -141,12 +141,18 @@ namespace Bq.Messaging.Tests
             sender.SendOnly();
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-            receiver.Handle(() => new Handler<Event>((message, context) =>
+            var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            RegisterPilotHandler(sender, receiver, new Handler<Event>((message, context) =>
             {
                 Assert(context.GetHeader("migration-group") == "first", "publish option reaches the migrated subscriber");
                 received.TrySetResult(message.Text);
                 return Task.CompletedTask;
-            }), subscribe: true);
+            }));
+            RegisterPilotHandler(sender, receiver, new Handler<Command>((message, context) =>
+            {
+                commandReceived.TrySetResult(message.Text);
+                return Task.CompletedTask;
+            }));
 
             using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
             using (var channel = connection.CreateModel())
@@ -172,7 +178,9 @@ namespace Bq.Messaging.Tests
                         publish.SetHeader("migration-group", "first");
                         await producer.CreateUniformSession().Publish(new Event { Text = "pilot" }, publish);
 
-                        Assert(await Within(received.Task) == "pilot", "send-only Bq publisher reaches the migrated subscriber");
+                        await producer.Send(new Command { Text = "pilot command" });
+                        Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
+                        Assert(await Within(received.Task) == "pilot", "event convention subscribes the migrated receiver");
                         var legacy = channel.BasicGet(legacyQueue, true);
                         Assert(legacy != null && legacy.BasicProperties.ContentType == "text/xml" &&
                             System.Text.Encoding.UTF8.GetString(legacy.Body.ToArray()) == legacyXml,
@@ -192,6 +200,13 @@ namespace Bq.Messaging.Tests
                 }
             }
             Console.WriteLine("Phased migration routing and wire isolation tests passed.");
+        }
+
+        static void RegisterPilotHandler<T>(EndpointConfiguration sender, EndpointConfiguration receiver, IHandleMessages<T> handler)
+            where T : IMessage
+        {
+            if (typeof(ICommand).IsAssignableFrom(typeof(T))) sender.Route<T>(receiver.Name);
+            receiver.Handle(() => handler, subscribe: typeof(IEvent).IsAssignableFrom(typeof(T)));
         }
 
         static async Task InsertApplicationWork(IPersistenceSession session, string work)
