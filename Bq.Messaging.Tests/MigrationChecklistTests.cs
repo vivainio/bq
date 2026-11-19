@@ -2,6 +2,7 @@ using System;
 using System.Data.Common;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Bq.Messaging;
 using Bq.Persistence.Sqlite;
@@ -35,6 +36,20 @@ namespace Bq.Messaging.Tests
                     return RecoveryAction.ImmediateRetry();
                 return RecoveryAction.MoveToError();
             };
+            var currentScope = new AsyncLocal<IncomingMessageContext>();
+            var closedScopes = 0;
+            var resolvedHandlers = 0;
+            config.Incoming.Use(async (incoming, next) =>
+            {
+                Assert(currentScope.Value == null, "message attempt starts with a clean host scope");
+                currentScope.Value = incoming;
+                try { await next(); }
+                finally
+                {
+                    currentScope.Value = null;
+                    Interlocked.Increment(ref closedScopes);
+                }
+            });
             config.Incoming.Use(async (incoming, next) =>
             {
                 var message = (Command)incoming.Message;
@@ -57,6 +72,7 @@ namespace Bq.Messaging.Tests
             });
             config.Incoming.BeforeCommit(async (incoming, session) =>
             {
+                Assert(ReferenceEquals(currentScope.Value, incoming), "before-commit callback runs inside the host scope");
                 var unit = (string)incoming.Items["unit"];
                 await InsertApplicationWork(session, unit + ":commit");
                 if (unit == "before-commit") throw new FatalFailureException("unit of work save failed");
@@ -66,13 +82,20 @@ namespace Bq.Messaging.Tests
                     throw new InvalidOperationException("retry the unit");
                 }
             });
-            config.Handle(() => new Handler<Command>(async (message, context) =>
+            config.Handle<Command>(handlerContext =>
             {
-                await InsertApplicationWork(context.PersistenceSession, message.Text + ":handler");
-                // An absent destination keeps the committed outbox entry available for inspection.
-                await context.Send(name + ".absent", new LocalMessage { Text = message.Text });
-                if (message.Text == "replace") throw new InvalidOperationException("handler failure");
-            }));
+                var scope = currentScope.Value;
+                Assert(scope != null && ReferenceEquals(scope.HandlerContext, handlerContext),
+                    "handler factory resolves inside the host scope for this attempt");
+                Interlocked.Increment(ref resolvedHandlers);
+                return new Handler<Command>(async (message, context) =>
+                {
+                    await InsertApplicationWork(context.PersistenceSession, message.Text + ":handler");
+                    // An absent destination keeps the committed outbox entry available for inspection.
+                    await context.Send(name + ".absent", new LocalMessage { Text = message.Text });
+                    if (message.Text == "replace") throw new InvalidOperationException("handler failure");
+                });
+            });
 
             try
             {
@@ -83,6 +106,8 @@ namespace Bq.Messaging.Tests
 
                     await WaitFor(async () => (await endpoint.ListErrors()).Count == 3 &&
                         await CountMigrationRows(path, "bq_inbox") == 3, "pipeline cases reach durable outcomes");
+                    Assert(Volatile.Read(ref closedScopes) == 7 && Volatile.Read(ref resolvedHandlers) == 6,
+                        "each attempt closes its host scope and the short-circuited attempt skips handler resolution");
                     var errors = await endpoint.ListErrors();
                     Assert(errors.All(error => error.ExceptionType == typeof(FatalFailureException).FullName) &&
                         errors.Select(error => error.ExceptionMessage).OrderBy(message => message).SequenceEqual(
