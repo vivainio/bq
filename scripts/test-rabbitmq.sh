@@ -49,7 +49,10 @@ wait_for_broker() {
 wait_for_broker
 (
     while [[ ! -f "$test_dir/ready" ]]; do sleep 0.2; done
-    podman restart "$container" >/dev/null
+    podman stop "$container" >/dev/null
+    while [[ ! -f "$test_dir/critical-error" ]]; do sleep 0.2; done
+    podman start "$container" >/dev/null
+    wait_for_broker
     touch "$test_dir/restarted"
 ) &
 watcher=$!

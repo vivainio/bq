@@ -802,6 +802,13 @@ namespace Bq.Messaging.Tests
             await store.Initialize();
             var config = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
             config.NetworkRecoveryInterval = TimeSpan.FromMilliseconds(250);
+            config.CriticalErrorThreshold = TimeSpan.FromMilliseconds(250);
+            var criticalError = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            config.OnCriticalError = (source, error) =>
+            {
+                criticalError.TrySetResult(source);
+                return Task.CompletedTask;
+            };
             config.Recoverability.DelayedRetries = new[] { TimeSpan.FromSeconds(3) };
             var calls = 0;
             config.Handle(() => new Handler<RecoverCommand>((message, context) =>
@@ -822,10 +829,12 @@ namespace Bq.Messaging.Tests
                     }
                     await WaitFor(async () => { using (var c = Sqlite(path)) { await c.OpenAsync(); using (var cmd = c.CreateCommand()) { cmd.CommandText = "SELECT COUNT(*) FROM bq_recovery"; return Convert.ToInt32(await cmd.ExecuteScalarAsync()) == 1; } } }, "outage retry scheduled");
                     File.WriteAllText(Path.Combine(directory, "ready"), "ready");
+                    Assert(await Within(criticalError.Task) == "RabbitMQ connection", "sustained broker outage invokes the critical error callback");
+                    File.WriteAllText(Path.Combine(directory, "critical-error"), "observed");
                     await WaitFor(() => Task.FromResult(File.Exists(Path.Combine(directory, "restarted"))), "broker restart");
                     await WaitFor(() => Task.FromResult(Volatile.Read(ref calls) == 2), "retry after broker restart");
                 }
-                Console.WriteLine("Broker interruption test passed.");
+                Console.WriteLine("Broker interruption and critical-error test passed.");
             }
             finally
             {
