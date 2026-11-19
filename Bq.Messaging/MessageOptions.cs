@@ -45,6 +45,11 @@ namespace Bq.Messaging
     public sealed class PublishOptions : MessageOptions { }
     public sealed class ReplyOptions : MessageOptions { }
 
+    internal interface IReplyWithHeaders
+    {
+        Task ReplyWithHeaders<T>(T message, IDictionary<string, object> headers);
+    }
+
     public static class MessageOptionsExtensions
     {
         public static Task SendWithOptions<T>(this IUniformSession session, T message, SendOptions options)
@@ -86,7 +91,7 @@ namespace Bq.Messaging
         public static Task Reply<T>(this IMessageHandlerContext context, T message, ReplyOptions options)
         {
             if (options.Headers.Count == 0) return context.Reply(message);
-            if (context is RabbitEndpoint.HandlerContext handler) return handler.ReplyWithHeaders(message, options.Headers);
+            if (context is IReplyWithHeaders handler) return handler.ReplyWithHeaders(message, options.Headers);
             throw new NotSupportedException("This handler context does not support reply headers.");
         }
     }

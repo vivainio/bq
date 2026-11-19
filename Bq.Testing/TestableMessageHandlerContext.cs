@@ -1,0 +1,99 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Threading;
+using System.Threading.Tasks;
+using Bq.Messaging;
+
+namespace Bq.Testing
+{
+    public enum MessageOperation { Send, SendLocal, Publish, Reply }
+
+    public sealed class RecordedMessage
+    {
+        internal RecordedMessage(MessageOperation operation, object message, string destination,
+            DateTimeOffset? dueAt, IDictionary<string, object> headers)
+        {
+            Operation = operation;
+            Message = message;
+            Destination = destination;
+            DueAt = dueAt;
+            Headers = new ReadOnlyDictionary<string, object>(new Dictionary<string, object>(headers));
+        }
+
+        public MessageOperation Operation { get; }
+        public object Message { get; }
+        public string Destination { get; }
+        public DateTimeOffset? DueAt { get; }
+        public IReadOnlyDictionary<string, object> Headers { get; }
+    }
+
+    public sealed class TestableMessageHandlerContext : IMessageHandlerContext, IReplyWithHeaders
+    {
+        readonly ConcurrentQueue<RecordedMessage> messages = new ConcurrentQueue<RecordedMessage>();
+
+        public TestableMessageHandlerContext()
+        {
+            UniformSession = new Session(messages, new Dictionary<string, object>());
+        }
+
+        public IReadOnlyList<RecordedMessage> Messages => messages.ToArray();
+        public IUniformSession UniformSession { get; }
+        public CancellationToken CancellationToken { get; set; }
+        public string MessageId { get; set; }
+        public string CorrelationId { get; set; }
+        public IDictionary<string, object> Headers { get; } = new Dictionary<string, object>();
+        IReadOnlyDictionary<string, object> IMessageHandlerContext.Headers => new ReadOnlyDictionary<string, object>(Headers);
+        public IPersistenceSession PersistenceSession { get; set; }
+
+        public Task Send<T>(T message) => UniformSession.Send(message);
+        public Task Send<T>(string destination, T message) => UniformSession.Send(destination, message);
+        public Task SendLocal<T>(T message) => UniformSession.SendLocal(message);
+        public Task Publish<T>(T message) => UniformSession.Publish(message);
+        public Task SendAt<T>(T message, DateTimeOffset dueAt) => UniformSession.SendAt(message, dueAt);
+        public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => UniformSession.SendAt(destination, message, dueAt);
+        public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => UniformSession.SendLocalAt(message, dueAt);
+        public Task PublishAt<T>(T message, DateTimeOffset dueAt) => UniformSession.PublishAt(message, dueAt);
+        public Task Reply<T>(T message) => ((IReplyWithHeaders)this).ReplyWithHeaders(message, null);
+
+        Task IReplyWithHeaders.ReplyWithHeaders<T>(T message, IDictionary<string, object> headers)
+        {
+            messages.Enqueue(new RecordedMessage(MessageOperation.Reply, message, null, null, headers ?? new Dictionary<string, object>()));
+            return Task.CompletedTask;
+        }
+
+        sealed class Session : IUniformSession
+        {
+            readonly ConcurrentQueue<RecordedMessage> messages;
+            readonly IDictionary<string, object> headers;
+
+            public Session(ConcurrentQueue<RecordedMessage> messages, IDictionary<string, object> headers)
+            {
+                this.messages = messages;
+                this.headers = headers;
+            }
+
+            public IUniformSession WithHeader(string name, object value)
+            {
+                if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Header name is required.", nameof(name));
+                return new Session(messages, new Dictionary<string, object>(headers) { [name] = value });
+            }
+
+            public Task Send<T>(T message) => Record(MessageOperation.Send, message);
+            public Task Send<T>(string destination, T message) => Record(MessageOperation.Send, message, destination);
+            public Task SendLocal<T>(T message) => Record(MessageOperation.SendLocal, message);
+            public Task Publish<T>(T message) => Record(MessageOperation.Publish, message);
+            public Task SendAt<T>(T message, DateTimeOffset dueAt) => Record(MessageOperation.Send, message, dueAt: dueAt);
+            public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => Record(MessageOperation.Send, message, destination, dueAt);
+            public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => Record(MessageOperation.SendLocal, message, dueAt: dueAt);
+            public Task PublishAt<T>(T message, DateTimeOffset dueAt) => Record(MessageOperation.Publish, message, dueAt: dueAt);
+
+            Task Record(MessageOperation operation, object message, string destination = null, DateTimeOffset? dueAt = null)
+            {
+                messages.Enqueue(new RecordedMessage(operation, message, destination, dueAt, headers));
+                return Task.CompletedTask;
+            }
+        }
+    }
+}

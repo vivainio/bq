@@ -753,7 +753,7 @@ namespace Bq.Messaging
                 return context == null ? endpoint.PublishAtWithHeaders(message, dueAt, headers) : context.PublishAtWithHeaders(message, dueAt, headers);
             }
         }
-        internal sealed class HandlerContext : IMessageHandlerContext
+        internal sealed class HandlerContext : IMessageHandlerContext, IReplyWithHeaders
         {
             readonly RabbitEndpoint endpoint;
             readonly string replyTo;
@@ -800,9 +800,9 @@ namespace Bq.Messaging
                 if (PersistenceSession == null) throw new InvalidOperationException("Saga timeouts require persistence.");
                 return endpoint.StoreScheduled(PersistenceSession, endpoint.configuration.Name, timeout, dueUtc, CorrelationId);
             }
-            public Task Reply<T>(T message) => ReplyWithHeaders(message, null);
+            public Task Reply<T>(T message) => ((IReplyWithHeaders)this).ReplyWithHeaders(message, null);
 
-            internal Task ReplyWithHeaders<T>(T message, IDictionary<string, object> headers)
+            Task IReplyWithHeaders.ReplyWithHeaders<T>(T message, IDictionary<string, object> headers)
             {
                 if (string.IsNullOrEmpty(replyTo)) throw new InvalidOperationException("Message has no reply address.");
                 return PersistenceSession == null ? endpoint.SendCore(message, CorrelationId, replyTo, headers) :

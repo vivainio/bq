@@ -5,6 +5,7 @@ using System.Data.Common;
 using System.IO;
 using Bq.Persistence.Sqlite;
 using Bq.Messaging;
+using Bq.Testing;
 using MessagePack;
 using MessagePack.Resolvers;
 using RabbitMQ.Client;
@@ -100,6 +101,7 @@ namespace Bq.Messaging.Tests
             var older = MessagePackSerializer.Deserialize<OldContract>(MessagePackSerializer.Serialize(new NewContract { Text = "new", Added = 42 }, options), options);
             Assert(older.Text == "new", "MessagePack unknown property");
             Console.WriteLine("MessagePack tests passed on " + Environment.Version);
+            await TestingSupportTests();
             await PersistenceTests();
             var uri = Environment.GetEnvironmentVariable("BQ_RABBITMQ_URI");
             if (string.IsNullOrEmpty(uri)) { Console.WriteLine("RabbitMQ tests skipped: set BQ_RABBITMQ_URI."); return; }
@@ -111,6 +113,36 @@ namespace Bq.Messaging.Tests
             var outageDirectory = Environment.GetEnvironmentVariable("BQ_BROKER_OUTAGE_DIR");
             if (!string.IsNullOrEmpty(outageDirectory)) await BrokerOutageTest(new Uri(uri), outageDirectory);
         }
+        static async Task TestingSupportTests()
+        {
+            var context = new TestableMessageHandlerContext();
+            IMessageHandlerContext handler = context;
+            var dueAt = DateTimeOffset.UtcNow.AddMinutes(5);
+            var send = new SendOptions();
+            send.DoNotDeliverBefore(dueAt);
+            send.SetHeader("tenant", "one");
+            await handler.Send("orders", new Command(), send);
+            var reply = new ReplyOptions();
+            reply.SetHeader("tenant", "two");
+            await handler.Reply(new Response(), reply);
+            await handler.Publish(new Event());
+            var messages = context.Messages;
+            Assert(messages.Count == 3 && messages[0].Destination == "orders" && messages[0].DueAt == dueAt &&
+                (string)messages[0].Headers["tenant"] == "one", "handler testing captures scheduled send and headers");
+            Assert(messages[1].Operation == MessageOperation.Reply && (string)messages[1].Headers["tenant"] == "two" &&
+                messages[2].Operation == MessageOperation.Publish && messages[2].Headers.Count == 0, "handler testing captures reply and publish");
+
+            var saga = new SagaTest<OrderWorkflow, OrderState>(new OrderWorkflow());
+            await saga.Handle(new StartOrder { OrderId = "unit", TimeoutAt = dueAt });
+            Assert(saga.Data.Status == "started" && saga.Timeouts.Count == 1 && saga.Timeouts[0].DueAt == dueAt,
+                "saga testing captures state and timeout");
+            await saga.Timeout((OrderTimeout)saga.Timeouts[0].State);
+            await saga.Handle(new ChangeOrder { OrderId = "unit", Complete = true });
+            Assert(saga.Completed && saga.Data.TimeoutCount == 1, "saga testing invokes timeout and exposes completion");
+            OrderWorkflow.TimeoutCalls = 0;
+            Console.WriteLine("Transport-free handler and saga tests passed.");
+        }
+
         static DbConnection Sqlite(string path)
         {
             var type = Type.GetType("Mono.Data.Sqlite.SqliteConnection, Mono.Data.Sqlite, Version=4.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756", true);
