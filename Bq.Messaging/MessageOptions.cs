@@ -178,13 +178,7 @@ namespace Bq.Messaging
             return options;
         }
 
-        internal static T Initialize<T>(Action<T> initialize)
-        {
-            if (initialize == null) throw new ArgumentNullException(nameof(initialize));
-            var message = (T)InterfaceMessage.Create(typeof(T));
-            initialize(message);
-            return message;
-        }
+        internal static T Initialize<T>(Action<T> initialize) => MessageCreator.Default.CreateInstance(initialize);
 
         public static Task Send(this IPipelineContext context, object message) => context.Send(message, new SendOptions());
         public static Task Publish(this IPipelineContext context, object message) => context.Publish(message, new PublishOptions());

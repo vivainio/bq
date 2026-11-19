@@ -148,6 +148,9 @@ namespace Bq.Messaging.Tests
         }
         static async Task TestingSupportTests()
         {
+            IMessageCreator creator = new MessageCreator();
+            Assert(creator.CreateInstance<Command>() != null && creator.CreateInstance(typeof(IPilotEvent)) is IPilotEvent,
+                "message creator supports concrete classes and interface contracts");
             var sendOptions = new SendOptions();
             sendOptions.GetExtensions().Set("operation", "checkout");
             Assert(sendOptions.GetExtensions().Get<string>("operation") == "checkout" &&

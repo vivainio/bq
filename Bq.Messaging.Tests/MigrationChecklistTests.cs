@@ -481,11 +481,13 @@ namespace Bq.Messaging.Tests
                         publish.SetHeader("migration-reply", replyQueue);
                         publish.SetMessageId(prefix + ".pilot-event");
                         IMessageSession messaging = producer;
-                        await messaging.Publish<IPilotEvent>(message =>
+                        IMessageCreator creator = new MessageCreator();
+                        var created = creator.CreateInstance<IPilotEvent>(message =>
                         {
                             message.Text = "pilot";
                             message.Count = 7;
-                        }, publish);
+                        });
+                        await messaging.Publish(created, publish);
                         object pilotCommand = new Command { Text = "pilot command" };
                         await messaging.Send(pilotCommand, new SendOptions());
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
