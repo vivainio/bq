@@ -90,7 +90,7 @@ namespace Bq.Messaging.Tests
             public void Dispose() => session.Dispose();
         }
     }
-    class Program
+    partial class Program
     {
         static async Task Main()
         {
@@ -108,6 +108,8 @@ namespace Bq.Messaging.Tests
             await BrokerTests(new Uri(uri));
             await SagaTests(new Uri(uri));
             await RecoverabilityTests(new Uri(uri));
+            await MigrationPipelineTests(new Uri(uri));
+            await PhasedMigrationTests(new Uri(uri));
             await LifecycleTests.Run(new Uri(uri));
             await UniformSessionTests.Run(new Uri(uri), Sqlite);
             var outageDirectory = Environment.GetEnvironmentVariable("BQ_BROKER_OUTAGE_DIR");
