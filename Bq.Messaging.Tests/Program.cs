@@ -502,6 +502,8 @@ namespace Bq.Messaging.Tests
                                 options.SetHeader("relative-delay", true);
                                 var requestedAt = DateTimeOffset.UtcNow;
                                 options.RouteToThisEndpoint();
+                                options.SetMessageId("scheduled-local-id");
+                                options.RouteReplyTo(receiverName);
                                 await producer.CreateUniformSession().Send(new LocalMessage { Text = "scheduled local" }, options);
                                 BasicGetResult scheduled = null;
                                 await WaitFor(() =>
@@ -512,6 +514,11 @@ namespace Bq.Messaging.Tests
                                 Assert(DateTimeOffset.UtcNow >= requestedAt.Add(delay) &&
                                     Equals(scheduled.BasicProperties.Headers["relative-delay"], true),
                                     "relative delivery delay and custom header survive durable scheduling");
+                                Assert(scheduled.BasicProperties.MessageId == "scheduled-local-id" &&
+                                    scheduled.BasicProperties.CorrelationId == "scheduled-local-id" &&
+                                    scheduled.BasicProperties.ReplyTo == receiverName &&
+                                    !scheduled.BasicProperties.Headers.ContainsKey("x-bq-override-reply-to"),
+                                    "explicit wire identity and reply address survive scheduling on a send-only endpoint");
                             }
                             finally { queueOwner.QueueDelete(producerName); }
                         }

@@ -19,7 +19,12 @@ namespace Bq.Testing
             Message = message;
             Destination = destination;
             DueAt = dueAt;
-            Headers = new ReadOnlyDictionary<string, object>(new Dictionary<string, object>(headers));
+            var copy = new Dictionary<string, object>(headers);
+            if (copy.TryGetValue(MessageOptions.WireIdHeader, out var id)) MessageId = (string)id;
+            if (copy.TryGetValue(MessageOptions.ReplyAddressHeader, out var address)) ReplyToAddress = (string)address;
+            copy.Remove(MessageOptions.WireIdHeader);
+            copy.Remove(MessageOptions.ReplyAddressHeader);
+            Headers = new ReadOnlyDictionary<string, object>(copy);
         }
 
         public MessageOperation Operation { get; }
@@ -29,6 +34,8 @@ namespace Bq.Testing
         public IReadOnlyDictionary<string, object> Headers { get; }
         public bool ImmediateDispatch { get; internal set; }
         public string CorrelationId { get; internal set; }
+        public string MessageId { get; }
+        public string ReplyToAddress { get; }
     }
 
     public sealed class TestableMessageHandlerContext : IMessageHandlerContext, IReplyWithOptions
@@ -86,12 +93,12 @@ namespace Bq.Testing
         Task IReplyWithOptions.ReplyWithOptions<T>(T message, ReplyOptions options)
         {
             messages.Enqueue(new RecordedMessage(MessageOperation.Reply, message, options?.Destination ?? ReplyToAddress, null,
-                options?.Headers ?? new Dictionary<string, object>())
+                options?.ApplyEnvelope(options.Headers) ?? new Dictionary<string, object>())
                 { ImmediateDispatch = options?.ImmediateDispatch == true, CorrelationId = options?.CorrelationId ?? CorrelationId });
             return Task.CompletedTask;
         }
 
-        sealed class Session : IUniformSession, IImmediateDispatch
+        sealed class Session : IUniformSession, IImmediateDispatch, IEnvelopeSession
         {
             readonly ConcurrentQueue<RecordedMessage> messages;
             readonly IDictionary<string, object> headers;
@@ -107,6 +114,9 @@ namespace Bq.Testing
                 if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Header name is required.", nameof(name));
                 return new Session(messages, new Dictionary<string, object>(headers) { [name] = value });
             }
+
+            IUniformSession IEnvelopeSession.WithEnvelope(MessageOptions options) =>
+                new Session(messages, options.ApplyEnvelope(headers));
 
             public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
             public Task Send(object message, SendOptions options) => Send<object>(message, options);

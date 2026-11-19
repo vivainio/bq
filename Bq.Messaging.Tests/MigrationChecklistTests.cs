@@ -169,6 +169,8 @@ namespace Bq.Messaging.Tests
                         await context.Publish(new Event { Text = message.Text }, publish);
                         var reply = new ReplyOptions();
                         reply.SetDestination(name + ".immediate");
+                        reply.SetMessageId("immediate-reply-id");
+                        reply.RouteReplyTo(name + ".reply-next");
                         reply.SetHeader("immediate", true);
                         reply.RequireImmediateDispatch();
                         await context.Reply(new Response { Text = message.Text }, reply);
@@ -230,6 +232,9 @@ namespace Bq.Messaging.Tests
                         Assert(direct != null && direct.BasicProperties.Type == contract.FullName &&
                             Equals(direct.BasicProperties.Headers["immediate"], true),
                             "immediate sends, publishes and replies survive handler rollback with their headers");
+                        if (contract == typeof(Response))
+                            Assert(direct.BasicProperties.MessageId == "immediate-reply-id" &&
+                                direct.BasicProperties.ReplyTo == name + ".reply-next", "reply options can set identity and return address");
                     }
                     BasicGetResult alternateError = null;
                     await WaitFor(() =>

@@ -6,7 +6,30 @@ namespace Bq.Messaging
 {
     public abstract class MessageOptions
     {
+        internal const string WireIdHeader = "x-bq-forwarded-message-id";
+        internal const string ReplyAddressHeader = "x-bq-override-reply-to";
         internal bool ImmediateDispatch { get; private set; }
+        internal string MessageId { get; private set; }
+        internal string ReplyAddress { get; private set; }
+
+        public void SetMessageId(string messageId) => MessageId = ValidateAddressField(messageId, nameof(messageId));
+
+        internal void SetReplyAddress(string address) => ReplyAddress = ValidateAddressField(address, nameof(address));
+
+        static string ValidateAddressField(string value, string parameter)
+        {
+            if (string.IsNullOrWhiteSpace(value) || System.Text.Encoding.UTF8.GetByteCount(value) > 255)
+                throw new ArgumentException("A nonempty value of at most 255 UTF-8 bytes is required.", parameter);
+            return value;
+        }
+
+        internal IDictionary<string, object> ApplyEnvelope(IDictionary<string, object> headers)
+        {
+            var copy = new Dictionary<string, object>(headers);
+            if (MessageId != null) copy[WireIdHeader] = MessageId;
+            if (ReplyAddress != null) copy[ReplyAddressHeader] = ReplyAddress;
+            return copy;
+        }
 
         public virtual void RequireImmediateDispatch() => ImmediateDispatch = true;
 
@@ -15,13 +38,17 @@ namespace Bq.Messaging
         public void SetHeader(string name, object value)
         {
             if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Header name is required.", nameof(name));
+            if (name.StartsWith("x-bq-", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("The x-bq- header prefix is reserved.", nameof(name));
             Headers[name] = value;
         }
 
         internal IUniformSession Apply(IUniformSession session)
         {
             foreach (var header in Headers) session = session.WithHeader(header.Key, header.Value);
-            return session;
+            if (MessageId == null && ReplyAddress == null) return session;
+            if (session is IEnvelopeSession envelope) return envelope.WithEnvelope(this);
+            throw new NotSupportedException("This session does not support setting a message ID or reply address.");
         }
     }
 
@@ -31,6 +58,8 @@ namespace Bq.Messaging
         DateTimeOffset? deliverAt;
         internal string Destination { get; private set; }
         internal bool Local { get; private set; }
+
+        public void RouteReplyTo(string address) => SetReplyAddress(address);
 
         public void SetDestination(string destination)
         {
@@ -75,11 +104,18 @@ namespace Bq.Messaging
         internal string CorrelationId { get; set; }
         internal string Destination { get; private set; }
 
+        public void RouteReplyTo(string address) => SetReplyAddress(address);
+
         public void SetDestination(string destination)
         {
             if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("Destination is required.", nameof(destination));
             Destination = destination;
         }
+    }
+
+    internal interface IEnvelopeSession
+    {
+        IUniformSession WithEnvelope(MessageOptions options);
     }
 
     internal interface IReplyWithOptions
@@ -178,7 +214,8 @@ namespace Bq.Messaging
         {
             if (options == null) throw new ArgumentNullException(nameof(options));
             if (context is IReplyWithOptions handler) return handler.ReplyWithOptions(message, options);
-            if (options.Headers.Count == 0 && options.Destination == null && options.CorrelationId == null && !options.ImmediateDispatch)
+            if (options.Headers.Count == 0 && options.Destination == null && options.CorrelationId == null &&
+                options.MessageId == null && options.ReplyAddress == null && !options.ImmediateDispatch)
                 return context.Reply(message);
             throw new NotSupportedException("This handler context does not support reply options.");
         }

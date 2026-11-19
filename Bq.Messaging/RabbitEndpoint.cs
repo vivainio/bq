@@ -17,7 +17,6 @@ namespace Bq.Messaging
         readonly string eventsExchange;
         readonly string errorExchange;
         const string ContentType = "application/x-msgpack";
-        const string ForwardedMessageId = "x-bq-forwarded-message-id";
         static readonly MessagePackSerializerOptions SerializerOptions = MessagePackSerializerOptions.Standard
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly EndpointConfiguration configuration;
@@ -222,7 +221,7 @@ namespace Bq.Messaging
             finally { CompleteActiveWork(); }
         }
 
-        sealed class TransactionalSession : ITransactionalSession, IImmediateDispatch
+        sealed class TransactionalSession : ITransactionalSession, IImmediateDispatch, IEnvelopeSession
         {
             readonly RabbitEndpoint endpoint;
             readonly IPersistenceSession persistence;
@@ -250,6 +249,8 @@ namespace Bq.Messaging
             public System.Data.Common.DbTransaction Transaction => ActivePersistence.Transaction;
             public IUniformSession WithHeader(string name, object value) =>
                 new TransactionalSession(endpoint, persistence, CancellationToken, root, AddHeader(headers, name, value));
+            IUniformSession IEnvelopeSession.WithEnvelope(MessageOptions options) =>
+                new TransactionalSession(endpoint, persistence, CancellationToken, root, options.ApplyEnvelope(headers));
             public Task Send<T>(T message, SendOptions options) => MessageOptionsExtensions.SendUsingOptions(this, message, options);
             public Task Send(object message, SendOptions options) => Send<object>(message, options);
             public Task Send<T>(Action<T> initialize, SendOptions options) =>
@@ -399,6 +400,10 @@ namespace Bq.Messaging
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
             var copiedHeaders = headers == null ? new Dictionary<string, object>() : new Dictionary<string, object>(headers);
+            copiedHeaders.TryGetValue(MessageOptions.WireIdHeader, out var customId);
+            copiedHeaders.TryGetValue(MessageOptions.ReplyAddressHeader, out var replyAddress);
+            copiedHeaders.Remove(MessageOptions.WireIdHeader);
+            copiedHeaders.Remove(MessageOptions.ReplyAddressHeader);
             copiedHeaders[MessageHeaders.TimeSent] = DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
             if (deferred) copiedHeaders[MessageHeaders.Deferred] = true;
             var scope = uniformScope.Value;
@@ -409,14 +414,17 @@ namespace Bq.Messaging
                 MessagePackSerializer.Serialize(serializationType, value, SerializerOptions), copiedHeaders,
                 scope != null && Volatile.Read(ref scope.Active) != 0 ? scope.Context : null);
             mutateOutgoing?.Invoke(transport);
-            transport.Headers.Remove(ForwardedMessageId);
+            transport.Headers.Remove(MessageOptions.WireIdHeader);
+            transport.Headers.Remove(MessageOptions.ReplyAddressHeader);
+            if (customId != null) transport.Headers[MessageOptions.WireIdHeader] = customId;
             if (string.IsNullOrWhiteSpace(transport.TypeName) || transport.Body == null)
                 throw new InvalidOperationException("An outgoing transport message requires a type name and body.");
             foreach (var header in copiedHeaders.Keys)
                 if (string.IsNullOrWhiteSpace(header)) throw new ArgumentException("Message header names cannot be empty.", nameof(headers));
             RecoveryWire.EncodeHeaders(copiedHeaders); // Validate the AMQP field types before storing or publishing.
             var id = Guid.NewGuid().ToString("N");
-            return new OutgoingMessage { Id = id, CorrelationId = correlationId ?? id, ReplyTo = sendOnly ? null : configuration.Name,
+            return new OutgoingMessage { Id = id, CorrelationId = correlationId ?? (string)customId ?? id,
+                ReplyTo = (string)replyAddress ?? (sendOnly ? null : configuration.Name),
                 Type = transport.TypeName, Exchange = exchange, RoutingKey = routingKey,
                 Mandatory = mandatory, Headers = copiedHeaders, Body = transport.Body };
         }
@@ -442,9 +450,9 @@ namespace Bq.Messaging
                 {
                     var headers = new Dictionary<string, object>(message.Headers);
                     // A forwarded delivery has its own outbox record ID but keeps its original wire ID.
-                    if (headers.TryGetValue(ForwardedMessageId, out var originalId) && originalId is string id)
+                    if (headers.TryGetValue(MessageOptions.WireIdHeader, out var originalId) && originalId is string id)
                         props.MessageId = id;
-                    headers.Remove(ForwardedMessageId);
+                    headers.Remove(MessageOptions.WireIdHeader);
                     props.Headers = headers;
                 }
                 returned = false;
@@ -810,7 +818,7 @@ namespace Bq.Messaging
             public HandlerContext Context { get; }
             public int Active;
         }
-        sealed class UniformSession : IUniformSession, IImmediateDispatch
+        sealed class UniformSession : IUniformSession, IImmediateDispatch, IEnvelopeSession
         {
             readonly RabbitEndpoint endpoint;
             readonly UniformScope scope;
@@ -819,6 +827,8 @@ namespace Bq.Messaging
             UniformSession(RabbitEndpoint endpoint, UniformScope scope, IDictionary<string, object> headers)
             { this.endpoint = endpoint; this.scope = scope; this.headers = headers ?? new Dictionary<string, object>(); }
             public IUniformSession WithHeader(string name, object value) => new UniformSession(endpoint, scope, AddHeader(headers, name, value));
+            IUniformSession IEnvelopeSession.WithEnvelope(MessageOptions options) =>
+                new UniformSession(endpoint, scope, options.ApplyEnvelope(headers));
             HandlerContext Validate()
             {
                 lock (endpoint.lifecycleLock)
@@ -957,7 +967,7 @@ namespace Bq.Messaging
                 RequireDestination(destination);
                 var headers = new Dictionary<string, object>(wireProperties.Headers ?? new Dictionary<string, object>())
                 {
-                    [ForwardedMessageId] = MessageId
+                    [MessageOptions.WireIdHeader] = MessageId
                 };
                 return PersistenceSession.StoreOutgoing(new OutgoingMessage
                 {
@@ -978,9 +988,10 @@ namespace Bq.Messaging
                 var destination = options?.Destination ?? replyTo;
                 if (string.IsNullOrEmpty(destination)) throw new InvalidOperationException("Message has no reply address.");
                 var correlationId = options?.CorrelationId ?? CorrelationId;
+                var headers = options?.ApplyEnvelope(options.Headers);
                 if (PersistenceSession == null || options?.ImmediateDispatch == true)
-                    return endpoint.SendCore(message, correlationId, destination, options?.Headers);
-                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, correlationId, true, options?.Headers));
+                    return endpoint.SendCore(message, correlationId, destination, headers);
+                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, correlationId, true, headers));
             }
         }
     }
