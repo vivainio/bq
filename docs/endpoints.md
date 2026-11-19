@@ -20,6 +20,15 @@ config.Handle<PlaceOrder>(context => new OrderHandler(
 
 Resolve handler sessions inside the handler factory or from `context.UniformSession`; their sends participate in the handler's database transaction and inherit its correlation ID. An external session does not make external database changes transactional. Do not cache a session across scopes: Bq rejects a handler session after its handler ends, an external session used inside a handler, and any session used after its endpoint stops. Sessions are endpoint-specific; sending through another endpoint does not join the current handler transaction.
 
+Create a session view with `WithHeader` to attach application metadata to every message sent through that view, including scheduled sends and publishes:
+
+```csharp
+var tenantSession = context.UniformSession.WithHeader("tenant-id", "north");
+await tenantSession.SendLocal(new RebuildTenantIndex());
+```
+
+Headers are copied when set and stored with outbox and scheduled messages, so they survive restarts and are preserved by retries. Values must use RabbitMQ field-table types: strings, booleans, numeric primitives, byte arrays, nested string-keyed tables, or lists of supported values. Received messages expose these as `context.Headers`.
+
 ## Concurrency and shutdown
 
 `config.MaxConcurrency` sets the maximum number of deliveries processed simultaneously per endpoint instance (default `1`). RabbitMQ prefetch follows that value by default; set `config.PrefetchCount` to tune how many unacknowledged deliveries RabbitMQ can send to this consumer independently. A value of `0` asks RabbitMQ for unlimited prefetch. Concurrent handlers get separate persistence sessions. Actual throughput depends on the provider; SQLite's single-writer locking can serialize work or cause contention.

@@ -29,14 +29,35 @@ namespace Bq.Persistence.Sqlite
             using (var cmd = c.CreateCommand())
             {
                 cmd.CommandText = @"CREATE TABLE IF NOT EXISTS bq_inbox (endpoint TEXT NOT NULL, message_id TEXT NOT NULL, PRIMARY KEY(endpoint,message_id));
-CREATE TABLE IF NOT EXISTS bq_outbox (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY(endpoint,id));
-CREATE TABLE IF NOT EXISTS bq_saga_timeout (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, due_ticks INTEGER NOT NULL, PRIMARY KEY(endpoint,id));
+CREATE TABLE IF NOT EXISTS bq_outbox (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, headers BLOB, PRIMARY KEY(endpoint,id));
+CREATE TABLE IF NOT EXISTS bq_saga_timeout (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, due_ticks INTEGER NOT NULL, headers BLOB, PRIMARY KEY(endpoint,id));
 CREATE INDEX IF NOT EXISTS bq_saga_timeout_due ON bq_saga_timeout(endpoint,due_ticks);
 CREATE TABLE IF NOT EXISTS bq_recovery (endpoint TEXT NOT NULL, recovery_id TEXT NOT NULL, message_id TEXT NOT NULL, cycle INTEGER NOT NULL, is_error INTEGER NOT NULL, error_queue TEXT, exception_type TEXT, exception_message TEXT, exception_detail TEXT, failed_ticks INTEGER NOT NULL, due_ticks INTEGER NOT NULL, payload BLOB NOT NULL, dispatched INTEGER NOT NULL DEFAULT 0, replayed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(endpoint,recovery_id));
 CREATE INDEX IF NOT EXISTS bq_recovery_errors ON bq_recovery(endpoint,is_error,replayed,failed_ticks DESC,recovery_id DESC);
 CREATE INDEX IF NOT EXISTS bq_recovery_due ON bq_recovery(endpoint,dispatched,due_ticks);
 CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT NULL, saga_id TEXT NOT NULL, version INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(endpoint,saga_type,saga_id));";
                 await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+                EnsureColumn(c, "bq_outbox", "headers");
+                EnsureColumn(c, "bq_saga_timeout", "headers");
+            }
+        }
+        static void EnsureColumn(DbConnection connection, string table, string column)
+        {
+            var found = false;
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = "PRAGMA table_info(" + table + ")";
+                using (var reader = command.ExecuteReader())
+                    while (reader.Read())
+                        if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase)) { found = true; break; }
+            }
+            if (!found)
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "ALTER TABLE " + table + " ADD COLUMN " + column + " BLOB";
+                    command.ExecuteNonQuery();
+                }
             }
         }
         public async Task<IPersistenceSession> OpenSession()
@@ -119,7 +140,7 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             // Alternate preference so a sustained backlog or an unroutable head in one
             // category does not prevent attempts in the other category.
             var preferTimeout = System.Threading.Interlocked.Increment(ref outgoingPoll) & 1;
-            const string fields = "id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body";
+            const string fields = "id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,headers";
             var sql = "SELECT " + fields + @" FROM (
     SELECT * FROM (SELECT " + fields + @", 1 AS category FROM bq_saga_timeout
         WHERE endpoint=@e AND due_ticks<=@now ORDER BY due_ticks,id LIMIT 1)
@@ -133,7 +154,7 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             using (var r = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
             {
                 if (!await r.ReadAsync().ConfigureAwait(false)) return null;
-                return new OutgoingMessage { Id = r.GetString(0), CorrelationId = r.IsDBNull(1) ? null : r.GetString(1), ReplyTo = r.IsDBNull(2) ? null : r.GetString(2), Type = r.GetString(3), Exchange = r.GetString(4), RoutingKey = r.GetString(5), Mandatory = Convert.ToInt32(r.GetValue(6)) != 0, Body = (byte[])r.GetValue(7) };
+                return new OutgoingMessage { Id = r.GetString(0), CorrelationId = r.IsDBNull(1) ? null : r.GetString(1), ReplyTo = r.IsDBNull(2) ? null : r.GetString(2), Type = r.GetString(3), Exchange = r.GetString(4), RoutingKey = r.GetString(5), Mandatory = Convert.ToInt32(r.GetValue(6)) != 0, Body = (byte[])r.GetValue(7), Headers = MessageHeaderCodec.Decode(r.IsDBNull(8) ? null : (byte[])r.GetValue(8)) };
             }
         }
         public async Task MarkDispatched(string name, string id)
@@ -233,12 +254,12 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             }
             public async Task StoreOutgoing(OutgoingMessage m)
             {
-                using (var cmd = Command(Connection, Transaction, "INSERT INTO bq_outbox(endpoint,id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body) VALUES(@e,@id,@c,@r,@t,@x,@k,@m,@b)", "@e", endpoint, "@id", m.Id, "@c", m.CorrelationId, "@r", m.ReplyTo, "@t", m.Type, "@x", m.Exchange, "@k", m.RoutingKey, "@m", m.Mandatory ? 1 : 0, "@b", m.Body)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+                using (var cmd = Command(Connection, Transaction, "INSERT INTO bq_outbox(endpoint,id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,headers) VALUES(@e,@id,@c,@r,@t,@x,@k,@m,@b,@h)", "@e", endpoint, "@id", m.Id, "@c", m.CorrelationId, "@r", m.ReplyTo, "@t", m.Type, "@x", m.Exchange, "@k", m.RoutingKey, "@m", m.Mandatory ? 1 : 0, "@b", m.Body, "@h", MessageHeaderCodec.Encode(m.Headers))) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             public async Task StoreTimeout(OutgoingMessage m, DateTime dueUtc)
             {
                 if (dueUtc.Kind != DateTimeKind.Utc) throw new ArgumentException("Timeout must use UTC.", nameof(dueUtc));
-                using (var cmd = Command(Connection, Transaction, "INSERT INTO bq_saga_timeout(endpoint,id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,due_ticks) VALUES(@e,@id,@c,@r,@t,@x,@k,@m,@b,@due)", "@e", endpoint, "@id", m.Id, "@c", m.CorrelationId, "@r", m.ReplyTo, "@t", m.Type, "@x", m.Exchange, "@k", m.RoutingKey, "@m", m.Mandatory ? 1 : 0, "@b", m.Body, "@due", dueUtc.Ticks)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+                using (var cmd = Command(Connection, Transaction, "INSERT INTO bq_saga_timeout(endpoint,id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,due_ticks,headers) VALUES(@e,@id,@c,@r,@t,@x,@k,@m,@b,@due,@h)", "@e", endpoint, "@id", m.Id, "@c", m.CorrelationId, "@r", m.ReplyTo, "@t", m.Type, "@x", m.Exchange, "@k", m.RoutingKey, "@m", m.Mandatory ? 1 : 0, "@b", m.Body, "@due", dueUtc.Ticks, "@h", MessageHeaderCodec.Encode(m.Headers))) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             public async Task<SagaRecord> LoadSaga(string type, string id)
             {

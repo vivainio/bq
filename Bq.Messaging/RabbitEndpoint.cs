@@ -183,20 +183,30 @@ namespace Bq.Messaging
         {
             readonly RabbitEndpoint endpoint;
             readonly IPersistenceSession persistence;
+            readonly TransactionalSession root;
+            readonly IDictionary<string, object> headers;
             volatile bool ended;
 
             public TransactionalSession(RabbitEndpoint endpoint, IPersistenceSession persistence, CancellationToken cancellationToken)
+                : this(endpoint, persistence, cancellationToken, null, null) { }
+
+            TransactionalSession(RabbitEndpoint endpoint, IPersistenceSession persistence, CancellationToken cancellationToken,
+                TransactionalSession root, IDictionary<string, object> headers)
             {
                 this.endpoint = endpoint;
                 this.persistence = persistence;
                 CancellationToken = cancellationToken;
+                this.root = root ?? this;
+                this.headers = headers ?? new Dictionary<string, object>();
             }
 
-            IPersistenceSession ActivePersistence => !ended && ReferenceEquals(endpoint.externalTransaction.Value, this)
-                ? persistence : throw new InvalidOperationException("The transactional session is outside its active scope.");
+            IPersistenceSession ActivePersistence => !root.ended && ReferenceEquals(endpoint.externalTransaction.Value, root)
+                ? root.persistence : throw new InvalidOperationException("The transactional session is outside its active scope.");
             public CancellationToken CancellationToken { get; }
             public System.Data.Common.DbConnection Connection => ActivePersistence.Connection;
             public System.Data.Common.DbTransaction Transaction => ActivePersistence.Transaction;
+            public IUniformSession WithHeader(string name, object value) =>
+                new TransactionalSession(endpoint, persistence, CancellationToken, root, AddHeader(headers, name, value));
             public Task Send<T>(T message)
             {
                 if (!endpoint.configuration.Routes.TryGetValue(typeof(T), out var destination))
@@ -204,17 +214,25 @@ namespace Bq.Messaging
                 return Send(destination, message);
             }
             public Task Send<T>(string destination, T message) =>
-                ActivePersistence.StoreOutgoing(endpoint.Prepare(message, "", RequireDestination(destination), null, true));
+                ActivePersistence.StoreOutgoing(endpoint.Prepare(message, "", RequireDestination(destination), null, true, headers));
             public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
             public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor<T>(), message, dueAt);
             public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.configuration.Name, message, dueAt);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
-                endpoint.StoreScheduled(ActivePersistence, destination, message, dueAt.UtcDateTime, null);
+                endpoint.StoreScheduled(ActivePersistence, destination, message, dueAt.UtcDateTime, null, headers);
             public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
-                endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null);
+                endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null, headers);
             public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
-                message, endpoint.eventsExchange, EndpointConfiguration.MessageType(typeof(T)), null, false));
-            public void End() => ended = true;
+                message, endpoint.eventsExchange, EndpointConfiguration.MessageType(typeof(T)), null, false, headers));
+            public void End() => root.ended = true;
+        }
+
+        static IDictionary<string, object> AddHeader(IDictionary<string, object> current, string name, object value)
+        {
+            if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Message header name cannot be empty.", nameof(name));
+            var result = new Dictionary<string, object>(current);
+            result[name] = value;
+            return result;
         }
 
         public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(RouteFor<T>(), message, dueAt);
@@ -222,14 +240,22 @@ namespace Bq.Messaging
         public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
             ExecuteTransaction(session => session.SendAt(destination, message, dueAt));
 
+        Task SendAtWithHeaders<T>(string destination, T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
+            ExecuteTransaction(session => StoreScheduled(session as IPersistenceSession, destination, message, dueAt.UtcDateTime, null, headers));
+
         public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
             ExecuteTransaction(session => session.PublishAt(message, dueAt));
 
-        Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId) =>
-            session.StoreTimeout(Prepare(message, eventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false), dueUtc);
+        Task PublishAtWithHeaders<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
+            ExecuteTransaction(session => StoreScheduledEvent(session as IPersistenceSession, message, dueAt.UtcDateTime, null, headers));
 
-        Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId) =>
-            session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true), dueUtc);
+        Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId,
+            IDictionary<string, object> headers = null) =>
+            session.StoreTimeout(Prepare(message, eventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false, headers), dueUtc);
+
+        Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId,
+            IDictionary<string, object> headers = null) =>
+            session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true, headers), dueUtc);
 
         public Task Send<T>(T message) => SendCore(message, null, null);
         public Task Send<T>(string destination, T message) => SendCore(message, null, RequireDestination(destination));
@@ -240,9 +266,9 @@ namespace Bq.Messaging
         }
         public Task SendLocal<T>(T message) => SendCore(message, null, configuration.Name);
         public Task Publish<T>(T message) => PublishCore(message, null);
-        internal Task SendCore<T>(T message, string correlationId, string destination)
+        internal Task SendCore<T>(T message, string correlationId, string destination, IDictionary<string, object> headers = null)
         {
-            return Dispatch(message, "", destination ?? RouteFor<T>(), correlationId, true);
+            return Dispatch(message, "", destination ?? RouteFor<T>(), correlationId, true, headers);
         }
         string RouteFor<T>()
         {
@@ -250,19 +276,25 @@ namespace Bq.Messaging
             throw new InvalidOperationException("No route for " + typeof(T).FullName);
         }
 
-        internal Task PublishCore<T>(T message, string correlationId) =>
-            Dispatch(message, eventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false);
-        OutgoingMessage Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory)
+        internal Task PublishCore<T>(T message, string correlationId, IDictionary<string, object> headers = null) =>
+            Dispatch(message, eventsExchange, EndpointConfiguration.MessageType(typeof(T)), correlationId, false, headers);
+        OutgoingMessage Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
+            IDictionary<string, object> headers = null)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
+            var copiedHeaders = headers == null ? new Dictionary<string, object>() : new Dictionary<string, object>(headers);
+            foreach (var header in copiedHeaders.Keys)
+                if (string.IsNullOrWhiteSpace(header)) throw new ArgumentException("Message header names cannot be empty.", nameof(headers));
+            RecoveryWire.EncodeHeaders(copiedHeaders); // Validate the AMQP field types before storing or publishing.
             var id = Guid.NewGuid().ToString("N");
             return new OutgoingMessage { Id = id, CorrelationId = correlationId ?? id, ReplyTo = sendOnly ? null : configuration.Name,
                 Type = EndpointConfiguration.MessageType(typeof(T)), Exchange = exchange, RoutingKey = routingKey,
-                Mandatory = mandatory, Body = MessagePackSerializer.Serialize(typeof(T), message, SerializerOptions) };
+                Mandatory = mandatory, Headers = copiedHeaders, Body = MessagePackSerializer.Serialize(typeof(T), message, SerializerOptions) };
         }
-        Task Dispatch<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory)
+        Task Dispatch<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
+            IDictionary<string, object> headers = null)
         {
-            PublishPrepared(Prepare(message, exchange, routingKey, correlationId, mandatory));
+            PublishPrepared(Prepare(message, exchange, routingKey, correlationId, mandatory, headers));
             return Task.CompletedTask;
         }
         void PublishPrepared(OutgoingMessage message)
@@ -277,6 +309,8 @@ namespace Bq.Messaging
                 props.ReplyTo = message.ReplyTo;
                 props.Type = message.Type;
                 props.ContentType = ContentType;
+                if (message.Headers != null && message.Headers.Count > 0)
+                    props.Headers = new Dictionary<string, object>(message.Headers);
                 returned = false;
                 publisherChannel.BasicPublish(message.Exchange, message.RoutingKey, message.Mandatory, props, message.Body);
                 if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
@@ -559,7 +593,11 @@ namespace Bq.Messaging
         {
             readonly RabbitEndpoint endpoint;
             readonly UniformScope scope;
-            public UniformSession(RabbitEndpoint endpoint, UniformScope scope) { this.endpoint = endpoint; this.scope = scope; }
+            readonly IDictionary<string, object> headers;
+            public UniformSession(RabbitEndpoint endpoint, UniformScope scope) : this(endpoint, scope, null) { }
+            UniformSession(RabbitEndpoint endpoint, UniformScope scope, IDictionary<string, object> headers)
+            { this.endpoint = endpoint; this.scope = scope; this.headers = headers ?? new Dictionary<string, object>(); }
+            public IUniformSession WithHeader(string name, object value) => new UniformSession(endpoint, scope, AddHeader(headers, name, value));
             HandlerContext Validate()
             {
                 lock (endpoint.lifecycleLock)
@@ -576,33 +614,33 @@ namespace Bq.Messaging
                     return scope.Context;
                 }
             }
-            public Task Send<T>(T message) { var context = Validate(); return context == null ? endpoint.Send(message) : context.Send(message); }
+            public Task Send<T>(T message) { var context = Validate(); return context == null ? endpoint.SendCore(message, null, null, headers) : context.SendWithHeaders(message, null, headers); }
             public Task Send<T>(string destination, T message)
             {
                 var context = Validate();
-                return context == null ? endpoint.Send(destination, message) : context.Send(destination, message);
+                return context == null ? endpoint.SendCore(message, null, RequireDestination(destination), headers) : context.SendWithHeaders(message, RequireDestination(destination), headers);
             }
-            public Task SendLocal<T>(T message) { var context = Validate(); return context == null ? endpoint.SendLocal(message) : context.SendLocal(message); }
-            public Task Publish<T>(T message) { var context = Validate(); return context == null ? endpoint.Publish(message) : context.Publish(message); }
+            public Task SendLocal<T>(T message) { var context = Validate(); return context == null ? endpoint.SendCore(message, null, endpoint.configuration.Name, headers) : context.SendWithHeaders(message, endpoint.configuration.Name, headers); }
+            public Task Publish<T>(T message) { var context = Validate(); return context == null ? endpoint.PublishCore(message, null, headers) : context.PublishWithHeaders(message, headers); }
             public Task SendAt<T>(T message, DateTimeOffset dueAt)
             {
                 var context = Validate();
-                return context == null ? endpoint.SendAt(message, dueAt) : context.SendAt(message, dueAt);
+                return context == null ? endpoint.SendAtWithHeaders(endpoint.RouteFor<T>(), message, dueAt, headers) : context.SendAtWithHeaders(endpoint.RouteFor<T>(), message, dueAt, headers);
             }
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt)
             {
                 var context = Validate();
-                return context == null ? endpoint.SendAt(destination, message, dueAt) : context.SendAt(destination, message, dueAt);
+                return context == null ? endpoint.SendAtWithHeaders(destination, message, dueAt, headers) : context.SendAtWithHeaders(destination, message, dueAt, headers);
             }
             public Task SendLocalAt<T>(T message, DateTimeOffset dueAt)
             {
                 var context = Validate();
-                return context == null ? endpoint.SendLocalAt(message, dueAt) : context.SendLocalAt(message, dueAt);
+                return context == null ? endpoint.SendAtWithHeaders(endpoint.configuration.Name, message, dueAt, headers) : context.SendAtWithHeaders(endpoint.configuration.Name, message, dueAt, headers);
             }
             public Task PublishAt<T>(T message, DateTimeOffset dueAt)
             {
                 var context = Validate();
-                return context == null ? endpoint.PublishAt(message, dueAt) : context.PublishAt(message, dueAt);
+                return context == null ? endpoint.PublishAtWithHeaders(message, dueAt, headers) : context.PublishAtWithHeaders(message, dueAt, headers);
             }
         }
         internal sealed class HandlerContext : IMessageHandlerContext
@@ -624,26 +662,28 @@ namespace Bq.Messaging
             public string MessageId { get; }
             public string CorrelationId { get; }
             public IReadOnlyDictionary<string, object> Headers { get; }
-            public Task Send<T>(T message)
+            public Task Send<T>(T message) => SendWithHeaders(message, null, null);
+            internal Task SendWithHeaders<T>(T message, string destination, IDictionary<string, object> headers)
             {
-                if (PersistenceSession == null) return endpoint.SendCore(message, CorrelationId, null);
-                if (!endpoint.configuration.Routes.TryGetValue(typeof(T), out var destination)) throw new InvalidOperationException("No route for " + typeof(T).FullName);
-                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true));
-            }
-            public Task Send<T>(string destination, T message)
-            {
+                if (destination == null && !endpoint.configuration.Routes.TryGetValue(typeof(T), out destination))
+                    throw new InvalidOperationException("No route for " + typeof(T).FullName);
                 RequireDestination(destination);
-                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true));
+                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true, headers));
             }
-            public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
-            public Task Publish<T>(T message) => PersistenceSession == null ? endpoint.PublishCore(message, CorrelationId) :
-                PersistenceSession.StoreOutgoing(endpoint.Prepare(message, endpoint.eventsExchange, EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false));
+            public Task Send<T>(string destination, T message) => SendWithHeaders(message, destination, null);
+            public Task SendLocal<T>(T message) => SendWithHeaders(message, endpoint.configuration.Name, null);
+            public Task Publish<T>(T message) => PublishWithHeaders(message, null);
+            internal Task PublishWithHeaders<T>(T message, IDictionary<string, object> headers) =>
+                PersistenceSession.StoreOutgoing(endpoint.Prepare(message, endpoint.eventsExchange,
+                    EndpointConfiguration.MessageType(typeof(T)), CorrelationId, false, headers));
+            internal Task SendAtWithHeaders<T>(string destination, T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
+                endpoint.StoreScheduled(PersistenceSession, destination, message, dueAt.UtcDateTime, CorrelationId, headers);
+            internal Task PublishAtWithHeaders<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
+                endpoint.StoreScheduledEvent(PersistenceSession, message, dueAt.UtcDateTime, CorrelationId, headers);
             public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor<T>(), message, dueAt);
             public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.configuration.Name, message, dueAt);
-            public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
-                endpoint.StoreScheduled(PersistenceSession, destination, message, dueAt.UtcDateTime, CorrelationId);
-            public Task PublishAt<T>(T message, DateTimeOffset dueAt) =>
-                endpoint.StoreScheduledEvent(PersistenceSession, message, dueAt.UtcDateTime, CorrelationId);
+            public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => SendAtWithHeaders(destination, message, dueAt, null);
+            public Task PublishAt<T>(T message, DateTimeOffset dueAt) => PublishAtWithHeaders(message, dueAt, null);
 
             internal Task ScheduleSagaTimeout(SagaTimeoutMessage timeout, DateTime dueUtc)
             {

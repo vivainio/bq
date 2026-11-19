@@ -29,7 +29,7 @@ Use the handler context for work that already runs inside a handler. A transacti
 
 ## Message bodies and payload references
 
-The outbox stores serialized message bodies so handlers can commit their outgoing messages with their business changes. The dispatcher publishes the body plus routing and correlation metadata to RabbitMQ. After publisher confirmation, SQLite can delete the staging row. A receiver can then consume the body even when the sender or its database is offline.
+The outbox stores serialized message bodies and AMQP headers so handlers can commit their outgoing messages with their business changes. The dispatcher publishes the body, headers, routing and correlation metadata to RabbitMQ. After publisher confirmation, SQLite can delete the staging row. A receiver can then consume the body even when the sender or its database is offline.
 
 For a large payload, your application can store the payload separately and send a small message containing a stable reference. Make the payload durable before the reference can be dispatched. Give consumers access to the referenced version and keep it available for the full lifetime of queued deliveries, retries, and operator replays. A missing payload becomes a handler failure. With event fan-out, one subscriber finishing does not imply that all subscribers are done.
 

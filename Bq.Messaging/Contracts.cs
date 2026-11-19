@@ -15,6 +15,7 @@ namespace Bq.Messaging
     // which it is created; resolve a fresh session for each application/handler scope.
     public interface IUniformSession
     {
+        IUniformSession WithHeader(string name, object value);
         Task Send<T>(T message);
         Task Send<T>(string destination, T message);
         Task SendLocal<T>(T message);

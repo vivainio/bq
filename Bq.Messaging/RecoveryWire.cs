@@ -56,6 +56,26 @@ namespace Bq.Messaging
             using (var stream = new MemoryStream())
             using (var writer = new BinaryWriter(stream, Encoding.UTF8)) { WriteValue(writer, headers, 0); envelope.Headers = stream.ToArray(); }
         }
+        public static byte[] EncodeHeaders(IDictionary<string, object> headers)
+        {
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream, Encoding.UTF8))
+            {
+                WriteValue(writer, headers ?? new Dictionary<string, object>(), 0);
+                return stream.ToArray();
+            }
+        }
+        public static IDictionary<string, object> DecodeHeaders(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0) return new Dictionary<string, object>();
+            using (var stream = new MemoryStream(bytes, false))
+            using (var reader = new BinaryReader(stream, Encoding.UTF8))
+            {
+                var value = ReadValue(reader, 0) as IDictionary<string, object>;
+                if (value == null || stream.Position != stream.Length) throw new InvalidDataException("Invalid persisted message headers.");
+                return value;
+            }
+        }
         public static int Cycle(IBasicProperties properties)
         {
             if (properties.Headers == null || !properties.Headers.TryGetValue(CycleHeader, out var value)) return 0;

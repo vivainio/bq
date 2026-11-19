@@ -4,6 +4,13 @@ using System.Threading.Tasks;
 
 namespace Bq.Messaging
 {
+    // Persistence providers can use this codec to store outgoing AMQP headers.
+    public static class MessageHeaderCodec
+    {
+        public static byte[] Encode(System.Collections.Generic.IDictionary<string, object> headers) => RecoveryWire.EncodeHeaders(headers);
+        public static System.Collections.Generic.IDictionary<string, object> Decode(byte[] bytes) => RecoveryWire.DecodeHeaders(bytes);
+    }
+
     public sealed class OutgoingMessage
     {
         public string Id { get; set; }
@@ -13,6 +20,7 @@ namespace Bq.Messaging
         public string Exchange { get; set; }
         public string RoutingKey { get; set; }
         public bool Mandatory { get; set; }
+        public System.Collections.Generic.IDictionary<string, object> Headers { get; set; }
         public byte[] Body { get; set; }
     }
 
