@@ -20,6 +20,8 @@ namespace Bq.Messaging
         static readonly MessagePackSerializerOptions SerializerOptions = MessagePackSerializerOptions.Standard
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly EndpointConfiguration configuration;
+        readonly Action<TransportMessage> mutateIncoming;
+        readonly Action<TransportMessage> mutateOutgoing;
         readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
         readonly Dictionary<Type, string> wireNames = new Dictionary<Type, string>();
         readonly Dictionary<string, Registration> receivers = new Dictionary<string, Registration>();
@@ -48,6 +50,8 @@ namespace Bq.Messaging
         RabbitEndpoint(EndpointConfiguration configuration)
         {
             this.configuration = configuration;
+            mutateIncoming = configuration.MutateIncoming;
+            mutateOutgoing = configuration.MutateOutgoing;
             incoming = configuration.Incoming.Build();
             var owners = new Dictionary<string, Type>();
             var types = configuration.ContractNames.Keys.Concat(configuration.Handlers.Values.Select(handler => handler.Type))
@@ -313,13 +317,20 @@ namespace Bq.Messaging
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
             var copiedHeaders = headers == null ? new Dictionary<string, object>() : new Dictionary<string, object>(headers);
+            var scope = uniformScope.Value;
+            var transport = new TransportMessage(WireName(typeof(T)),
+                MessagePackSerializer.Serialize(typeof(T), message, SerializerOptions), copiedHeaders,
+                scope != null && Volatile.Read(ref scope.Active) != 0 ? scope.Context : null);
+            mutateOutgoing?.Invoke(transport);
+            if (string.IsNullOrWhiteSpace(transport.TypeName) || transport.Body == null)
+                throw new InvalidOperationException("An outgoing transport message requires a type name and body.");
             foreach (var header in copiedHeaders.Keys)
                 if (string.IsNullOrWhiteSpace(header)) throw new ArgumentException("Message header names cannot be empty.", nameof(headers));
             RecoveryWire.EncodeHeaders(copiedHeaders); // Validate the AMQP field types before storing or publishing.
             var id = Guid.NewGuid().ToString("N");
             return new OutgoingMessage { Id = id, CorrelationId = correlationId ?? id, ReplyTo = sendOnly ? null : configuration.Name,
-                Type = WireName(typeof(T)), Exchange = exchange, RoutingKey = routingKey,
-                Mandatory = mandatory, Headers = copiedHeaders, Body = MessagePackSerializer.Serialize(typeof(T), message, SerializerOptions) };
+                Type = transport.TypeName, Exchange = exchange, RoutingKey = routingKey,
+                Mandatory = mandatory, Headers = copiedHeaders, Body = transport.Body };
         }
         Task Dispatch<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
             IDictionary<string, object> headers = null)
@@ -448,10 +459,23 @@ namespace Bq.Messaging
                 try { cycle = RecoveryWire.Cycle(props); }
                 catch { unrecoverable = true; throw; }
                 if (string.IsNullOrEmpty(currentId)) throw new InvalidOperationException("Message ID is required.");
-                if (props.ContentType != ContentType || props.Type == null || !receivers.TryGetValue(props.Type, out var registration))
+                var typeName = props.Type;
+                var body = delivery.Body;
+                var headers = props.Headers;
+                if (mutateIncoming != null)
+                {
+                    // Mutators work on a separate copy so recovery can replay the original wire bytes.
+                    var transport = new TransportMessage(typeName, body.ToArray(),
+                        RecoveryWire.DecodeHeaders(RecoveryWire.EncodeHeaders(headers)));
+                    mutateIncoming(transport);
+                    typeName = transport.TypeName;
+                    headers = transport.Headers;
+                    body = transport.Body ?? throw new InvalidOperationException("An incoming transport message requires a body.");
+                }
+                if (props.ContentType != ContentType || typeName == null || !receivers.TryGetValue(typeName, out var registration))
                 { unrecoverable = true; throw new InvalidOperationException("Unknown message type or content type."); }
                 object message;
-                try { message = MessagePackSerializer.Deserialize(registration.Type, delivery.Body, SerializerOptions); }
+                try { message = MessagePackSerializer.Deserialize(registration.Type, body, SerializerOptions); }
                 catch (Exception ex) { unrecoverable = true; throw new InvalidOperationException("Message deserialization failed.", ex); }
                 for (var attempt = 0; ; attempt++)
                 {
@@ -463,7 +487,7 @@ namespace Bq.Messaging
                             if (!await recovery.HasRecovery(configuration.Name, RecoveryId(currentId, cycle)).ConfigureAwait(false) &&
                                 await session.TryClaimMessage(configuration.Name, currentId).ConfigureAwait(false))
                             {
-                                var context = new HandlerContext(this, props, session);
+                                var context = new HandlerContext(this, props, session, headers);
                                 var previous = uniformScope.Value;
                                 var scope = new UniformScope(context);
                                 uniformScope.Value = scope;
@@ -483,7 +507,7 @@ namespace Bq.Messaging
                     {
                         System.Diagnostics.Trace.TraceWarning("Immediate retry {0} for message {1}: {2}", attempt + 1, currentId, ex);
                         // Every attempt must deserialize afresh, since a failed handler may mutate the object.
-                        message = MessagePackSerializer.Deserialize(registration.Type, delivery.Body, SerializerOptions);
+                        message = MessagePackSerializer.Deserialize(registration.Type, body, SerializerOptions);
                     }
                 }
                 AcknowledgeCommittedDelivery(delivery.DeliveryTag);
@@ -681,14 +705,14 @@ namespace Bq.Messaging
         {
             readonly RabbitEndpoint endpoint;
             readonly string replyTo;
-            public HandlerContext(RabbitEndpoint endpoint, IBasicProperties properties, IPersistenceSession session)
+            public HandlerContext(RabbitEndpoint endpoint, IBasicProperties properties, IPersistenceSession session, IDictionary<string, object> headers)
             {
                 this.endpoint = endpoint;
                 PersistenceSession = session;
                 replyTo = properties.ReplyTo;
                 MessageId = properties.MessageId;
                 CorrelationId = properties.CorrelationId ?? properties.MessageId;
-                Headers = new Dictionary<string, object>(properties.Headers ?? new Dictionary<string, object>());
+                Headers = new Dictionary<string, object>(headers ?? new Dictionary<string, object>());
             }
             public IUniformSession UniformSession => endpoint.CreateUniformSession();
             public CancellationToken CancellationToken => endpoint.forceStop.Token;

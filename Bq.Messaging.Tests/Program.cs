@@ -523,6 +523,27 @@ namespace Bq.Messaging.Tests
             var replayAllowed = false;
             var handoffAttempts = 0;
             var outboxProbe = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            config.MutateOutgoing = message =>
+            {
+                if (message.TypeName != typeof(LocalMessage).FullName) return;
+                Assert(message.IncomingMessage != null, "outgoing mutator sees causing message");
+                message.TypeName = "mutated.local";
+                message.Headers["mutated"] = true;
+                message.Body[0] ^= 0xff;
+            };
+            config.MutateIncoming = message =>
+            {
+                if (message.TypeName == "mutated.local")
+                {
+                    message.TypeName = typeof(LocalMessage).FullName;
+                    message.Body[0] ^= 0xff;
+                }
+                if (message.Headers.ContainsKey("protected"))
+                {
+                    message.Body[0] ^= 0xff;
+                    message.Headers.Remove("protected");
+                }
+            };
             config.Incoming.Use(async (context, next) =>
             {
                 if (context.Message is Command) context.Items["stage"] = "before handler";
@@ -544,7 +565,11 @@ namespace Bq.Messaging.Tests
                 context.SendLocal(new LocalMessage { Text = message.Text })));
             config.Handle(() => new Handler<LocalMessage>((message, context) =>
             {
-                if (message.Text == "outbox probe") outboxProbe.TrySetResult(true);
+                if (message.Text == "outbox probe")
+                {
+                    Assert(context.Headers.ContainsKey("mutated"), "mutated headers survive outbox dispatch");
+                    outboxProbe.TrySetResult(true);
+                }
                 return Task.CompletedTask;
             }));
             var exhaustedAttempts = 0;
@@ -591,7 +616,10 @@ namespace Bq.Messaging.Tests
                         channel.BasicPublish("", name, props, body);
                         var fatalProps = channel.CreateBasicProperties();
                         fatalProps.MessageId = "fatal-" + suffix; fatalProps.Type = typeof(RecoverCommand).FullName; fatalProps.ContentType = "application/x-msgpack";
-                        channel.BasicPublish("", name, fatalProps, MessagePackSerializer.Serialize(new RecoverCommand { Text = "fatal" }, options));
+                        var protectedBody = MessagePackSerializer.Serialize(new RecoverCommand { Text = "fatal" }, options);
+                        protectedBody[0] ^= 0xff;
+                        fatalProps.Headers = new System.Collections.Generic.Dictionary<string, object> { ["protected"] = true };
+                        channel.BasicPublish("", name, fatalProps, protectedBody);
                         await WaitFor(async () => (await endpoint.ListErrors()).Count == 1, "error recorded");
                         var errors = await endpoint.ListErrors();
                         Assert(errors[0].MessageId == fatalProps.MessageId && errors[0].ExceptionType.Contains("FatalFailureException"), "error metadata");
@@ -599,6 +627,8 @@ namespace Bq.Messaging.Tests
                         BasicGetResult error = null;
                         await WaitFor(() => { error = channel.BasicGet(errorName, true); return Task.FromResult(error != null); }, "error queue delivery");
                         Assert(error.BasicProperties.MessageId == fatalProps.MessageId, "error queue identity");
+                        Assert(error.BasicProperties.Headers.ContainsKey("protected") && error.Body.Span[0] == protectedBody[0],
+                            "recovery preserves the original wire body and headers");
                         Assert(error.BasicProperties.Headers.ContainsKey("x-bq-failure-detail"), "error queue failure metadata");
                         replayAllowed = true;
                         Assert(await endpoint.ReplayError(errors[0].RecoveryId), "error replay scheduled");
