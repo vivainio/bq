@@ -45,33 +45,47 @@ namespace Bq.Messaging
         System.Data.Common.DbTransaction Transaction { get; }
     }
 
-    public interface IMessageHandlerContext : IExtendable
+    public interface IPipelineContext : IExtendable
     {
-        IUniformSession UniformSession { get; }
-        CancellationToken CancellationToken { get; }
+        Task Send(object message, SendOptions options);
+        Task Send<T>(Action<T> initialize, SendOptions options);
+        Task Publish(object message, PublishOptions options);
+        Task Publish<T>(Action<T> initialize, PublishOptions options);
+    }
+
+    public interface IMessageProcessingContext : IPipelineContext
+    {
         string MessageId { get; }
         string ReplyToAddress { get; }
         IReadOnlyDictionary<string, string> MessageHeaders { get; }
+        Task Reply(object message, ReplyOptions options);
+        Task ForwardCurrentMessageTo(string destination);
+        Task Reply<T>(Action<T> initialize, ReplyOptions options);
+    }
+
+    public interface IMessageHandlerContext : IMessageProcessingContext
+    {
+        IUniformSession UniformSession { get; }
+        CancellationToken CancellationToken { get; }
         string CorrelationId { get; }
         IReadOnlyDictionary<string, object> Headers { get; }
         IPersistenceSession PersistenceSession { get; }
         SynchronizedStorageSession SynchronizedStorageSession { get; }
         Task Send<T>(T message);
         Task Send<T>(T message, SendOptions options);
-        Task Send(object message, SendOptions options);
-        Task Send<T>(Action<T> initialize, SendOptions options);
+        new Task Send(object message, SendOptions options);
+        new Task Send<T>(Action<T> initialize, SendOptions options);
         Task Send(string message, SendOptions options);
         Task Send<T>(string destination, T message);
         Task SendLocal<T>(T message);
         Task Publish<T>(T message);
         Task Publish<T>(T message, PublishOptions options);
-        Task Publish(object message, PublishOptions options);
-        Task Publish<T>(Action<T> initialize, PublishOptions options);
+        new Task Publish(object message, PublishOptions options);
+        new Task Publish<T>(Action<T> initialize, PublishOptions options);
         Task Reply<T>(T message);
         Task Reply<T>(T message, ReplyOptions options);
-        Task Reply(object message, ReplyOptions options);
-        Task ForwardCurrentMessageTo(string destination);
-        Task Reply<T>(Action<T> initialize, ReplyOptions options);
+        new Task Reply(object message, ReplyOptions options);
+        new Task Reply<T>(Action<T> initialize, ReplyOptions options);
         Task SendAt<T>(T message, DateTimeOffset dueAt);
         Task SendAt<T>(string destination, T message, DateTimeOffset dueAt);
         Task SendLocalAt<T>(T message, DateTimeOffset dueAt);

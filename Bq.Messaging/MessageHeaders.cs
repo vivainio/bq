@@ -30,9 +30,15 @@ namespace Bq.Messaging
         }
 
         public static string FindHeader(this IMessageHandlerContext context, string name) =>
-            context.MessageHeaders.TryGetValue(name, out var value) ? value : null;
+            FindHeader((IMessageProcessingContext)context, name);
 
         public static string GetHeader(this IMessageHandlerContext context, string name) =>
+            GetHeader((IMessageProcessingContext)context, name);
+
+        public static string FindHeader(this IMessageProcessingContext context, string name) =>
+            context.MessageHeaders.TryGetValue(name, out var value) ? value : null;
+
+        public static string GetHeader(this IMessageProcessingContext context, string name) =>
             context.FindHeader(name) ?? throw new KeyNotFoundException("Message header is missing or has no text representation: " + name);
     }
 }

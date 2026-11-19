@@ -19,14 +19,20 @@ namespace Bq.Messaging.Tests
 
     public sealed class ObservePilotEvent : Behavior<IIncomingLogicalMessageContext>
     {
-        public override Task Invoke(IIncomingLogicalMessageContext context, Func<Task> next)
+        public override async Task Invoke(IIncomingLogicalMessageContext context, Func<Task> next)
         {
             if (context.Message.MessageType == typeof(IPilotEvent) && context.Message.Instance is IPilotEvent)
             {
                 context.Extensions.TryGet<int>("pilot-behaviors", out var count);
                 context.Extensions.Set("pilot-behaviors", count + 1);
+                if (count == 0)
+                {
+                    var options = new ReplyOptions();
+                    options.SetDestination(context.GetHeader("migration-reply"));
+                    await context.Reply<Response>(response => response.Text = context.MessageId, options);
+                }
             }
-            return next();
+            await next();
         }
     }
 
@@ -401,6 +407,8 @@ namespace Bq.Messaging.Tests
                 {
                     channel.ExchangeDeclare(legacyExchange, ExchangeType.Topic, true);
                     channel.QueueDeclare(legacyQueue, true, false, false);
+                    var replyQueue = prefix + ".behavior-reply";
+                    channel.QueueDeclare(replyQueue, false, true, true);
                     var contract = typeof(IPilotEvent).FullName;
                     channel.QueueBind(legacyQueue, legacyExchange, contract);
                     IStartableEndpoint startable = await Endpoint.Create(sender);
@@ -417,6 +425,8 @@ namespace Bq.Messaging.Tests
                         Assert(channel.WaitForConfirms(TimeSpan.FromSeconds(5)), "legacy publication confirmed");
                         var publish = new PublishOptions();
                         publish.SetHeader("migration-group", "first");
+                        publish.SetHeader("migration-reply", replyQueue);
+                        publish.SetMessageId(prefix + ".pilot-event");
                         IMessageSession messaging = producer;
                         await messaging.Publish<IPilotEvent>(message =>
                         {
@@ -427,6 +437,15 @@ namespace Bq.Messaging.Tests
                         await messaging.Send(pilotCommand, new SendOptions());
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
                         Assert(await Within(received.Task) == "pilot", "event convention subscribes the migrated receiver");
+                        BasicGetResult behaviorReply = null;
+                        await WaitFor(() =>
+                        {
+                            behaviorReply = channel.BasicGet(replyQueue, true);
+                            return Task.FromResult(behaviorReply != null);
+                        }, "logical behavior replies via the transactional outbox");
+                        Assert(behaviorReply.BasicProperties.Type == typeof(Response).FullName &&
+                            behaviorReply.BasicProperties.CorrelationId == prefix + ".pilot-event",
+                            "logical behavior reply uses the incoming message identity");
                         var legacy = channel.BasicGet(legacyQueue, true);
                         Assert(legacy != null && legacy.BasicProperties.ContentType == "text/xml" &&
                             System.Text.Encoding.UTF8.GetString(legacy.Body.ToArray()) == legacyXml,

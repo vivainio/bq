@@ -6,13 +6,11 @@ namespace Bq.Messaging
 {
     public interface IBehaviorContext : IExtendable { }
 
-    public interface IIncomingLogicalMessageContext : IBehaviorContext
+    public interface IIncomingContext : IBehaviorContext, IMessageProcessingContext { }
+
+    public interface IIncomingLogicalMessageContext : IIncomingContext
     {
         LogicalMessage Message { get; }
-        string MessageId { get; }
-        string ReplyToAddress { get; }
-        IReadOnlyDictionary<string, string> MessageHeaders { get; }
-        Task ForwardCurrentMessageTo(string destination);
     }
 
     public sealed class LogicalMessage
@@ -110,6 +108,12 @@ namespace Bq.Messaging
             public string ReplyToAddress => context.HandlerContext.ReplyToAddress;
             public IReadOnlyDictionary<string, string> MessageHeaders => context.HandlerContext.MessageHeaders;
             public ContextBag Extensions => context.Extensions;
+            public Task Send(object message, SendOptions options) => context.HandlerContext.Send(message, options);
+            public Task Send<T>(Action<T> initialize, SendOptions options) => context.HandlerContext.Send(initialize, options);
+            public Task Publish(object message, PublishOptions options) => context.HandlerContext.Publish(message, options);
+            public Task Publish<T>(Action<T> initialize, PublishOptions options) => context.HandlerContext.Publish(initialize, options);
+            public Task Reply(object message, ReplyOptions options) => context.HandlerContext.Reply(message, options);
+            public Task Reply<T>(Action<T> initialize, ReplyOptions options) => context.HandlerContext.Reply(initialize, options);
             public Task ForwardCurrentMessageTo(string destination) => context.HandlerContext.ForwardCurrentMessageTo(destination);
         }
     }

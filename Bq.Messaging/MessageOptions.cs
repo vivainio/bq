@@ -139,6 +139,19 @@ namespace Bq.Messaging
             return message;
         }
 
+        public static Task Send(this IPipelineContext context, object message) => context.Send(message, new SendOptions());
+        public static Task Publish(this IPipelineContext context, object message) => context.Publish(message, new PublishOptions());
+        public static Task Reply(this IMessageProcessingContext context, object message) => context.Reply(message, new ReplyOptions());
+
+        public static Task Send<T>(this IPipelineContext context, Action<T> initialize) =>
+            context.Send(initialize, new SendOptions());
+
+        public static Task Publish<T>(this IPipelineContext context, Action<T> initialize) =>
+            context.Publish(initialize, new PublishOptions());
+
+        public static Task Reply<T>(this IMessageProcessingContext context, Action<T> initialize) =>
+            context.Reply(initialize, new ReplyOptions());
+
         public static Task Send<T>(this IMessageSession session, Action<T> initialize) =>
             session.Send(initialize, new SendOptions());
 
