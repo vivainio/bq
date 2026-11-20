@@ -431,6 +431,7 @@ namespace Bq.Messaging.Tests
             var receiverName = prefix + ".receiver";
             var legacyQueue = prefix + ".legacy";
             var forwardQueue = prefix + ".forward";
+            var auditQueue = prefix + ".audit";
             var legacyExchange = prefix + ".xml";
             var pilotExchange = prefix + ".msgpack";
             var path = Path.Combine(Path.GetTempPath(), prefix + ".db");
@@ -444,6 +445,7 @@ namespace Bq.Messaging.Tests
             sender.AddHeaderToAllOutgoingMessages("migration-source", "pilot-producer");
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
             receiver.ForwardReceivedMessagesTo(forwardQueue);
+            receiver.AuditProcessedMessagesTo(auditQueue, TimeSpan.FromMinutes(1));
             receiver.RegisterMessageMutator(new PilotMessageMutator());
             receiver.Pipeline.Register("first-observer", typeof(UnexpectedPilotBehavior), "Replace before startup");
             receiver.Pipeline.Register("removed-observer", new UnexpectedPilotBehavior(), "Remove before startup");
@@ -514,6 +516,7 @@ namespace Bq.Messaging.Tests
                     var replyQueue = prefix + ".behavior-reply";
                     channel.QueueDeclare(replyQueue, false, true, true);
                     channel.QueueDeclare(forwardQueue, false, true, true);
+                    channel.QueueDeclare(auditQueue, false, true, true);
                     var contract = typeof(IPilotEvent).FullName;
                     channel.QueueBind(legacyQueue, legacyExchange, contract);
                     IStartableEndpoint startable = await Endpoint.Create(sender);
@@ -553,6 +556,16 @@ namespace Bq.Messaging.Tests
                         Assert(forwarded.BasicProperties.Type == contract &&
                             !forwarded.BasicProperties.Headers.ContainsKey("pilot-mutator"),
                             "endpoint-wide forwarding uses the original wire message");
+                        BasicGetResult audit = null;
+                        await WaitFor(() =>
+                        {
+                            audit = channel.BasicGet(auditQueue, true);
+                            return Task.FromResult(audit?.BasicProperties.MessageId == prefix + ".pilot-event");
+                        }, "processed event is audited");
+                        Assert(audit.BasicProperties.Expiration == "60000" &&
+                            !audit.BasicProperties.Headers.ContainsKey("x-bq-outbox-audit-expiration") &&
+                            audit.Body.ToArray().SequenceEqual(forwarded.Body.ToArray()),
+                            "audit copy preserves the received body and carries a broker TTL");
                         BasicGetResult behaviorReply = null;
                         await WaitFor(() =>
                         {

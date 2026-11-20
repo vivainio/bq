@@ -16,6 +16,9 @@ namespace Bq.Messaging
     {
         readonly string localAddress;
         readonly string forwardReceivedMessagesAddress;
+        readonly string auditQueue;
+        readonly string auditExpiration;
+        const string AuditExpirationHeader = "x-bq-outbox-audit-expiration";
         readonly string eventsExchange;
         readonly string errorExchange;
         const string ContentType = "application/x-msgpack";
@@ -58,8 +61,10 @@ namespace Bq.Messaging
             this.configuration = configuration;
             localAddress = configuration.LocalAddress ?? configuration.Name;
             forwardReceivedMessagesAddress = configuration.ForwardReceivedMessagesAddress;
-            if (forwardReceivedMessagesAddress == localAddress)
-                throw new ArgumentException("The forwarding destination must differ from the endpoint input queue.", nameof(configuration));
+            auditQueue = configuration.AuditQueue;
+            auditExpiration = configuration.AuditExpiration;
+            if (forwardReceivedMessagesAddress == localAddress || auditQueue == localAddress)
+                throw new ArgumentException("The forwarding and audit destinations must differ from the endpoint input queue.", nameof(configuration));
             mutateIncoming = configuration.MutateIncoming;
             incomingTransportMutators = configuration.IncomingTransportMutators.ToArray();
             mutateOutgoing = configuration.MutateOutgoing;
@@ -485,6 +490,7 @@ namespace Bq.Messaging
             }
             transport.Headers.Remove(MessageOptions.WireIdHeader);
             transport.Headers.Remove(MessageOptions.ReplyAddressHeader);
+            transport.Headers.Remove(AuditExpirationHeader);
             if (customId != null) transport.Headers[MessageOptions.WireIdHeader] = customId;
             if (string.IsNullOrWhiteSpace(transport.TypeName) || transport.Body == null)
                 throw new InvalidOperationException("An outgoing transport message requires a type name and body.");
@@ -521,6 +527,9 @@ namespace Bq.Messaging
                     if (headers.TryGetValue(MessageOptions.WireIdHeader, out var originalId) && originalId is string id)
                         props.MessageId = id;
                     headers.Remove(MessageOptions.WireIdHeader);
+                    if (headers.TryGetValue(AuditExpirationHeader, out var expiration) && expiration is string ttl)
+                        props.Expiration = ttl;
+                    headers.Remove(AuditExpirationHeader);
                     props.Headers = headers;
                 }
                 returned = false;
@@ -727,8 +736,13 @@ namespace Bq.Messaging
                                         await registration.Invoke(incomingContext.Message, context).ConfigureAwait(false);
                                         incomingContext.MessageHandled = true;
                                     }).ConfigureAwait(false);
-                                    if (forwardReceivedMessagesAddress != null && incomingContext.MessageHandled && !incomingContext.IsSagaTimeout)
-                                        await context.ForwardCurrentMessageTo(forwardReceivedMessagesAddress).ConfigureAwait(false);
+                                    if (incomingContext.MessageHandled && !incomingContext.IsSagaTimeout)
+                                    {
+                                        if (forwardReceivedMessagesAddress != null)
+                                            await context.ForwardCurrentMessageTo(forwardReceivedMessagesAddress).ConfigureAwait(false);
+                                        if (auditQueue != null)
+                                            await context.ForwardCurrentMessageTo(auditQueue, auditExpiration).ConfigureAwait(false);
+                                    }
                                 }
                                 finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; }
                             }
@@ -1118,7 +1132,9 @@ namespace Bq.Messaging
                 if (PersistenceSession == null) throw new InvalidOperationException("Saga timeouts require persistence.");
                 return endpoint.StoreScheduled(PersistenceSession, endpoint.localAddress, timeout, dueUtc, CorrelationId);
             }
-            public Task ForwardCurrentMessageTo(string destination)
+            public Task ForwardCurrentMessageTo(string destination) => ForwardCurrentMessageTo(destination, null);
+
+            internal Task ForwardCurrentMessageTo(string destination, string expiration)
             {
                 var scope = endpoint.uniformScope.Value;
                 if (scope == null || !ReferenceEquals(scope.Context, this) || Volatile.Read(ref scope.Active) == 0)
@@ -1128,6 +1144,8 @@ namespace Bq.Messaging
                 {
                     [MessageOptions.WireIdHeader] = MessageId
                 };
+                headers.Remove(AuditExpirationHeader);
+                if (expiration != null) headers[AuditExpirationHeader] = expiration;
                 return PersistenceSession.StoreOutgoing(new OutgoingMessage
                 {
                     Id = Guid.NewGuid().ToString("N"), CorrelationId = wireProperties.CorrelationId, ReplyTo = replyTo,

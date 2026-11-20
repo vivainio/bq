@@ -6,6 +6,16 @@ namespace Bq.Messaging
 {
     public static class EndpointConfigurationExtensions
     {
+        public static void AuditProcessedMessagesTo(this EndpointConfiguration config, string auditQueue, TimeSpan? timeToBeReceived = null)
+        {
+            if (config == null) throw new ArgumentNullException(nameof(config));
+            if (timeToBeReceived < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeToBeReceived));
+            config.AuditQueue = MessageOptions.ValidateAddressField(auditQueue, nameof(auditQueue));
+            config.AuditExpiration = timeToBeReceived.HasValue
+                ? Math.Ceiling(timeToBeReceived.Value.TotalMilliseconds).ToString("0", System.Globalization.CultureInfo.InvariantCulture)
+                : null;
+        }
+
         public static void ForwardReceivedMessagesTo(this EndpointConfiguration config, string address)
         {
             if (config == null) throw new ArgumentNullException(nameof(config));
