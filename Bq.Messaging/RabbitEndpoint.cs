@@ -78,7 +78,7 @@ namespace Bq.Messaging
             mutateOutgoing = configuration.MutateOutgoing;
             outgoingMessageMutators = configuration.OutgoingMessageMutators.ToArray();
             outgoingTransportMutators = configuration.OutgoingTransportMutators.ToArray();
-            incoming = configuration.Incoming.Build();
+            incoming = configuration.Incoming.Build(configuration.Pipeline);
             var owners = new Dictionary<string, Type>();
             var types = configuration.ContractNames.Keys.Concat(configuration.Handlers.Values.Select(handler => handler.Type))
                 .Concat(configuration.Routes.Keys).Distinct();

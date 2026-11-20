@@ -98,6 +98,8 @@ namespace Bq.Messaging.Tests
                 context.Extensions.Set("pilot-behaviors", count + 1);
                 if (count == 0)
                 {
+                    if (!context.Extensions.TryGet<bool>("pilot-step-ordered", out var ordered) || !ordered)
+                        throw new InvalidOperationException("The ordered step must run before the first observer.");
                     context.Headers["migration-group"] = "observed";
                     context.UpdateMessageInstance(new ReplacementPilotEvent { Text = pilot.Text + " observed", Count = pilot.Count });
                     var options = new ReplyOptions();
@@ -112,6 +114,24 @@ namespace Bq.Messaging.Tests
             if (context.MessageHandled) throw new InvalidOperationException("The handler has not run yet.");
             await next();
             if (!context.MessageHandled) throw new InvalidOperationException("The handler completed but the context did not report it.");
+        }
+    }
+
+    public sealed class OrderedPilotBehavior : Behavior<IIncomingLogicalMessageContext>
+    {
+        public override Task Invoke(IIncomingLogicalMessageContext context, Func<Task> next)
+        {
+            context.Extensions.Set("pilot-step-ordered", true);
+            return next();
+        }
+    }
+
+    public sealed class OrderedPilotStep : RegisterStep
+    {
+        public OrderedPilotStep() : base("pilot-ordering", typeof(OrderedPilotBehavior), "Run before the first observer")
+        {
+            InsertBefore("first-observer");
+            InsertAfterIfExists("optional-observer");
         }
     }
 
@@ -495,6 +515,7 @@ namespace Bq.Messaging.Tests
             windsor.RegisterBehavior<UnexpectedPilotBehavior>(receiver, "second-observer", "Replace before startup");
             windsor.ReplaceBehavior<ObservePilotEvent>(receiver, "second-observer", "Resolve the observer through Windsor");
             receiver.Pipeline.Replace("first-observer", typeof(ObservePilotEvent), "Inspect the declared event contract");
+            receiver.Pipeline.Register<OrderedPilotStep>();
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             container.Register(Component.For<IHandleMessages<IPilotEvent>>().UsingFactoryMethod(() => new Handler<IPilotEvent>((message, context) =>

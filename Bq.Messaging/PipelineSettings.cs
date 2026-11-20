@@ -47,13 +47,52 @@ namespace Bq.Messaging
         }
     }
 
+    public abstract class RegisterStep
+    {
+        internal List<(string Id, bool Before, bool Optional)> Dependencies { get; } =
+            new List<(string Id, bool Before, bool Optional)>();
+
+        protected RegisterStep(string stepId, Type behavior, string description)
+        {
+            if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
+            StepId = stepId;
+            BehaviorType = behavior ?? throw new ArgumentNullException(nameof(behavior));
+            Description = description;
+        }
+
+        public string StepId { get; }
+        public Type BehaviorType { get; }
+        public string Description { get; }
+        public void InsertBefore(string id) => AddDependency(id, before: true, optional: false);
+        public void InsertBeforeIfExists(string id) => AddDependency(id, before: true, optional: true);
+        public void InsertAfter(string id) => AddDependency(id, before: false, optional: false);
+        public void InsertAfterIfExists(string id) => AddDependency(id, before: false, optional: true);
+
+        void AddDependency(string id, bool before, bool optional)
+        {
+            if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("A referenced step ID is required.", nameof(id));
+            Dependencies.Add((id, before, optional));
+        }
+    }
+
     public sealed class PipelineSettings
     {
         readonly IncomingPipeline incoming;
         readonly Dictionary<string, Func<IncomingMessageContext, Func<Task>, Task>> steps =
             new Dictionary<string, Func<IncomingMessageContext, Func<Task>, Task>>(StringComparer.Ordinal);
+        readonly Dictionary<string, (string Id, bool Before, bool Optional)[]> ordering =
+            new Dictionary<string, (string Id, bool Before, bool Optional)[]>(StringComparer.Ordinal);
 
         internal PipelineSettings(IncomingPipeline incoming) { this.incoming = incoming; }
+
+        public void Register<TRegisterStep>() where TRegisterStep : RegisterStep, new() => Register(new TRegisterStep());
+
+        public void Register(RegisterStep registration)
+        {
+            if (registration == null) throw new ArgumentNullException(nameof(registration));
+            Register(registration.StepId, registration.BehaviorType, registration.Description);
+            ordering.Add(registration.StepId, registration.Dependencies.ToArray());
+        }
 
         public void Register(Type behavior, string description) =>
             Register(TypeName(behavior), behavior, description);
@@ -88,6 +127,53 @@ namespace Bq.Messaging
         {
             incoming.Remove(FindStep(stepId));
             steps.Remove(stepId);
+            ordering.Remove(stepId);
+        }
+
+        internal IEnumerable<Func<IncomingMessageContext, Func<Task>, Task>> Order(
+            IReadOnlyList<Func<IncomingMessageContext, Func<Task>, Task>> behaviors)
+        {
+            if (ordering.Count == 0) return behaviors;
+
+            var predecessors = new Dictionary<Func<IncomingMessageContext, Func<Task>, Task>,
+                List<Func<IncomingMessageContext, Func<Task>, Task>>>();
+            foreach (var entry in ordering)
+            {
+                var step = steps[entry.Key];
+                foreach (var dependency in entry.Value)
+                {
+                    if (!steps.TryGetValue(dependency.Id, out var other))
+                    {
+                        if (dependency.Optional) continue;
+                        throw new InvalidOperationException("Pipeline step " + entry.Key + " references missing step " + dependency.Id);
+                    }
+                    var successor = dependency.Before ? other : step;
+                    if (!predecessors.TryGetValue(successor, out var required))
+                        predecessors.Add(successor, required = new List<Func<IncomingMessageContext, Func<Task>, Task>>());
+                    required.Add(dependency.Before ? step : other);
+                }
+            }
+
+            var sorted = new List<Func<IncomingMessageContext, Func<Task>, Task>>();
+            var visiting = new HashSet<Func<IncomingMessageContext, Func<Task>, Task>>();
+            var visited = new HashSet<Func<IncomingMessageContext, Func<Task>, Task>>();
+            void Visit(Func<IncomingMessageContext, Func<Task>, Task> step)
+            {
+                if (visited.Contains(step)) return;
+                if (!visiting.Add(step)) throw new InvalidOperationException("Pipeline step ordering contains a cycle.");
+                if (predecessors.TryGetValue(step, out var required))
+                    foreach (var predecessor in required) Visit(predecessor);
+                visiting.Remove(step);
+                visited.Add(step);
+                sorted.Add(step);
+            }
+
+            foreach (var behavior in behaviors)
+            {
+                if (steps.ContainsValue(behavior)) Visit(behavior);
+                else sorted.Add(behavior);
+            }
+            return sorted;
         }
 
         Func<IncomingMessageContext, Func<Task>, Task> FindStep(string stepId)

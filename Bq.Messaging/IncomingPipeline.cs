@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -64,7 +65,7 @@ namespace Bq.Messaging
         public void BeforeCommit(Func<IncomingMessageContext, IPersistenceSession, Task> callback) =>
             beforeCommit.Add(callback ?? throw new ArgumentNullException(nameof(callback)));
 
-        internal Func<IncomingMessageContext, Func<Task>, Task> Build()
+        internal Func<IncomingMessageContext, Func<Task>, Task> Build(PipelineSettings settings)
         {
             var callbacks = beforeCommit.ToArray();
             Func<IncomingMessageContext, Func<Task>, Task> pipeline = async (context, invokeHandler) =>
@@ -74,9 +75,10 @@ namespace Bq.Messaging
                     await callback(context, context.HandlerContext.PersistenceSession).ConfigureAwait(false);
             };
 
-            for (var index = behaviors.Count - 1; index >= 0; index--)
+            var ordered = settings.Order(behaviors).ToArray();
+            for (var index = ordered.Length - 1; index >= 0; index--)
             {
-                var behavior = behaviors[index];
+                var behavior = ordered[index];
                 var next = pipeline;
                 pipeline = (context, invokeHandler) =>
                 {
