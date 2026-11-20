@@ -18,10 +18,16 @@ namespace Bq.Messaging
 
     public static class SubscriptionExtensions
     {
-        public static Task Subscribe<T>(this IMessageSession session, SubscribeOptions options = null) =>
+        public static Task Subscribe<T>(this IMessageSession session) =>
+            session.Subscribe(typeof(T), new SubscribeOptions());
+
+        public static Task Subscribe<T>(this IMessageSession session, SubscribeOptions options) =>
             session.Subscribe(typeof(T), options ?? new SubscribeOptions());
 
-        public static Task Unsubscribe<T>(this IMessageSession session, UnsubscribeOptions options = null) =>
+        public static Task Unsubscribe<T>(this IMessageSession session) =>
+            session.Unsubscribe(typeof(T), new UnsubscribeOptions());
+
+        public static Task Unsubscribe<T>(this IMessageSession session, UnsubscribeOptions options) =>
             session.Unsubscribe(typeof(T), options ?? new UnsubscribeOptions());
 
         public static Task Subscribe(this IMessageSession session, Type eventType) =>

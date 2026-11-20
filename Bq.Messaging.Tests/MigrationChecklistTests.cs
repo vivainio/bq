@@ -509,13 +509,16 @@ namespace Bq.Messaging.Tests
                             "wire formats stay on their own exchanges during phased cutover");
 
                         await messaging.Publish(new RuntimeSubscriptionEvent { Value = 0 }, new PublishOptions());
-                        await subscriber.Subscribe<RuntimeSubscriptionEvent>();
+                        IMessageSession subscriptions = subscriber;
+                        Func<Task> subscribe = subscriptions.Subscribe<RuntimeSubscriptionEvent>;
+                        Func<Task> unsubscribe = subscriptions.Unsubscribe<RuntimeSubscriptionEvent>;
+                        await subscribe();
                         await subscriber.Subscribe(typeof(RuntimeSubscriptionEvent), new SubscribeOptions());
                         await messaging.Publish(new RuntimeSubscriptionEvent { Value = 1 }, new PublishOptions());
                         PublishSubscriptionProbe(channel, pilotExchange, runtimeAlias, runtimeAlias, new RuntimeSubscriptionEvent { Value = 2 });
                         await Within(subscribed.Task);
 
-                        await subscriber.Unsubscribe(typeof(RuntimeSubscriptionEvent), new UnsubscribeOptions());
+                        await unsubscribe();
                         await messaging.Publish(new RuntimeSubscriptionEvent { Value = 3 }, new PublishOptions());
                         PublishSubscriptionProbe(channel, pilotExchange, runtimeAlias, runtimeAlias, new RuntimeSubscriptionEvent { Value = 4 });
                         PublishSubscriptionProbe(channel, "", receiverName, barrierContract, new WorkflowBarrier());
