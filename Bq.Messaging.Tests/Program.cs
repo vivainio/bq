@@ -31,7 +31,7 @@ namespace Bq.Messaging.Tests
     public class StartOrder { public string OrderId { get; set; } public int DelayMs { get; set; } public DateTimeOffset? TimeoutAt { get; set; } public bool FailFirst { get; set; } }
     public class ChangeOrder { public string OrderId { get; set; } public bool Complete { get; set; } }
     public class OrderTimeout { public string OrderId { get; set; } }
-    public class OrderState { public string Status { get; set; } public int TimeoutCount { get; set; } }
+    public class OrderState { public string OrderId { get; set; } public string Status { get; set; } public int TimeoutCount { get; set; } }
     sealed class MissingOrderHandler : IHandleSagaNotFound
     {
         readonly IMessageHandlerContext scopedContext;
@@ -60,6 +60,11 @@ namespace Bq.Messaging.Tests
     {
         public static int StartAttempts;
         public static int TimeoutCalls;
+        protected override void ConfigureHowToFindSaga(SagaPropertyMapper<OrderState> mapper) =>
+            mapper.MapSaga(data => data.OrderId)
+                .ToMessage<StartOrder>(message => message.OrderId)
+                .ToMessage<ChangeOrder>(message => message.OrderId);
+
         public async Task Handle(StartOrder message, IMessageHandlerContext context)
         {
             Data.Status = "started";
@@ -725,12 +730,7 @@ namespace Bq.Messaging.Tests
                 Assert(windsor.Current.PersistenceSession != null, "Windsor creates the saga inside the active transaction");
                 return new OrderWorkflow();
             }).LifestyleTransient());
-            windsor.RegisterSaga<OrderWorkflow, OrderState>(config, mappings =>
-            {
-                mappings.Start<StartOrder>(m => m.OrderId);
-                mappings.Handle<ChangeOrder>(m => m.OrderId);
-                mappings.Timeout<OrderTimeout>();
-            });
+            windsor.RegisterSaga<OrderWorkflow, OrderState>(config);
             var senderPath = Path.Combine(Path.GetTempPath(), "bq-saga-sender-" + suffix + ".db");
             var senderStore = new SqlitePersistence(() => Sqlite(senderPath), senderName); await senderStore.Initialize();
             var sender = new EndpointConfiguration(senderName, uri) { Persistence = senderStore };

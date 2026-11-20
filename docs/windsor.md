@@ -36,3 +36,5 @@ For saga-not-found handling, register an `IHandleSagaNotFound` component with a 
 Inject `SynchronizedStorageSession` into a scoped Windsor component to use the active delivery's ADO.NET connection and transaction. Bq owns the transaction and commits after the Windsor scope closes.
 
 Register a saga as a transient Windsor component and call `messaging.RegisterSaga<TSaga, TData>(configuration, mappings => ...)`. Supply the message and timeout mappings during configuration. Windsor resolves and releases the saga during each processing attempt.
+
+For a saga with a public parameterless constructor, `messaging.RegisterSaga<TSaga, TData>(configuration)` reads its `ConfigureHowToFindSaga` mappings and discovers timeout handlers at startup. Bq constructs the mapping instance at startup and resolves runtime instances through Windsor.

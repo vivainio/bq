@@ -194,13 +194,18 @@ namespace Bq.Messaging
             endpoint.RegisterSaga<TSaga, TData>(() => new TSaga());
 
         public static void RegisterSaga<TSaga, TData>(this EndpointConfiguration endpoint, Func<TSaga> factory)
+            where TSaga : Saga<TData> where TData : class, new() =>
+            endpoint.RegisterSaga<TSaga, TData>(factory, factory, saga => (saga as IDisposable)?.Dispose());
+
+        public static void RegisterSaga<TSaga, TData>(this EndpointConfiguration endpoint, Func<TSaga> factory,
+            Func<TSaga> definitionFactory, Action<TSaga> release)
             where TSaga : Saga<TData> where TData : class, new()
         {
-            if (factory == null) throw new ArgumentNullException(nameof(factory));
+            if (definitionFactory == null) throw new ArgumentNullException(nameof(definitionFactory));
             endpoint.RegisterSaga<TSaga, TData>(factory, mappings =>
             {
                 var mapper = new SagaPropertyMapper<TData>();
-                var definition = factory() ?? throw new InvalidOperationException("Saga factory returned null.");
+                var definition = definitionFactory() ?? throw new InvalidOperationException("Saga definition factory returned null.");
                 try { definition.ConfigureMappings(mapper); }
                 finally { (definition as IDisposable)?.Dispose(); }
                 mapper.Apply(mappings);
@@ -208,7 +213,7 @@ namespace Bq.Messaging
                 foreach (var contract in typeof(TSaga).GetInterfaces())
                     if (contract.IsGenericType && contract.GetGenericTypeDefinition() == typeof(IHandleTimeouts<>))
                         register.MakeGenericMethod(contract.GetGenericArguments()[0]).Invoke(mappings, null);
-            });
+            }, release);
         }
 
         public static void RegisterSaga<TSaga, TData>(this EndpointConfiguration endpoint, Func<TSaga> factory, Action<SagaMappings<TSaga, TData>> configure)
