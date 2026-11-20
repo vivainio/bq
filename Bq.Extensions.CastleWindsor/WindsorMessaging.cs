@@ -79,6 +79,13 @@ namespace Bq.Extensions.CastleWindsor
             configuration.Pipeline.Register(stepId, new ContainerBehavior<TBehavior>(container), description);
         }
 
+        public void ReplaceBehavior<TBehavior>(EndpointConfiguration configuration, string stepId, string description = null)
+            where TBehavior : IBehavior<IIncomingLogicalMessageContext, IIncomingLogicalMessageContext>
+        {
+            if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            configuration.Pipeline.Replace(stepId, new ContainerBehavior<TBehavior>(container), description);
+        }
+
         sealed class ContainerBehavior<TBehavior> : IBehavior<IIncomingLogicalMessageContext, IIncomingLogicalMessageContext>
             where TBehavior : IBehavior<IIncomingLogicalMessageContext, IIncomingLogicalMessageContext>
         {

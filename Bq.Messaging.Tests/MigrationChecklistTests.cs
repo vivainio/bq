@@ -468,7 +468,8 @@ namespace Bq.Messaging.Tests
                     "Windsor resolves logical behaviors inside the delivery transaction");
                 return new ObservePilotEvent();
             }).LifestyleScoped());
-            windsor.RegisterBehavior<ObservePilotEvent>(receiver, "second-observer", "Resolve the observer through Windsor");
+            windsor.RegisterBehavior<UnexpectedPilotBehavior>(receiver, "second-observer", "Replace before startup");
+            windsor.ReplaceBehavior<ObservePilotEvent>(receiver, "second-observer", "Resolve the observer through Windsor");
             receiver.Pipeline.Replace("first-observer", typeof(ObservePilotEvent), "Inspect the declared event contract");
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
