@@ -629,6 +629,20 @@ namespace Bq.Messaging.Tests
                         PublishSubscriptionProbe(channel, "", receiverName, barrierContract, new WorkflowBarrier());
                         await Within(barrier.Task);
                         Assert(Volatile.Read(ref runtimeDeliveries) == 2, "unsubscribe removes both the event contract and its alias");
+
+                        var invalid = new ReplacementPilotEvent { Text = "invalid ciphertext!", Count = 7 };
+                        PublishSubscriptionProbe(channel, pilotExchange, contract, contract, invalid);
+                        BasicGetResult rejected = null;
+                        await WaitFor(() =>
+                        {
+                            rejected = channel.BasicGet(receiverName + ".error", true);
+                            return Task.FromResult(rejected != null);
+                        }, "undecryptable message reaches the error queue");
+                        var retained = MessagePackSerializer.Deserialize<ReplacementPilotEvent>(rejected.Body,
+                            MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance));
+                        Assert(retained.Text == invalid.Text && rejected.BasicProperties.Type == contract &&
+                            (await subscriber.ListErrors()).Single().ExceptionDetail.Contains(nameof(FormatException)),
+                            "recovery retains the received property and records the decryption failure");
                     }
                 }
                 finally
