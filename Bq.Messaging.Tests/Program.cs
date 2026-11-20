@@ -187,6 +187,7 @@ namespace Bq.Messaging.Tests
         }
         static async Task TestingSupportTests()
         {
+            VerifyPipelineOrderingValidation();
             var encryptedEndpoint = new EndpointConfiguration("invalid-encryption", new Uri("amqp://localhost"))
             {
                 Persistence = new SqlitePersistence(
@@ -714,6 +715,36 @@ namespace Bq.Messaging.Tests
                 return MessagePackSerializer.Deserialize<SagaStoredState<OrderState>>(record.Data, options);
             }
         }
+        static void VerifyPipelineOrderingValidation()
+        {
+            var configuration = new EndpointConfiguration("pipeline-validation", new Uri("amqp://localhost"))
+            {
+                Persistence = new SqlitePersistence(
+                    () => throw new InvalidOperationException("Pipeline validation must not open a database connection."),
+                    "pipeline-validation")
+            };
+            configuration.Pipeline.Register<OrderedPilotStep>();
+            AssertStartupFails("references missing step first-observer");
+
+            configuration.Pipeline.Register(new CircularPilotStep());
+            AssertStartupFails("contains a cycle involving pilot-ordering");
+
+            void AssertStartupFails(string expected)
+            {
+                try { using (RabbitEndpoint.Start(configuration)) { } }
+                catch (InvalidOperationException error) when (error.Message.Contains(expected)) { return; }
+                throw new InvalidOperationException("Expected pipeline validation to report " + expected);
+            }
+        }
+
+        sealed class CircularPilotStep : RegisterStep
+        {
+            public CircularPilotStep() : base("first-observer", typeof(OrderedPilotBehavior), "Create a cycle")
+            {
+                InsertBefore("pilot-ordering");
+            }
+        }
+
         static async Task WaitFor(Func<Task<bool>> condition, string description)
         {
             for (var i = 0; i < 150; i++) { if (await condition()) return; await Task.Delay(100); }

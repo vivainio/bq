@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace Bq.Messaging
@@ -155,12 +156,14 @@ namespace Bq.Messaging
             }
 
             var sorted = new List<Func<IncomingMessageContext, Func<Task>, Task>>();
+            var stepIds = steps.ToDictionary(entry => entry.Value, entry => entry.Key);
             var visiting = new HashSet<Func<IncomingMessageContext, Func<Task>, Task>>();
             var visited = new HashSet<Func<IncomingMessageContext, Func<Task>, Task>>();
             void Visit(Func<IncomingMessageContext, Func<Task>, Task> step)
             {
                 if (visited.Contains(step)) return;
-                if (!visiting.Add(step)) throw new InvalidOperationException("Pipeline step ordering contains a cycle.");
+                if (!visiting.Add(step))
+                    throw new InvalidOperationException("Pipeline step ordering contains a cycle involving " + stepIds[step] + ".");
                 if (predecessors.TryGetValue(step, out var required))
                     foreach (var predecessor in required) Visit(predecessor);
                 visiting.Remove(step);
@@ -170,7 +173,7 @@ namespace Bq.Messaging
 
             foreach (var behavior in behaviors)
             {
-                if (steps.ContainsValue(behavior)) Visit(behavior);
+                if (stepIds.ContainsKey(behavior)) Visit(behavior);
                 else sorted.Add(behavior);
             }
             return sorted;
