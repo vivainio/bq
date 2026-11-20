@@ -154,6 +154,17 @@ namespace Bq.Messaging.Tests
             Assert(creator.CreateInstance<Command>() != null && creator.CreateInstance(typeof(IPilotEvent)) is IPilotEvent,
                 "message creator supports concrete classes and interface contracts");
             var sendOptions = new SendOptions();
+            ExtendableOptions dispatchOptions = new SendOptions();
+            Assert(!dispatchOptions.RequiredImmediateDispatch(), "immediate dispatch is opt-in");
+            dispatchOptions.RequireImmediateDispatch();
+            Assert(dispatchOptions.RequiredImmediateDispatch(), "base options expose the dispatch request");
+            ExtendableOptions scheduledOptions = new SendOptions();
+            ((SendOptions)scheduledOptions).DelayDeliveryWith(TimeSpan.FromSeconds(1));
+            var rejectedDispatch = false;
+            try { scheduledOptions.RequireImmediateDispatch(); }
+            catch (InvalidOperationException) { rejectedDispatch = true; }
+            Assert(rejectedDispatch && !scheduledOptions.RequiredImmediateDispatch(),
+                "base dispatch API preserves validation for scheduled sends");
             sendOptions.GetExtensions().Set("operation", "checkout");
             Assert(sendOptions.GetExtensions().Get<string>("operation") == "checkout" &&
                 !new SendOptions().GetExtensions().TryGet<string>("operation", out _),

@@ -8,7 +8,6 @@ namespace Bq.Messaging
     {
         internal const string WireIdHeader = "x-bq-forwarded-message-id";
         internal const string ReplyAddressHeader = "x-bq-override-reply-to";
-        internal bool ImmediateDispatch { get; private set; }
         internal string MessageId { get; private set; }
         internal string ReplyAddress { get; private set; }
 

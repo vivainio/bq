@@ -11,6 +11,20 @@ namespace Bq.Messaging
     public abstract class ExtendableOptions
     {
         internal ContextBag Extensions { get; } = new ContextBag();
+        internal bool ImmediateDispatch { get; set; }
+    }
+
+    public static class ImmediateDispatchOptionExtensions
+    {
+        public static void RequireImmediateDispatch(this ExtendableOptions options)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            if (options is MessageOptions message) message.RequireImmediateDispatch();
+            else options.ImmediateDispatch = true;
+        }
+
+        public static bool RequiredImmediateDispatch(this ExtendableOptions options) =>
+            (options ?? throw new ArgumentNullException(nameof(options))).ImmediateDispatch;
     }
 
     public static class ExtendableOptionsExtensions
