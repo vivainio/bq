@@ -171,6 +171,14 @@ namespace Bq.Messaging
         public static void RouteToThisEndpoint(this SendOptions options) => options.RouteToThisEndpoint();
     }
 
+    public static class DelayedDeliveryOptionExtensions
+    {
+        public static void DelayDeliveryWith(this SendOptions options, TimeSpan delay) => options.DelayDeliveryWith(delay);
+        public static void DoNotDeliverBefore(this SendOptions options, DateTimeOffset at) => options.DoNotDeliverBefore(at);
+        public static TimeSpan? GetDeliveryDelay(this SendOptions options) => options.DeliveryDelay;
+        public static DateTimeOffset? GetDeliveryDate(this SendOptions options) => options.DeliveryDate;
+    }
+
     public static class MessageOptionsExtensions
     {
         public static string GetMessageId(MessageOptions options) => MessageIdExtensions.GetMessageId(options);
@@ -181,8 +189,8 @@ namespace Bq.Messaging
         public static string GetReplyToRoute(SendOptions options) => RoutingOptionExtensions.GetReplyToRoute(options);
         public static string GetReplyToRoute(ReplyOptions options) => RoutingOptionExtensions.GetReplyToRoute(options);
         public static bool IsRoutingToThisEndpoint(SendOptions options) => RoutingOptionExtensions.IsRoutingToThisEndpoint(options);
-        public static TimeSpan? GetDeliveryDelay(this SendOptions options) => options.DeliveryDelay;
-        public static DateTimeOffset? GetDeliveryDate(this SendOptions options) => options.DeliveryDate;
+        public static TimeSpan? GetDeliveryDelay(SendOptions options) => DelayedDeliveryOptionExtensions.GetDeliveryDelay(options);
+        public static DateTimeOffset? GetDeliveryDate(SendOptions options) => DelayedDeliveryOptionExtensions.GetDeliveryDate(options);
 
         public static Task Send(this IMessageSession session, object message) => session.Send(message, new SendOptions());
         public static Task Publish(this IMessageSession session, object message) => session.Publish(message, new PublishOptions());

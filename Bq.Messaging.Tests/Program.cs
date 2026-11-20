@@ -182,12 +182,12 @@ namespace Bq.Messaging.Tests
             headerOptions.SetMessageId("custom-id");
             sendOptions.RouteReplyTo("reply");
             sendOptions.SetHeader("attempt", 3);
-            sendOptions.DelayDeliveryWith(TimeSpan.FromSeconds(2));
+            DelayedDeliveryOptionExtensions.DelayDeliveryWith(sendOptions, delay: TimeSpan.FromSeconds(2));
             Assert(sendOptions.IsRoutingToThisEndpoint() && sendOptions.GetMessageId() == "custom-id" && sendOptions.GetReplyToRoute() == "reply" &&
                 sendOptions.GetHeaders()["attempt"] == "3" && sendOptions.GetDeliveryDelay() == TimeSpan.FromSeconds(2) && sendOptions.GetDeliveryDate() == null,
                 "send option readers expose explicitly configured values");
             var deliveryDate = DateTimeOffset.UtcNow.AddMinutes(1);
-            sendOptions.DoNotDeliverBefore(deliveryDate);
+            DelayedDeliveryOptionExtensions.DoNotDeliverBefore(sendOptions, at: deliveryDate);
             Assert(sendOptions.GetDeliveryDelay() == null && sendOptions.GetDeliveryDate() == deliveryDate,
                 "absolute scheduling replaces the relative delay");
             var replyOptions = new ReplyOptions();
