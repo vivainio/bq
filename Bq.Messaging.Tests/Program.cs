@@ -32,18 +32,23 @@ namespace Bq.Messaging.Tests
     public class ChangeOrder { public string OrderId { get; set; } public bool Complete { get; set; } }
     public class OrderTimeout { public string OrderId { get; set; } }
     public class OrderState { public string OrderId { get; set; } public string Status { get; set; } public int TimeoutCount { get; set; } }
-    sealed class MissingOrderHandler : IHandleSagaNotFound
+    sealed class MissingOrderHandler : IHandleSagaNotFound, IDisposable
     {
         readonly IMessageHandlerContext scopedContext;
         readonly SynchronizedStorageSession storage;
         readonly Action onMissing;
+        readonly Action onDispose;
 
-        public MissingOrderHandler(IMessageHandlerContext scopedContext, SynchronizedStorageSession storage, Action onMissing)
+        public MissingOrderHandler(IMessageHandlerContext scopedContext, SynchronizedStorageSession storage,
+            Action onMissing, Action onDispose)
         {
             this.scopedContext = scopedContext;
             this.storage = storage;
             this.onMissing = onMissing;
+            this.onDispose = onDispose;
         }
+
+        public void Dispose() => onDispose();
 
         public Task Handle(object message, IMessageProcessingContext context)
         {
@@ -700,6 +705,7 @@ namespace Bq.Messaging.Tests
             await store.Initialize();
             var missingCount = 0;
             var missingHandlerCount = 0;
+            var missingHandlerDisposals = 0;
             var otherHandlerCount = 0;
             var config = new EndpointConfiguration(endpointName, uri) { Persistence = store };
             config.SagaNotFound = (sagaType, key, message, context) => { if (key == "missing") Interlocked.Increment(ref missingCount); return Task.CompletedTask; };
@@ -712,8 +718,9 @@ namespace Bq.Messaging.Tests
                     ReferenceEquals(handlerContext, container.Resolve<IPipelineContext>()),
                     "Windsor context interfaces resolve to the same delivery context");
                 return new MissingOrderHandler(handlerContext, container.Resolve<SynchronizedStorageSession>(),
-                    () => Interlocked.Increment(ref missingHandlerCount));
-            }).LifestyleScoped());
+                    () => Interlocked.Increment(ref missingHandlerCount),
+                    () => Interlocked.Increment(ref missingHandlerDisposals));
+            }).LifestyleTransient());
             windsor.Attach(config);
             windsor.HandleSagaNotFound(config);
             config.Handle(() => new Handler<ChangeOrder>((message, context) => { Interlocked.Increment(ref otherHandlerCount); return Task.CompletedTask; }));
@@ -762,6 +769,7 @@ namespace Bq.Messaging.Tests
                         Assert(pending.Count == 1 && pending[0].DueAtUtc == timeoutAt.UtcDateTime, "absolute timeout preserves due time across retry");
                         Assert(await ReadOrder(store, "missing") == null && missingCount == 1, "non-start message invokes not-found callback");
                         Assert(missingHandlerCount == 1, "Windsor resolves the saga-not-found handler inside the message scope");
+                        Assert(missingHandlerDisposals == 1, "Windsor releases the transient handler before endpoint shutdown");
                         Assert(otherHandlerCount == 1, "ordinary handler and saga share message");
                     }
                     // Timeout is stored in SQLite and is still due after endpoint restart.

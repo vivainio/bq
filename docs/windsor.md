@@ -42,3 +42,5 @@ For a saga with a public parameterless constructor, `messaging.RegisterSaga<TSag
 For constructor-injected sagas, pass a `definitionFactory` if you want Bq to read `ConfigureHowToFindSaga` at startup. The factory creates a separate instance using dependencies available at startup. Bq disposes that instance if it implements `IDisposable`. If the constructor needs an active delivery, use the explicit mappings overload.
 
 Scoped components can also inject `IMessageProcessingContext` or `IPipelineContext`. Both resolve to the active handler context and share its transaction and context bag.
+
+Bq releases each resolved handler through Windsor after invocation, including saga-not-found handlers. Windsor applies the component's configured lifestyle.

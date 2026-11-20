@@ -70,13 +70,13 @@ namespace Bq.Extensions.CastleWindsor
         }
 
         IHandleMessages<TMessage> ResolveHandler<TMessage>() =>
-            new ContainerHandler<TMessage>(container.Resolve<IHandleMessages<TMessage>>());
+            new ContainerHandler<TMessage>(container, container.Resolve<IHandleMessages<TMessage>>());
 
         public void HandleSagaNotFound(EndpointConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
             configuration.RegisterSagaNotFoundHandler(_ =>
-                new ContainerSagaNotFoundHandler(container.Resolve<IHandleSagaNotFound>()));
+                new ContainerSagaNotFoundHandler(container, container.Resolve<IHandleSagaNotFound>()));
         }
 
         public void RegisterSaga<TSaga, TData>(EndpointConfiguration configuration)
@@ -97,21 +97,36 @@ namespace Bq.Extensions.CastleWindsor
             configuration.RegisterSaga<TSaga, TData>(() => container.Resolve<TSaga>(), configure, saga => container.Release(saga));
         }
 
-        sealed class ContainerSagaNotFoundHandler : IHandleSagaNotFound
+        sealed class ContainerSagaNotFoundHandler : IHandleSagaNotFound, IDisposable
         {
             readonly IHandleSagaNotFound handler;
 
-            public ContainerSagaNotFoundHandler(IHandleSagaNotFound handler) { this.handler = handler; }
+            readonly IWindsorContainer container;
+
+            public ContainerSagaNotFoundHandler(IWindsorContainer container, IHandleSagaNotFound handler)
+            {
+                this.container = container;
+                this.handler = handler;
+            }
+
+            public void Dispose() => container.Release(handler);
 
             public Task Handle(object message, IMessageProcessingContext context) => handler.Handle(message, context);
         }
 
-        // Windsor releases the resolved handler with its scope.
-        sealed class ContainerHandler<TMessage> : IHandleMessages<TMessage>
+        sealed class ContainerHandler<TMessage> : IHandleMessages<TMessage>, IDisposable
         {
             readonly IHandleMessages<TMessage> handler;
 
-            public ContainerHandler(IHandleMessages<TMessage> handler) { this.handler = handler; }
+            readonly IWindsorContainer container;
+
+            public ContainerHandler(IWindsorContainer container, IHandleMessages<TMessage> handler)
+            {
+                this.container = container;
+                this.handler = handler;
+            }
+
+            public void Dispose() => container.Release(handler);
 
             public Task Handle(TMessage message, IMessageHandlerContext context) => handler.Handle(message, context);
         }
