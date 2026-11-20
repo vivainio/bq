@@ -681,7 +681,8 @@ namespace Bq.Messaging.Tests
             var otherHandlerCount = 0;
             var config = new EndpointConfiguration(endpointName, uri) { Persistence = store };
             config.SagaNotFound = (sagaType, key, message, context) => { if (key == "missing") Interlocked.Increment(ref missingCount); return Task.CompletedTask; };
-            config.RegisterSagaNotFoundHandler(missingHandler);
+            config.RegisterSagaNotFoundHandler(context => context.PersistenceSession != null
+                ? missingHandler : throw new InvalidOperationException("Expected an active handler transaction."));
             config.Handle(() => new Handler<ChangeOrder>((message, context) => { Interlocked.Increment(ref otherHandlerCount); return Task.CompletedTask; }));
             config.Incoming.Use((incoming, next) =>
             {

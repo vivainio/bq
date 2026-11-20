@@ -172,7 +172,21 @@ namespace Bq.Messaging
         public static void RegisterSagaNotFoundHandler(this EndpointConfiguration endpoint, IHandleSagaNotFound handler)
         {
             if (endpoint == null) throw new ArgumentNullException(nameof(endpoint));
-            endpoint.SagaNotFoundHandlers.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+            if (handler == null) throw new ArgumentNullException(nameof(handler));
+            endpoint.SagaNotFoundHandlers.Add(handler.Handle);
+        }
+
+        public static void RegisterSagaNotFoundHandler(this EndpointConfiguration endpoint,
+            Func<IMessageHandlerContext, IHandleSagaNotFound> factory)
+        {
+            if (endpoint == null) throw new ArgumentNullException(nameof(endpoint));
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
+            endpoint.SagaNotFoundHandlers.Add(async (message, context) =>
+            {
+                var handler = factory(context) ?? throw new InvalidOperationException("Saga-not-found handler factory returned null.");
+                try { await handler.Handle(message, context).ConfigureAwait(false); }
+                finally { (handler as IDisposable)?.Dispose(); }
+            });
         }
 
         public static void RegisterSaga<TSaga, TData>(this EndpointConfiguration endpoint)
@@ -266,7 +280,7 @@ namespace Bq.Messaging
                     if (configuration.SagaNotFound != null)
                         await configuration.SagaNotFound(typeof(TSaga), key, incomingMessage, context).ConfigureAwait(false);
                     foreach (var handler in configuration.SagaNotFoundHandlers)
-                        await handler.Handle(incomingMessage, context).ConfigureAwait(false);
+                        await handler(incomingMessage, context).ConfigureAwait(false);
                 }
                 return;
             }

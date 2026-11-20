@@ -154,7 +154,8 @@ namespace Bq.Messaging
         public IPersistenceProvider Persistence { get; set; }
         // Called for non-starting messages that do not match an active saga.
         public Func<Type, string, object, IMessageHandlerContext, Task> SagaNotFound { get; set; }
-        internal List<IHandleSagaNotFound> SagaNotFoundHandlers { get; } = new List<IHandleSagaNotFound>();
+        internal List<Func<object, IMessageHandlerContext, Task>> SagaNotFoundHandlers { get; } =
+            new List<Func<object, IMessageHandlerContext, Task>>();
         readonly ConventionsBuilder conventions = new ConventionsBuilder();
 
         public ConventionsBuilder Conventions() => conventions;
