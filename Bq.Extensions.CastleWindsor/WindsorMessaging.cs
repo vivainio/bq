@@ -47,6 +47,22 @@ namespace Bq.Extensions.CastleWindsor
             configuration.Handle<TMessage>(() => new ContainerHandler<TMessage>(container.Resolve<IHandleMessages<TMessage>>()), subscribe);
         }
 
+        public void HandleSagaNotFound(EndpointConfiguration configuration)
+        {
+            if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            configuration.RegisterSagaNotFoundHandler(_ =>
+                new ContainerSagaNotFoundHandler(container.Resolve<IHandleSagaNotFound>()));
+        }
+
+        sealed class ContainerSagaNotFoundHandler : IHandleSagaNotFound
+        {
+            readonly IHandleSagaNotFound handler;
+
+            public ContainerSagaNotFoundHandler(IHandleSagaNotFound handler) { this.handler = handler; }
+
+            public Task Handle(object message, IMessageProcessingContext context) => handler.Handle(message, context);
+        }
+
         // Windsor releases the resolved handler with its scope.
         sealed class ContainerHandler<TMessage> : IHandleMessages<TMessage>
         {

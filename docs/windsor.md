@@ -28,3 +28,5 @@ messaging.Handle<PlaceOrder>(configuration);
 ```
 
 Attach the integration before any other incoming behaviors that resolve scoped services. Keep the root container alive until the endpoint stops.
+
+For saga-not-found handling, register an `IHandleSagaNotFound` component with a scoped lifestyle and call `messaging.HandleSagaNotFound(configuration)`. Windsor resolves the handler inside the message scope, so it can use the same scoped services and transaction as an ordinary handler.
