@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -81,6 +82,29 @@ namespace Bq.Messaging.Tests
                     await Task.Delay(1200);
                     Assert(received == 1, "failed handler did not dispatch its local message");
                     Assert(encryption.Decrypted >= 3, "direct and transactional messages pass through body decryption");
+                    using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    using (var channel = connection.CreateModel())
+                    {
+                        var invalidBody = new byte[] { 0xff, 0x00, 0x7e };
+                        var properties = channel.CreateBasicProperties();
+                        properties.MessageId = "invalid-encrypted-body";
+                        properties.Type = typeof(UniformStart).FullName;
+                        properties.ContentType = "application/x-msgpack";
+                        channel.BasicPublish("", name, properties, invalidBody);
+                        BasicGetResult error = null;
+                        for (var i = 0; i < 120; i++)
+                        {
+                            error = channel.BasicGet(name + ".error", true);
+                            if (error?.BasicProperties.MessageId == properties.MessageId) break;
+                            await Task.Delay(100);
+                        }
+                        Assert(error?.BasicProperties.MessageId == properties.MessageId &&
+                            error.Body.ToArray().SequenceEqual(invalidBody), "decryption failure preserves the original broker body");
+                        var failure = (await endpoint.ListErrors()).Single(record => record.MessageId == properties.MessageId);
+                        Assert(failure.ExceptionMessage == "Message body decryption failed." &&
+                            !failure.ExceptionDetail.Contains("sensitive provider diagnostic"),
+                            "body decryption diagnostics are sanitized before recovery");
+                    }
                     await endpoint.StopAsync();
                     rejected = false;
                     try { await cachedFromOutside.SendLocal(new UniformStart()); }
@@ -106,6 +130,7 @@ namespace Bq.Messaging.Tests
 
             public byte[] Decrypt(byte[] body)
             {
+                if (body.Length > 0 && body[0] == 0xff) throw new FormatException("sensitive provider diagnostic");
                 var decoded = Convert.FromBase64String(System.Text.Encoding.ASCII.GetString(body));
                 Interlocked.Increment(ref decrypted);
                 return decoded;
