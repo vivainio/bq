@@ -37,10 +37,15 @@ namespace Bq.Messaging
 
         public void SetHeader(string name, object value)
         {
-            if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Header name is required.", nameof(name));
-            if (name.StartsWith("x-bq-", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("The x-bq- header prefix is reserved.", nameof(name));
+            ValidateHeaderName(name, nameof(name));
             Headers[name] = value;
+        }
+
+        internal static void ValidateHeaderName(string name, string parameter)
+        {
+            if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Header name is required.", parameter);
+            if (name.StartsWith("x-bq-", StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("The x-bq- header prefix is reserved.", parameter);
         }
 
         internal IUniformSession Apply(IUniformSession session)

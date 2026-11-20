@@ -398,6 +398,8 @@ namespace Bq.Messaging.Tests
             await receiverStore.Initialize();
             var sender = new EndpointConfiguration(senderName, uri) { Persistence = senderStore, EventsExchange = pilotExchange };
             sender.SendOnly();
+            sender.AddHeaderToAllOutgoingMessages("migration-group", "default");
+            sender.AddHeaderToAllOutgoingMessages("migration-source", "pilot-producer");
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
             receiver.Pipeline.Register("first-observer", typeof(UnexpectedPilotBehavior), "Replace before startup");
             receiver.Pipeline.Register("removed-observer", new UnexpectedPilotBehavior(), "Remove before startup");
@@ -417,6 +419,7 @@ namespace Bq.Messaging.Tests
                 Assert(context.MessageHeaders["migration-group"] == "observed" &&
                     System.Text.Encoding.UTF8.GetString((byte[])context.Headers["migration-group"]) == "first",
                     "logical header edits reach the handler while raw AMQP headers retain the received value");
+                Assert(context.GetHeader("migration-source") == "pilot-producer", "endpoint headers reach published events");
                 Assert(message.Count == 7, "interface event properties round-trip through MessagePack");
                 Assert(context.Extensions.Get<int>("pilot-behaviors") == 2, "registered logical behaviors see the declared interface contract");
                 received.TrySetResult(message.Text);
@@ -428,6 +431,7 @@ namespace Bq.Messaging.Tests
             if (sender.Conventions().Conventions.IsCommandType(typeof(Command))) sender.Route(typeof(Command), receiverName);
             receiver.Handle(() => new Handler<Command>((message, context) =>
             {
+                Assert(context.GetHeader("migration-group") == "default", "endpoint headers reach sends without an override");
                 commandReceived.TrySetResult(message.Text);
                 return Task.CompletedTask;
             }));

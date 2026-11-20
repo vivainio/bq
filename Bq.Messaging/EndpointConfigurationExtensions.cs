@@ -6,6 +6,14 @@ namespace Bq.Messaging
 {
     public static class EndpointConfigurationExtensions
     {
+        public static void AddHeaderToAllOutgoingMessages(this EndpointConfiguration config, string key, string value)
+        {
+            if (config == null) throw new ArgumentNullException(nameof(config));
+            if (value == null) throw new ArgumentNullException(nameof(value));
+            MessageOptions.ValidateHeaderName(key, nameof(key));
+            config.OutgoingHeaders[key] = value;
+        }
+
         public static void PurgeOnStartup(this EndpointConfiguration config, bool value)
         {
             if (config == null) throw new ArgumentNullException(nameof(config));

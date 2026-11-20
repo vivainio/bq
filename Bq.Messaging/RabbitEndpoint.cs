@@ -404,7 +404,9 @@ namespace Bq.Messaging
             IDictionary<string, object> headers = null, bool deferred = false)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
-            var copiedHeaders = headers == null ? new Dictionary<string, object>() : new Dictionary<string, object>(headers);
+            var copiedHeaders = new Dictionary<string, object>(configuration.OutgoingHeaders);
+            if (headers != null)
+                foreach (var header in headers) copiedHeaders[header.Key] = header.Value;
             copiedHeaders.TryGetValue(MessageOptions.WireIdHeader, out var customId);
             copiedHeaders.TryGetValue(MessageOptions.ReplyAddressHeader, out var replyAddress);
             copiedHeaders.Remove(MessageOptions.WireIdHeader);
