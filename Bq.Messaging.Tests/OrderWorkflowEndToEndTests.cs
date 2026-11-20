@@ -27,7 +27,8 @@ namespace Bq.Messaging.Tests
     {
         protected override void ConfigureHowToFindSaga(SagaPropertyMapper<FulfillmentState> mapper)
         {
-            mapper.MapSaga(data => data.OrderId).ToMessageHeader<BeginFulfillment>("order-id");
+            IToSagaExpression<FulfillmentState> header = mapper.ConfigureHeaderMapping<BeginFulfillment>("order-id");
+            header.ToSaga(data => data.OrderId);
             mapper.ConfigureMapping<FulfillmentRecorded>(message => message.OrderId).ToSaga(data => data.OrderId);
         }
 

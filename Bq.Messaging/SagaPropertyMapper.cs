@@ -6,6 +6,11 @@ using System.Reflection;
 
 namespace Bq.Messaging
 {
+    public interface IToSagaExpression<TData> where TData : class
+    {
+        void ToSaga(Expression<Func<TData, object>> sagaEntityProperty);
+    }
+
     public sealed class SagaPropertyMapper<TData> where TData : class, new()
     {
         interface IMapping
@@ -127,7 +132,7 @@ namespace Bq.Messaging
             }
         }
 
-        public sealed class HeaderMapping<TMessage> where TMessage : class
+        public sealed class HeaderMapping<TMessage> : IToSagaExpression<TData> where TMessage : class
         {
             readonly SagaPropertyMapper<TData> owner;
             readonly string headerName;
@@ -142,7 +147,7 @@ namespace Bq.Messaging
             public void ToSaga(Expression<Func<TData, object>> data) => owner.AddHeader<TMessage>(data, headerName);
         }
 
-        public sealed class MessageMapping<TMessage> where TMessage : class
+        public sealed class MessageMapping<TMessage> : IToSagaExpression<TData> where TMessage : class
         {
             readonly Expression<Func<TMessage, object>> message;
             readonly Action<Expression<Func<TData, object>>, Expression<Func<TMessage, object>>> add;
