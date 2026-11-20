@@ -16,6 +16,7 @@ namespace Bq.Messaging
     {
         readonly string localAddress;
         readonly MessagePropertyEncryption propertyEncryption;
+        readonly IMessageBodyEncryptionService bodyEncryption;
         readonly bool durableMessages;
         readonly Func<Type, TimeSpan> timeToBeReceived;
         readonly string forwardReceivedMessagesAddress;
@@ -63,6 +64,7 @@ namespace Bq.Messaging
         {
             this.configuration = configuration;
             propertyEncryption = configuration.PropertyEncryption;
+            bodyEncryption = configuration.BodyEncryption;
             durableMessages = configuration.DurableMessages;
             timeToBeReceived = configuration.Conventions().Conventions.TimeToBeReceivedRule ?? AttributeLifetime;
             localAddress = configuration.LocalAddress ?? configuration.Name;
@@ -512,6 +514,7 @@ namespace Bq.Messaging
             if (customId != null) transport.Headers[MessageOptions.WireIdHeader] = customId;
             if (string.IsNullOrWhiteSpace(transport.TypeName) || transport.Body == null)
                 throw new InvalidOperationException("An outgoing transport message requires a type name and body.");
+            if (bodyEncryption != null) transport.Body = EncryptBody(transport.Body);
             foreach (var header in copiedHeaders.Keys)
                 if (string.IsNullOrWhiteSpace(header)) throw new ArgumentException("Message header names cannot be empty.", nameof(headers));
             RecoveryWire.EncodeHeaders(copiedHeaders); // Validate the AMQP field types before storing or publishing.
@@ -695,6 +698,18 @@ namespace Bq.Messaging
                 if (shutdownRequested && activeDeliveries == 0) drained.TrySetResult(true);
             }
         }
+        byte[] EncryptBody(byte[] body)
+        {
+            try { return bodyEncryption.Encrypt(body) ?? throw new InvalidOperationException(); }
+            catch (Exception) { throw new InvalidOperationException("Message body encryption failed."); }
+        }
+
+        byte[] DecryptBody(ReadOnlyMemory<byte> body)
+        {
+            try { return bodyEncryption.Decrypt(body.ToArray()) ?? throw new InvalidOperationException(); }
+            catch (Exception) { throw new InvalidOperationException("Message body decryption failed."); }
+        }
+
         object DeserializeMessage(Type contract, ReadOnlyMemory<byte> body)
         {
             var message = MessagePackSerializer.Deserialize(InterfaceMessage.SerializationType(contract), body, SerializerOptions);
@@ -719,6 +734,11 @@ namespace Bq.Messaging
                 var typeName = props.Type;
                 var body = delivery.Body;
                 var headers = props.Headers;
+                if (bodyEncryption != null)
+                {
+                    try { body = DecryptBody(body); }
+                    catch { unrecoverable = true; throw; }
+                }
                 if (mutateIncoming != null || incomingTransportMutators.Length != 0)
                 {
                     // Mutators work on a separate copy so recovery can replay the original wire bytes.

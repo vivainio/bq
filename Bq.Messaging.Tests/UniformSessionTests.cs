@@ -26,6 +26,8 @@ namespace Bq.Messaging.Tests
             await store.Initialize();
             var config = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
             config.Route<UniformWork>(name);
+            var encryption = new TestBodyEncryption();
+            config.EnableMessageEncryption(encryption);
             config.Recoverability.DelayedRetries = new TimeSpan[0];
             var processed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var errorAttempted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -78,6 +80,7 @@ namespace Bq.Messaging.Tests
                     Assert((await endpoint.ListErrors()).Count == 1, "failed handler recorded");
                     await Task.Delay(1200);
                     Assert(received == 1, "failed handler did not dispatch its local message");
+                    Assert(encryption.Decrypted >= 3, "direct and transactional messages pass through body decryption");
                     await endpoint.StopAsync();
                     rejected = false;
                     try { await cachedFromOutside.SendLocal(new UniformStart()); }
@@ -91,6 +94,21 @@ namespace Bq.Messaging.Tests
                 if (File.Exists(path)) File.Delete(path);
                 using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                 using (var channel = connection.CreateModel()) { channel.QueueDelete(name); channel.QueueDelete(name + ".error"); }
+            }
+        }
+
+        sealed class TestBodyEncryption : IMessageBodyEncryptionService
+        {
+            int decrypted;
+            public int Decrypted => Volatile.Read(ref decrypted);
+
+            public byte[] Encrypt(byte[] body) => System.Text.Encoding.ASCII.GetBytes(Convert.ToBase64String(body));
+
+            public byte[] Decrypt(byte[] body)
+            {
+                var decoded = Convert.FromBase64String(System.Text.Encoding.ASCII.GetString(body));
+                Interlocked.Increment(ref decrypted);
+                return decoded;
             }
         }
     }
