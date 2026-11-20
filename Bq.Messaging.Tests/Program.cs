@@ -35,11 +35,13 @@ namespace Bq.Messaging.Tests
     sealed class MissingOrderHandler : IHandleSagaNotFound
     {
         readonly IMessageHandlerContext scopedContext;
+        readonly SynchronizedStorageSession storage;
         readonly Action onMissing;
 
-        public MissingOrderHandler(IMessageHandlerContext scopedContext, Action onMissing)
+        public MissingOrderHandler(IMessageHandlerContext scopedContext, SynchronizedStorageSession storage, Action onMissing)
         {
             this.scopedContext = scopedContext;
+            this.storage = storage;
             this.onMissing = onMissing;
         }
 
@@ -47,6 +49,9 @@ namespace Bq.Messaging.Tests
         {
             if (!ReferenceEquals(context, scopedContext) || scopedContext.PersistenceSession == null)
                 throw new InvalidOperationException("The Windsor component must use the active message transaction.");
+            if (!ReferenceEquals(storage.Transaction, scopedContext.PersistenceSession.Transaction) ||
+                !ReferenceEquals(storage.Connection, scopedContext.PersistenceSession.Connection))
+                throw new InvalidOperationException("The injected storage session must share the active database transaction.");
             if (message is ChangeOrder change && change.OrderId == "missing" && context.MessageId != null) onMissing();
             return Task.CompletedTask;
         }
@@ -697,6 +702,7 @@ namespace Bq.Messaging.Tests
             var windsor = new WindsorMessaging(container);
             container.Register(Component.For<IHandleSagaNotFound>().UsingFactoryMethod(() =>
                 new MissingOrderHandler(container.Resolve<IMessageHandlerContext>(),
+                    container.Resolve<SynchronizedStorageSession>(),
                     () => Interlocked.Increment(ref missingHandlerCount))).LifestyleScoped());
             windsor.Attach(config);
             windsor.HandleSagaNotFound(config);

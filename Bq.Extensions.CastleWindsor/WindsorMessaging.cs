@@ -1,4 +1,5 @@
 using System;
+using System.Data.Common;
 using System.Threading;
 using System.Threading.Tasks;
 using Bq.Messaging;
@@ -18,9 +19,23 @@ namespace Bq.Extensions.CastleWindsor
             this.container = container ?? throw new ArgumentNullException(nameof(container));
             container.Register(
                 Component.For<IMessageHandlerContext>().UsingFactoryMethod(() => Current).LifestyleScoped(),
+                Component.For<SynchronizedStorageSession>().UsingFactoryMethod(() =>
+                    new StorageSessionView(Current.SynchronizedStorageSession ??
+                        throw new InvalidOperationException("No active synchronized storage session.")))
+                    .LifestyleScoped(),
                 Component.For<IUniformSession>().UsingFactoryMethod(() =>
                     active.Value?.UniformSession ?? (outsideSession != null
                         ? outsideSession() : throw new InvalidOperationException("No active message scope."))).LifestyleScoped());
+        }
+
+        // The endpoint owns the persistence session and commits after the Windsor scope closes.
+        sealed class StorageSessionView : SynchronizedStorageSession
+        {
+            readonly SynchronizedStorageSession session;
+
+            public StorageSessionView(SynchronizedStorageSession session) { this.session = session; }
+            public DbConnection Connection => session.Connection;
+            public DbTransaction Transaction => session.Transaction;
         }
 
         public IMessageHandlerContext Current => active.Value ?? throw new InvalidOperationException("No active message scope.");

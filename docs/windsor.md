@@ -32,3 +32,5 @@ Attach the integration before any other incoming behaviors that resolve scoped s
 For saga-not-found handling, register an `IHandleSagaNotFound` component with a scoped lifestyle and call `messaging.HandleSagaNotFound(configuration)`. Windsor resolves the handler inside the message scope, so it can use the same scoped services and transaction as an ordinary handler.
 
 `Handle<T>(configuration)` uses the endpoint's event subscription conventions. Pass `subscribe: true` or `subscribe: false` to choose explicitly.
+
+Inject `SynchronizedStorageSession` into a scoped Windsor component to use the active delivery's ADO.NET connection and transaction. Bq owns the transaction and commits after the Windsor scope closes.
