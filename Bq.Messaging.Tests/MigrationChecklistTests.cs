@@ -462,7 +462,13 @@ namespace Bq.Messaging.Tests
                     Assert(context.Extensions.Get<int>("pilot-behaviors") == 1, "replacement retains its pipeline position");
                 return next();
             });
-            receiver.Pipeline.Register("second-observer", new ObservePilotEvent(), "Verify registration by instance");
+            container.Register(Component.For<ObservePilotEvent>().UsingFactoryMethod(() =>
+            {
+                Assert(container.Resolve<IMessageHandlerContext>().PersistenceSession != null,
+                    "Windsor resolves logical behaviors inside the delivery transaction");
+                return new ObservePilotEvent();
+            }).LifestyleScoped());
+            windsor.RegisterBehavior<ObservePilotEvent>(receiver, "second-observer", "Resolve the observer through Windsor");
             receiver.Pipeline.Replace("first-observer", typeof(ObservePilotEvent), "Inspect the declared event contract");
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -44,3 +44,5 @@ For constructor-injected sagas, pass a `definitionFactory` if you want Bq to rea
 Scoped components can also inject `IMessageProcessingContext` or `IPipelineContext`. Both resolve to the active handler context and share its transaction and context bag.
 
 Bq releases each resolved handler through Windsor after invocation, including saga-not-found handlers. Windsor applies the component's configured lifestyle.
+
+Register an incoming logical behavior as a Windsor component, then call `messaging.RegisterBehavior<TBehavior>(configuration, stepId, description)` after `Attach`. Windsor resolves the behavior when its pipeline step runs and applies the component's lifestyle.

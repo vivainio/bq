@@ -72,6 +72,28 @@ namespace Bq.Extensions.CastleWindsor
         IHandleMessages<TMessage> ResolveHandler<TMessage>() =>
             new ContainerHandler<TMessage>(container, container.Resolve<IHandleMessages<TMessage>>());
 
+        public void RegisterBehavior<TBehavior>(EndpointConfiguration configuration, string stepId, string description)
+            where TBehavior : IBehavior<IIncomingLogicalMessageContext, IIncomingLogicalMessageContext>
+        {
+            if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            configuration.Pipeline.Register(stepId, new ContainerBehavior<TBehavior>(container), description);
+        }
+
+        sealed class ContainerBehavior<TBehavior> : IBehavior<IIncomingLogicalMessageContext, IIncomingLogicalMessageContext>
+            where TBehavior : IBehavior<IIncomingLogicalMessageContext, IIncomingLogicalMessageContext>
+        {
+            readonly IWindsorContainer container;
+
+            public ContainerBehavior(IWindsorContainer container) { this.container = container; }
+
+            public async Task Invoke(IIncomingLogicalMessageContext context, Func<IIncomingLogicalMessageContext, Task> next)
+            {
+                var behavior = container.Resolve<TBehavior>();
+                try { await behavior.Invoke(context, next).ConfigureAwait(false); }
+                finally { container.Release(behavior); }
+            }
+        }
+
         public void HandleSagaNotFound(EndpointConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
