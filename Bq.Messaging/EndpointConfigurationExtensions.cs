@@ -6,6 +6,12 @@ namespace Bq.Messaging
 {
     public static class EndpointConfigurationExtensions
     {
+        public static void OverrideLocalAddress(this EndpointConfiguration config, string baseInputQueueName)
+        {
+            if (config == null) throw new ArgumentNullException(nameof(config));
+            config.LocalAddress = MessageOptions.ValidateAddressField(baseInputQueueName, nameof(baseInputQueueName));
+        }
+
         public static AutoSubscribeSettings AutoSubscribe(this EndpointConfiguration config) =>
             (config ?? throw new ArgumentNullException(nameof(config))).AutoSubscriptionSettings;
 

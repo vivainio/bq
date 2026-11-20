@@ -130,6 +130,7 @@ namespace Bq.Messaging
         public Func<string, Exception, Task> OnCriticalError { get; set; }
         internal Func<ICriticalErrorContext, Task> CriticalErrorAction { get; set; }
         internal string PublicReturnAddress { get; set; }
+        internal string LocalAddress { get; set; }
         internal bool PurgeInputQueueOnStartup { get; set; }
         internal bool UsePreProvisionedTopology { get; set; }
         internal AutoSubscribeSettings AutoSubscriptionSettings { get; } = new AutoSubscribeSettings();

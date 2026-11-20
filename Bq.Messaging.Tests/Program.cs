@@ -723,12 +723,14 @@ namespace Bq.Messaging.Tests
         {
             var suffix = Guid.NewGuid().ToString("N");
             var name = "bq.test.recover." + suffix;
+            var localAddress = name + ".input";
             var errorName = name + ".custom-error";
             var path = Path.Combine(Path.GetTempPath(), "bq-recover-" + suffix + ".db");
             var store = new SqlitePersistence(() => Sqlite(path), name);
             await store.Initialize();
             var faultStore = new FaultPersistence(store);
             var config = new EndpointConfiguration(name, uri) { Persistence = faultStore };
+            config.OverrideLocalAddress(localAddress);
             var criticalError = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             config.CriticalErrorThreshold = TimeSpan.FromSeconds(1);
             config.OnCriticalError = (source, error) =>
@@ -863,14 +865,14 @@ namespace Bq.Messaging.Tests
                     props.CorrelationId = "correlation"; props.Headers = new System.Collections.Generic.Dictionary<string, object> { ["custom"] = "hello" };
                     using (var endpoint = RabbitEndpoint.Start(config))
                     {
-                        channel.BasicPublish("", name, props, body);
+                        channel.BasicPublish("", localAddress, props, body);
                         await WaitFor(async () => { using (var c = Sqlite(path)) { await c.OpenAsync(); using (var cmd = c.CreateCommand()) { cmd.CommandText = "SELECT COUNT(*) FROM bq_recovery WHERE cycle=0"; return Convert.ToInt32(await cmd.ExecuteScalarAsync()) == 1; } } }, "retry persisted");
                         var notification = await Within(delayedNotification.Task);
                         Assert(notification.MessageId == props.MessageId && notification.RetryAttempt == 1 &&
                             notification.Headers["custom"] == "hello" && notification.Body.SequenceEqual(body),
                             "delayed retry notification identifies the failed delivery");
                         // Duplicate the same delivery after the decision has committed. It must not run again.
-                        channel.BasicPublish("", name, props, body);
+                        channel.BasicPublish("", localAddress, props, body);
                         await Task.Delay(400);
                         Assert(attempts == 1 && policyCalls == 1 && delayedNotifications == 1,
                             "duplicate original skipped after retry decision");
@@ -883,7 +885,7 @@ namespace Bq.Messaging.Tests
                         // Replay the successful retry cycle. Only the inbox can suppress this
                         // delivery, because this cycle did not create a recovery decision.
                         props.Headers["x-bq-retry-cycle"] = 1;
-                        channel.BasicPublish("", name, props, body);
+                        channel.BasicPublish("", localAddress, props, body);
                         var fatalProps = channel.CreateBasicProperties();
                         fatalProps.MessageId = "fatal-" + suffix; fatalProps.Type = typeof(RecoverCommand).FullName; fatalProps.ContentType = "application/x-msgpack";
                         var protectedBody = MessagePackSerializer.Serialize(new RecoverCommand { Text = "fatal" }, options);
@@ -893,7 +895,7 @@ namespace Bq.Messaging.Tests
                             ["protected"] = true,
                             ["remove-on-error"] = "original"
                         };
-                        channel.BasicPublish("", name, fatalProps, protectedBody);
+                        channel.BasicPublish("", localAddress, fatalProps, protectedBody);
                         await WaitFor(async () => (await endpoint.ListErrors()).Count == 1, "error recorded");
                         var errors = await endpoint.ListErrors();
                         Assert(errors[0].MessageId == fatalProps.MessageId && errors[0].ExceptionType.Contains("FatalFailureException"), "error metadata");
@@ -921,14 +923,14 @@ namespace Bq.Messaging.Tests
                         Assert(seenId != fatalProps.MessageId, "replay has fresh message ID");
                         faultStore.FailNextStore = 1;
                         var handoff = channel.CreateBasicProperties(); handoff.MessageId = "handoff-" + suffix; handoff.Type = typeof(RecoverCommand).FullName; handoff.ContentType = "application/x-msgpack";
-                        channel.BasicPublish("", name, handoff, MessagePackSerializer.Serialize(new RecoverCommand { Text = "handoff" }, options));
+                        channel.BasicPublish("", localAddress, handoff, MessagePackSerializer.Serialize(new RecoverCommand { Text = "handoff" }, options));
                         await WaitFor(() => Task.FromResult(Volatile.Read(ref successes) == 3), "failed recovery handoff requeued");
                         Assert(handoffAttempts == 2, "storage failure did not acknowledge delivery");
                         // An unavailable error queue must leave the database handoff pending.
                         replayAllowed = false;
                         channel.QueueDelete(errorName);
                         var missingError = channel.CreateBasicProperties(); missingError.MessageId = "missing-error-" + suffix; missingError.Type = typeof(RecoverCommand).FullName; missingError.ContentType = "application/x-msgpack";
-                        channel.BasicPublish("", name, missingError, MessagePackSerializer.Serialize(new RecoverCommand { Text = "fatal" }, options));
+                        channel.BasicPublish("", localAddress, missingError, MessagePackSerializer.Serialize(new RecoverCommand { Text = "fatal" }, options));
                         await WaitFor(async () => (await endpoint.ListErrors()).Count == 1, "error retained while destination unavailable");
                         await Task.Delay(1500);
                         Assert(await store.NextRecovery(name) != null, "unroutable error remains pending");
@@ -943,7 +945,7 @@ namespace Bq.Messaging.Tests
                         await WaitFor(async () => (await endpoint.ListErrors()).Single().Dispatched,
                             "provider records dispatch after the broker accepts the recovery message");
                         var exhausted = channel.CreateBasicProperties(); exhausted.MessageId = "exhaust-" + suffix; exhausted.Type = typeof(RecoverCommand).FullName; exhausted.ContentType = "application/x-msgpack";
-                        channel.BasicPublish("", name, exhausted, MessagePackSerializer.Serialize(new RecoverCommand { Text = "exhaust" }, options));
+                        channel.BasicPublish("", localAddress, exhausted, MessagePackSerializer.Serialize(new RecoverCommand { Text = "exhaust" }, options));
                         await WaitFor(async () => (await endpoint.ListErrors()).Count == 2, "delayed retries exhaust even when the classifier throws");
                         Assert(exhaustedAttempts == 2, "one immediate cycle plus one delayed cycle");
                     }
@@ -954,7 +956,7 @@ namespace Bq.Messaging.Tests
             {
                 if (File.Exists(path)) File.Delete(path);
                 using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
-                using (var channel = connection.CreateModel()) { channel.QueueDelete(name); channel.QueueDelete(errorName); }
+                using (var channel = connection.CreateModel()) { channel.QueueDelete(localAddress); channel.QueueDelete(errorName); }
             }
         }
         static async Task BrokerOutageTest(Uri uri, string directory)

@@ -14,6 +14,7 @@ namespace Bq.Messaging
 {
     public sealed class RabbitEndpoint : IEndpointInstance
     {
+        readonly string localAddress;
         readonly string eventsExchange;
         readonly string errorExchange;
         const string ContentType = "application/x-msgpack";
@@ -51,6 +52,7 @@ namespace Bq.Messaging
         RabbitEndpoint(EndpointConfiguration configuration)
         {
             this.configuration = configuration;
+            localAddress = configuration.LocalAddress ?? configuration.Name;
             mutateIncoming = configuration.MutateIncoming;
             mutateOutgoing = configuration.MutateOutgoing;
             incoming = configuration.Incoming.Build();
@@ -97,20 +99,20 @@ namespace Bq.Messaging
                     {
                         consumerChannel.ExchangeDeclarePassive(errorExchange);
                         consumerChannel.QueueDeclarePassive(errorQueue);
-                        consumerChannel.QueueDeclarePassive(configuration.Name);
+                        consumerChannel.QueueDeclarePassive(localAddress);
                     }
                     else
                     {
                         consumerChannel.ExchangeDeclare(errorExchange, ExchangeType.Direct, true);
                         consumerChannel.QueueDeclare(errorQueue, true, false, false);
-                        consumerChannel.QueueBind(errorQueue, errorExchange, configuration.Name);
-                        consumerChannel.QueueDeclare(configuration.Name, true, false, false, new Dictionary<string, object>(configuration.InputQueueArguments)
+                        consumerChannel.QueueBind(errorQueue, errorExchange, localAddress);
+                        consumerChannel.QueueDeclare(localAddress, true, false, false, new Dictionary<string, object>(configuration.InputQueueArguments)
                         {
                             ["x-dead-letter-exchange"] = errorExchange,
-                            ["x-dead-letter-routing-key"] = configuration.Name
+                            ["x-dead-letter-routing-key"] = localAddress
                         });
                     }
-                    if (configuration.PurgeInputQueueOnStartup) consumerChannel.QueuePurge(configuration.Name);
+                    if (configuration.PurgeInputQueueOnStartup) consumerChannel.QueuePurge(localAddress);
                     var conventions = configuration.Conventions().Conventions;
                     var autoSubscribe = configuration.AutoSubscriptionSettings;
                     var subscribed = new HashSet<Registration>(receivers.Values.Distinct().Where(registration =>
@@ -121,11 +123,11 @@ namespace Bq.Messaging
                             conventions.IsSubscribedEvent(registration.Type, sagaConvention));
                     }));
                     foreach (var entry in receivers.Where(entry => subscribed.Contains(entry.Value)))
-                        consumerChannel.QueueBind(configuration.Name, eventsExchange, entry.Key);
+                        consumerChannel.QueueBind(localAddress, eventsExchange, entry.Key);
                     consumerChannel.BasicQos(0, configuration.PrefetchCount ?? configuration.MaxConcurrency, false);
                     var consumer = new AsyncEventingBasicConsumer(consumerChannel);
                     consumer.Received += OnReceived;
-                    consumerTag = consumerChannel.BasicConsume(configuration.Name, false, consumer);
+                    consumerTag = consumerChannel.BasicConsume(localAddress, false, consumer);
                 }
                 var callback = configuration.OnCriticalError;
                 var contextCallback = configuration.CriticalErrorAction;
@@ -157,7 +159,7 @@ namespace Bq.Messaging
             if (configuration.Persistence == null || !(configuration.Persistence is IRecoveryPersistence)) throw new InvalidOperationException("Transactional persistence with recovery support is required.");
             if (configuration.Recoverability.DelayedRetries == null || configuration.Recoverability.DelayedRetries.Any(delay => delay < TimeSpan.Zero || delay > TimeSpan.FromDays(24))) throw new ArgumentException("Delayed retry intervals must be between zero and 24 days.");
             if (configuration.Recoverability.ErrorQueue != null && string.IsNullOrWhiteSpace(configuration.Recoverability.ErrorQueue)) throw new ArgumentException("Error queue cannot be empty.");
-            if (configuration.Recoverability.ErrorQueue == configuration.Name) throw new ArgumentException("Error queue must differ from the endpoint queue.");
+            if ((configuration.Recoverability.ErrorQueue ?? configuration.Name + ".error") == (configuration.LocalAddress ?? configuration.Name)) throw new ArgumentException("Error queue must differ from the endpoint queue.");
             if (configuration.DispatchPollInterval < TimeSpan.FromMilliseconds(1) ||
                 configuration.DispatchPollInterval > TimeSpan.FromMilliseconds(int.MaxValue))
                 throw new ArgumentOutOfRangeException(nameof(configuration.DispatchPollInterval));
@@ -283,9 +285,9 @@ namespace Bq.Messaging
             }
             public Task Send<T>(string destination, T message) =>
                 ActivePersistence.StoreOutgoing(endpoint.Prepare(message, "", RequireDestination(destination), null, true, headers));
-            public Task SendLocal<T>(T message) => Send(endpoint.configuration.Name, message);
+            public Task SendLocal<T>(T message) => Send(endpoint.localAddress, message);
             public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor(message), message, dueAt);
-            public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.configuration.Name, message, dueAt);
+            public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.localAddress, message, dueAt);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => SendAt(destination, message, dueAt, headers);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt, IDictionary<string, object> messageHeaders) =>
                 endpoint.StoreScheduled(ActivePersistence, destination, message, dueAt.UtcDateTime, null, messageHeaders);
@@ -298,7 +300,7 @@ namespace Bq.Messaging
             Task IImmediateDispatch.SendImmediately<T>(T message, string destination, bool local)
             {
                 _ = ActivePersistence;
-                return endpoint.SendCore(message, null, local ? endpoint.configuration.Name : destination, headers);
+                return endpoint.SendCore(message, null, local ? endpoint.localAddress : destination, headers);
             }
             Task IImmediateDispatch.PublishImmediately<T>(T message)
             {
@@ -321,7 +323,7 @@ namespace Bq.Messaging
         }
 
         public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(RouteFor(message), message, dueAt);
-        public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(configuration.Name, message, dueAt);
+        public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(localAddress, message, dueAt);
         public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) =>
             ExecuteTransaction(session => session.SendAt(destination, message, dueAt));
 
@@ -368,8 +370,8 @@ namespace Bq.Messaging
                     if (shutdownRequested) throw new InvalidOperationException("Endpoint is stopping or stopped.");
                 foreach (var name in names)
                 {
-                    if (subscribe) consumerChannel.QueueBind(configuration.Name, eventsExchange, name);
-                    else consumerChannel.QueueUnbind(configuration.Name, eventsExchange, name);
+                    if (subscribe) consumerChannel.QueueBind(localAddress, eventsExchange, name);
+                    else consumerChannel.QueueUnbind(localAddress, eventsExchange, name);
                 }
             }
             return Task.CompletedTask;
@@ -392,7 +394,7 @@ namespace Bq.Messaging
             if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("A destination queue is required.", nameof(destination));
             return destination;
         }
-        public Task SendLocal<T>(T message) => SendCore(message, null, configuration.Name);
+        public Task SendLocal<T>(T message) => SendCore(message, null, localAddress);
         public Task Publish<T>(T message) => PublishCore(message, null);
         public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
         internal Task SendCore<T>(T message, string correlationId, string destination, IDictionary<string, object> headers = null)
@@ -446,7 +448,7 @@ namespace Bq.Messaging
             RecoveryWire.EncodeHeaders(copiedHeaders); // Validate the AMQP field types before storing or publishing.
             var id = Guid.NewGuid().ToString("N");
             return new OutgoingMessage { Id = id, CorrelationId = correlationId ?? (string)customId ?? id,
-                ReplyTo = (string)replyAddress ?? configuration.PublicReturnAddress ?? (sendOnly ? null : configuration.Name),
+                ReplyTo = (string)replyAddress ?? configuration.PublicReturnAddress ?? (sendOnly ? null : localAddress),
                 Type = transport.TypeName, Exchange = exchange, RoutingKey = routingKey,
                 Mandatory = mandatory, Headers = copiedHeaders, Body = transport.Body };
         }
@@ -580,7 +582,7 @@ namespace Bq.Messaging
                 RecoveryWire.Apply(envelope, props);
                 props.Persistent = true;
                 returned = false;
-                publisherChannel.BasicPublish("", record.IsError ? record.ErrorQueue : configuration.Name, true, props, envelope.Body);
+                publisherChannel.BasicPublish("", record.IsError ? record.ErrorQueue : localAddress, true, props, envelope.Body);
                 if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
                 if (returned) throw new InvalidOperationException("Recovery message was unroutable.");
             }
@@ -798,7 +800,7 @@ namespace Bq.Messaging
                     proposed = options.CompatiblePolicy(config, context)?.ToBqAction();
                 }
                 else proposed = options.Policy?.Invoke(new RecoveryContext(failure, attempt, cycle, headers));
-                if (proposed?.ErrorQueue == configuration.Name)
+                if (proposed?.ErrorQueue == localAddress)
                     throw new InvalidOperationException("Error queue must differ from the endpoint queue.");
                 if (proposed != null && (allowImmediate || !proposed.IsImmediate)) return proposed;
             }
@@ -942,7 +944,7 @@ namespace Bq.Messaging
             Task IImmediateDispatch.SendImmediately<T>(T message, string destination, bool local)
             {
                 var context = Validate();
-                return endpoint.SendCore(message, context?.CorrelationId, local ? endpoint.configuration.Name : destination, headers);
+                return endpoint.SendCore(message, context?.CorrelationId, local ? endpoint.localAddress : destination, headers);
             }
             Task IImmediateDispatch.PublishImmediately<T>(T message)
             {
@@ -965,7 +967,7 @@ namespace Bq.Messaging
                 var context = Validate();
                 return context == null ? endpoint.SendCore(message, null, RequireDestination(destination), headers) : context.SendWithHeaders(message, RequireDestination(destination), headers);
             }
-            public Task SendLocal<T>(T message) { var context = Validate(); return context == null ? endpoint.SendCore(message, null, endpoint.configuration.Name, headers) : context.SendWithHeaders(message, endpoint.configuration.Name, headers); }
+            public Task SendLocal<T>(T message) { var context = Validate(); return context == null ? endpoint.SendCore(message, null, endpoint.localAddress, headers) : context.SendWithHeaders(message, endpoint.localAddress, headers); }
             public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
             public Task Publish<T>(T message) { var context = Validate(); return context == null ? endpoint.PublishCore(message, null, headers) : context.PublishWithHeaders(message, headers); }
             public Task SendAt<T>(T message, DateTimeOffset dueAt)
@@ -980,7 +982,7 @@ namespace Bq.Messaging
             public Task SendLocalAt<T>(T message, DateTimeOffset dueAt)
             {
                 var context = Validate();
-                return context == null ? endpoint.SendAtWithHeaders(endpoint.configuration.Name, message, dueAt, headers) : context.SendAtWithHeaders(endpoint.configuration.Name, message, dueAt, headers);
+                return context == null ? endpoint.SendAtWithHeaders(endpoint.localAddress, message, dueAt, headers) : context.SendAtWithHeaders(endpoint.localAddress, message, dueAt, headers);
             }
             public Task PublishAt<T>(T message, DateTimeOffset dueAt)
             {
@@ -1039,7 +1041,7 @@ namespace Bq.Messaging
                 return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true, headers));
             }
             public Task Send<T>(string destination, T message) => SendWithHeaders(message, RequireDestination(destination), null);
-            public Task SendLocal<T>(T message) => SendWithHeaders(message, endpoint.configuration.Name, null);
+            public Task SendLocal<T>(T message) => SendWithHeaders(message, endpoint.localAddress, null);
             public Task Publish<T>(T message) => PublishWithHeaders(message, null);
             public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
             internal Task PublishWithHeaders<T>(T message, IDictionary<string, object> headers) =>
@@ -1050,14 +1052,14 @@ namespace Bq.Messaging
             internal Task PublishAtWithHeaders<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
                 endpoint.StoreScheduledEvent(PersistenceSession, message, dueAt.UtcDateTime, CorrelationId, headers);
             public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor(message), message, dueAt);
-            public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.configuration.Name, message, dueAt);
+            public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.localAddress, message, dueAt);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => SendAtWithHeaders(destination, message, dueAt, null);
             public Task PublishAt<T>(T message, DateTimeOffset dueAt) => PublishAtWithHeaders(message, dueAt, null);
 
             internal Task ScheduleSagaTimeout(SagaTimeoutMessage timeout, DateTime dueUtc)
             {
                 if (PersistenceSession == null) throw new InvalidOperationException("Saga timeouts require persistence.");
-                return endpoint.StoreScheduled(PersistenceSession, endpoint.configuration.Name, timeout, dueUtc, CorrelationId);
+                return endpoint.StoreScheduled(PersistenceSession, endpoint.localAddress, timeout, dueUtc, CorrelationId);
             }
             public Task ForwardCurrentMessageTo(string destination)
             {
