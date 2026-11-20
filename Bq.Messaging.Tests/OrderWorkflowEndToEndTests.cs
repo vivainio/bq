@@ -40,7 +40,7 @@ namespace Bq.Messaging.Tests
                 Data.Originator != context.ReplyToAddress || Data.OriginalMessageId != context.MessageId)
                 throw new InvalidOperationException("New saga data must have its correlation and originator metadata.");
             await context.Publish(new FulfillmentStarted { OrderId = Data.OrderId });
-            await RequestTimeout(context, TimeSpan.FromMilliseconds(250), new FulfillmentDeadline { OrderId = Data.OrderId });
+            await RequestTimeout(context, within: TimeSpan.FromMilliseconds(250), timeoutMessage: new FulfillmentDeadline { OrderId = Data.OrderId });
         }
 
         public Task Handle(FulfillmentRecorded message, IMessageHandlerContext context)

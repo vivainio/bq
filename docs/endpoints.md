@@ -2,7 +2,9 @@
 
 Register handlers explicitly before calling `RabbitEndpoint.Start`. Register event handlers with `config.Handle(() => new EventHandler(), subscribe: true)`. The factory creates a handler for each processing attempt. For scoped dependencies, use `config.Handle<PlaceOrder>(context => new Handler(/* construct services using context */))`. Bq does not automatically discover handlers or register an endpoint with a DI container; the host owns those registrations and endpoint lifetime. See the [Castle Windsor reference application](windsor.md) for an end-to-end example.
 
-Configure command destinations with `config.Route<PlaceOrder>("orders")`, then call `await endpoint.Send(command)`; `endpoint.Publish(evt)` broadcasts to registered subscribers. `endpoint.SendLocal(message)` sends to that endpoint's own queue without a route. Use `Send(destination, message)` on an endpoint, handler context, or uniform session to address a queue explicitly and override the configured route. Handlers have `Send`, `SendLocal`, `Publish` and `Reply` on their context. Handler-context operations are recorded in the current transactional outbox; endpoint operations publish directly. Message types use their full .NET type name on the wire by default. To give an ordinary class a stable identity, register it before starting the endpoint:
+Configure command destinations with `config.Route<PlaceOrder>("orders")`, then call `await endpoint.Send(command)`; `endpoint.Publish(evt)` broadcasts to registered subscribers. `endpoint.SendLocal(message)` sends to that endpoint's own queue without a route.
+
+Use `Send(destination, message)` on an endpoint, handler context, or uniform session to address a queue explicitly and override the configured route. Handlers have `Send`, `SendLocal`, `Publish` and `Reply` on their context. Handler-context operations are recorded in the current transactional outbox; endpoint operations publish directly. Message types use their full .NET type name on the wire by default. To give an ordinary class a stable identity, register it before starting the endpoint:
 
 ```csharp
 config.RegisterMessageContract<OrderPlaced>("orders.placed.v1", "Legacy.Messages.OrderPlaced");
@@ -96,3 +98,39 @@ config.ConfigureRabbitMqConnection = factory =>
 ## Change a subscription at runtime
 
 On a receiving endpoint with a registered handler, use `await endpoint.Subscribe<MyEvent>()` and `await endpoint.Unsubscribe<MyEvent>()`. Bq binds or unbinds the endpoint's RabbitMQ queue for the registered event name and receive aliases. Unsubscribing applies to future publications. Messages already in the queue can still reach the handler. A new endpoint instance applies any subscriptions declared in its startup configuration.
+
+## Endpoint startup and queue configuration
+
+`Endpoint.Create` returns an `IStartableEndpoint` whose `Start` returns an `IEndpointInstance`. `Endpoint.Start` starts directly. Bq takes an explicit RabbitMQ URI and persistence provider. `PurgeOnStartup(true)` deletes ready messages from the input queue before the consumer starts, on every start with that setting. It defaults to false.
+
+Use `DoNotCreateQueues()` with pre-provisioned RabbitMQ queues and exchanges. Bq checks that they exist and leaves their arguments intact. Provision the dead-letter topology beforehand.
+
+`OverrideLocalAddress` changes the input queue, local-send destination, and default reply address. Persistence and the default error queue still use the logical endpoint name. Explicit routes to a renamed queue must use its new address. Event subscriptions still manage their bindings.
+
+## Routing and subscriptions
+
+Register routes with `Route<T>` and handlers with `Handle<T>`. Subscribe through handler registration at startup or use `IMessageSession.Subscribe` and `Unsubscribe` at runtime.
+
+Use `AutoSubscribe().DisableFor<T>()` to exclude an event from convention-based startup subscriptions. `AutoSubscribe().DoNotAutoSubscribeSagas()` suppresses convention-based subscriptions from saga registrations. Explicit subscriptions still work. The `IMessageSessionExtensions` class exposes the send, publish, and optionless subscription helpers. The parameterless generic forms also work as `Func<Task>` method groups. Runtime calls update RabbitMQ bindings for the registered contract and its aliases.
+
+Use `Conventions().DefiningEventsAs(...)` for automatic subscriptions on handlers without an explicit subscription setting. Use `Conventions().Add(IMessageConvention)` to add reusable classifications. An event classification from a registered convention can trigger automatic subscription on its own. Command and message conventions classify types for host routing, and assembly scanning stays in the host.
+
+## Outgoing message options
+
+Typed `Send(message, options)` supports destination selection, `RouteToThisEndpoint`, headers, scheduling, and immediate dispatch. Sends, publications, and replies can request immediate dispatch. Shared helpers can set `RequireImmediateDispatch()` and read `RequiredImmediateDispatch()` through `ExtendableOptions`. Immediate sends reach RabbitMQ outside the transaction and can be repeated by a handler retry.
+
+Replies can also select an explicit destination. Use `SetMessageId` to supply the wire ID and `RouteReplyTo` on send or reply options to set the return address. Use `OverridePublicReturnAddress` to set the endpoint default, including on send-only endpoints. A per-message reply route takes precedence. Both forms accept up to 255 UTF-8 bytes.
+
+Use `AddHeaderToAllOutgoingMessages` to set endpoint-wide defaults for new outgoing messages. Per-message headers take precedence. `DisableDurableMessages()` selects transient broker delivery for outgoing publications and sends, including outbox dispatch. `EnableDurableMessages()` restores the default. Outbox storage, queue durability, and recovery delivery are independent of this setting.
+
+Apply `[TimeToBeReceived("00:10:00")]` to a message contract to set its RabbitMQ TTL. For scheduled and outbox messages, the TTL starts at broker publish. Use `Conventions().DefiningTimeToBeReceivedAs(...)` to replace attribute-based lookup. Return `TimeSpan.MaxValue` for contracts with no TTL.
+
+Use `RoutingOptionExtensions` for explicit destination and reply-route helpers and `DelayedDeliveryOptionExtensions` for scheduling helpers. Use `GetDestination`, `GetReplyToRoute`, `IsRoutingToThisEndpoint`, `GetDeliveryDelay`, `GetDeliveryDate`, `GetMessageId`, and `GetHeaders` to inspect explicitly configured options. Shared helpers can set and read message IDs and text headers through `ExtendableOptions`. `GetHeaders` returns a text snapshot. `GetExtensions()` gives caller code a context bag on each send, publish, reply, subscribe, or unsubscribe options instance. The bag is local to that options object. Use `Send(destination, message)` and `SendLocal(message)` on `IMessageSession` or `IPipelineContext`. Both shortcuts also accept message initializers. Use `IPipelineContextExtensions` and `IMessageProcessingContextExtensions` for explicit calls to the pipeline send, publish, and reply helpers. Use `Publish<T>()` on either API to publish a default-initialized event.
+
+The object-based `IMessageSession` overloads resolve the contract from the concrete message type. You can pass typed message initializers directly to `IEndpointInstance.Send` and `Publish` and to handler-context `Send`, `Publish`, and `Reply`, with or without options. Uniform and transactional sessions also accept optionless `Send` and `Publish` initializers. Message-initializer overloads accept classes with a public parameterless constructor and public interfaces with read/write data properties. Interface contracts use their declared type for routing and wire names. Use `IMessageCreator` with Bq's `MessageCreator` to construct a message separately from sending or publishing it.
+
+## Handler context and message copies
+
+Bq provides the string-valued `MessageHeaders` view and `ReplyToAddress`. Use `Headers` for raw AMQP values and `PersistenceSession` for the shared transaction. Use the typed `Extensions` bag to share state between an incoming behavior, handler, and before-commit callbacks. Each retry gets a fresh bag. `ForwardCurrentMessageTo` queues the original wire body, contract, headers, and message ID in the outbox for another queue.
+
+Use `ForwardReceivedMessagesTo` to forward successfully handled messages through the same outbox. Provision the destination queue for outbox delivery. `AuditProcessedMessagesTo(queue, timeToBeReceived)` writes a separate copy through the outbox. The optional TTL starts when RabbitMQ receives the copy. Both features skip internal saga timeouts. Bq’s `SynchronizedStorageSession` exposes the same connection and transaction as `PersistenceSession`. Use those ADO.NET objects for transaction-scoped application work.

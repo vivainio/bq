@@ -29,3 +29,13 @@ SQLite users can page through errors with `store.ListErrors(endpointName, limit,
 Replay is an atomic database operation and can be requested once per error record. It creates a fresh message ID so the old retry decisions and inbox entry do not suppress it; the original ID is retained in `x-bq-original-message-id`. Replay does not remove an already-published copy from the RabbitMQ error queue. Consumption directly from that queue is separate from Bq's inspection and replay API. Retry and error records are retained indefinitely; monitor and back up the database. An unavailable error queue leaves its database record pending, and can block subsequent recovery records until restored. Ordinary outbox messages and saga timeouts use a separate polling loop. Delivery remains at least once; external side effects still need idempotency.
 
 This is an early Bq API inspired by NServiceBus, not a replacement for its assemblies or its RabbitMQ wire protocol.
+
+## Configuration and notifications
+
+Use `LimitMessageProcessingConcurrencyTo`, `SendFailedMessagesTo`, and `Recoverability().Immediate(...).Delayed(...)` to configure the retry policy. Use `Immediate(settings => settings.OnMessageBeingRetried(...))` to observe the failed attempt before the next immediate retry. Use `Delayed(settings => settings.OnMessageBeingRetried(...))` to observe a delayed retry after Bq commits its recovery record. Both notifications receive a wire snapshot. Bq logs callback failures and continues recovery.
+
+Use `Failed(settings => settings.OnMessageSentToErrorQueue(...))` for notification after broker confirmation and the dispatch record update. Use `Failed(settings => settings.HeaderCustomization(...))` to edit text headers before Bq persists a failed delivery. The error queue and any replay use those edits, and unchanged AMQP headers retain their original types. Bq reconstructs the exception from persisted data, with the original type name and detail in `Exception.Data`.
+
+Use `CustomPolicy((config, error) => ...)` for immediate or delayed retry, discard, and per-message error queues. Use `AddUnrecoverableException<T>()` to classify failures in the default policy. A custom policy can delegate to `DefaultRecoverabilityPolicy.Invoke`. Bq also retains its native `Policy` callback. A custom error queue must already exist.
+
+Use `DefineCriticalErrorAction` for an infrastructure failure callback that can stop the endpoint through its context.

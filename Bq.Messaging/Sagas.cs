@@ -53,15 +53,15 @@ namespace Bq.Messaging
 
         protected void MarkAsComplete() { Completed = true; }
 
-        protected Task RequestTimeout<T>(IMessageHandlerContext context, TimeSpan delay) where T : new() =>
-            RequestTimeout(context, delay, new T());
+        protected Task RequestTimeout<TTimeoutMessageType>(IMessageHandlerContext context, TimeSpan within) where TTimeoutMessageType : new() =>
+            RequestTimeout(context, within, new TTimeoutMessageType());
 
-        protected Task RequestTimeout<T>(IMessageHandlerContext context, DateTime dueAt) where T : new() =>
-            RequestTimeout(context, dueAt, new T());
+        protected Task RequestTimeout<TTimeoutMessageType>(IMessageHandlerContext context, DateTime at) where TTimeoutMessageType : new() =>
+            RequestTimeout(context, at, new TTimeoutMessageType());
 
-        protected Task RequestTimeout<T>(IMessageHandlerContext context, TimeSpan delay, T state) => RequestTimeout(delay, state);
-        protected Task RequestTimeout<T>(IMessageHandlerContext context, DateTime utcDueAt, T state) =>
-            RequestTimeout(new DateTimeOffset(utcDueAt), state);
+        protected Task RequestTimeout<TTimeoutMessageType>(IMessageHandlerContext context, TimeSpan within, TTimeoutMessageType timeoutMessage) => RequestTimeout(within, timeoutMessage);
+        protected Task RequestTimeout<TTimeoutMessageType>(IMessageHandlerContext context, DateTime at, TTimeoutMessageType timeoutMessage) =>
+            RequestTimeout(new DateTimeOffset(at), timeoutMessage);
 
         protected Task RequestTimeout<T>(TimeSpan delay, T state)
         {

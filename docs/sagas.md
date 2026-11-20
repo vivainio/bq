@@ -41,3 +41,13 @@ Saga registrations require persistence. The selector returns a nonempty, stable 
 `MarkAsComplete()` deletes the active state at commit. A later start message may create a new instance with the same key. Timeouts have a unique saga-instance identity, so timeouts requested by the old instance are ignored. A non-starting message with no matching saga is ignored by default; set `config.SagaNotFound` to inspect it or throw to trigger recoverability. Missing or obsolete timeouts are silently ignored. Messages may arrive out of order, so choose the callback behavior accordingly.
 
 Timeouts are stored in SQLite and polled by the endpoint's outbox dispatcher, including after restart. Their actual delivery can be later than requested; clock adjustments and a blocked dispatcher affect timing. Delivery is at least once and duplicate suppression uses the persistent inbox. Completion does not proactively delete outstanding timeout records; they are discarded when delivered. Keep the inbox, timeout and saga data for as long as messages can be redelivered. Saga type names, correlation keys, timeout types and MessagePack property names are persisted contracts. The lower-level `IPersistenceSession` saga methods remain available for manual state management; they use their own type keys and do not automatically manage the saga lifecycle.
+
+## Mapping, originator replies, and missing sagas
+
+Override `ConfigureHowToFindSaga` and use `MapSaga(...).ToMessage<T>(...)` or `ConfigureMapping<T>(...).ToSaga(...)`. Register the saga with `RegisterSaga<TSaga, TData>()` or supply a factory. Bq uses one scalar correlation property. If you name the mapping result types explicitly, use `CorrelatedSagaPropertyMapper<TData>` for `MapSaga` and `ToSagaExpression<TData, TMessage>` for `ConfigureMapping`.
+
+Use `ToMessageHeader<T>` or `ConfigureHeaderMapping<T>` to read the key from a text header. `ConfigureHeaderMapping<T>` returns `IToSagaExpression<TData>`.
+
+Use `ContainSagaData` or implement `IContainSagaData` to store saga ID and originator metadata for `ReplyToOriginator`. The non-generic `Saga` exposes `Completed` and `Entity` and provides the protected `RequestTimeout` helpers. For context-based calls, use `within` or `at` and, when supplying a payload, `timeoutMessage`. For data implementing `IContainSagaData`, `Entity` and typed `Data` refer to the same instance. Existing records need their originator metadata populated before using that API.
+
+Register `IHandleSagaNotFound` instances or per-attempt factories with `RegisterSagaNotFoundHandler` to handle non-starting messages with no matching saga.
