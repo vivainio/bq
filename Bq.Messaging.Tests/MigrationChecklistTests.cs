@@ -18,7 +18,7 @@ namespace Bq.Messaging.Tests
     {
         public string Name => nameof(PilotMessageConvention);
         public bool IsCommandType(Type type) => type == typeof(Command);
-        public bool IsEventType(Type type) => type == typeof(IPilotEvent);
+        public bool IsEventType(Type type) => type == typeof(IPilotEvent) || type == typeof(RuntimeSubscriptionEvent);
         public bool IsMessageType(Type type) => type == typeof(WorkflowBarrier);
     }
 
@@ -449,7 +449,8 @@ namespace Bq.Messaging.Tests
             {
                 if (Interlocked.Increment(ref runtimeDeliveries) == 2) subscribed.TrySetResult(true);
                 return Task.CompletedTask;
-            }), subscribe: false);
+            }));
+            receiver.AutoSubscribe().DisableFor<RuntimeSubscriptionEvent>();
             receiver.Conventions().Add(new PilotMessageConvention());
             receiver.Handle(() => new Handler<WorkflowBarrier>((message, context) =>
             {

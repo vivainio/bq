@@ -114,6 +114,7 @@ namespace Bq.Messaging
                     var conventions = configuration.Conventions().Conventions;
                     var subscribed = new HashSet<Registration>(receivers.Values.Distinct().Where(registration =>
                         registration.Subscribe || (registration.UseEventConvention &&
+                            !configuration.AutoSubscriptionSettings.IsDisabled(registration.Type) &&
                             conventions.IsSubscribedEvent(registration.Type, registration.SubscribeByMarker))));
                     foreach (var entry in receivers.Where(entry => subscribed.Contains(entry.Value)))
                         consumerChannel.QueueBind(configuration.Name, eventsExchange, entry.Key);

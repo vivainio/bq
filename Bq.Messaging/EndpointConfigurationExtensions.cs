@@ -6,6 +6,9 @@ namespace Bq.Messaging
 {
     public static class EndpointConfigurationExtensions
     {
+        public static AutoSubscribeSettings AutoSubscribe(this EndpointConfiguration config) =>
+            (config ?? throw new ArgumentNullException(nameof(config))).AutoSubscriptionSettings;
+
         public static void DoNotCreateQueues(this EndpointConfiguration config)
         {
             if (config == null) throw new ArgumentNullException(nameof(config));
@@ -56,6 +59,23 @@ namespace Bq.Messaging
 
         public static RecoverabilityOptions Recoverability(this EndpointConfiguration configuration) =>
             (configuration ?? throw new ArgumentNullException(nameof(configuration))).Recoverability;
+    }
+
+    public sealed class AutoSubscribeSettings
+    {
+        readonly HashSet<Type> excluded = new HashSet<Type>();
+
+        internal AutoSubscribeSettings() { }
+
+        public AutoSubscribeSettings DisableFor<T>() => DisableFor(typeof(T));
+
+        public AutoSubscribeSettings DisableFor(Type eventType)
+        {
+            excluded.Add(eventType ?? throw new ArgumentNullException(nameof(eventType)));
+            return this;
+        }
+
+        internal bool IsDisabled(Type eventType) => excluded.Contains(eventType);
     }
 
     public sealed class RetryFailedSettings
