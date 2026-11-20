@@ -519,7 +519,7 @@ namespace Bq.Messaging.Tests
             }).LifestyleScoped());
             windsor.RegisterBehavior<UnexpectedPilotBehavior>(receiver, "second-observer", "Replace before startup");
             windsor.ReplaceBehavior<ObservePilotEvent>(receiver, "second-observer", "Resolve the observer through Windsor");
-            receiver.Pipeline.Replace("first-observer", typeof(ObservePilotEvent), "Inspect the declared event contract");
+            receiver.Pipeline.Replace("first-observer", () => new ObservePilotEvent(), "Inspect the declared event contract");
             receiver.Pipeline.Register<OrderedPilotStep>();
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);

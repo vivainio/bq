@@ -114,17 +114,31 @@ namespace Bq.Messaging
         public void Register<T>(T behavior, string description) where T : IBehavior =>
             Register(TypeName(behavior?.GetType()), behavior, description);
 
+        public void Register<T>(Func<T> factoryMethod, string description) where T : IBehavior =>
+            Register(TypeName(typeof(T)), factoryMethod, description);
+
+        public void Register<T>(string stepId, Func<T> factoryMethod, string description) where T : IBehavior
+        {
+            ValidateNewStepId(stepId);
+            Register(stepId, CreateBehavior(factoryMethod), description);
+        }
+
         public void Register<T>(string stepId, T behavior, string description) where T : IBehavior
         {
-            if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
+            ValidateNewStepId(stepId);
             var invoke = Adapt(behavior);
-            if (steps.ContainsKey(stepId)) throw new InvalidOperationException("A pipeline step already uses ID " + stepId);
             steps.Add(stepId, invoke);
             incoming.Use(invoke);
         }
 
         public void Replace(string stepId, Type newBehavior, string description = null) =>
             Replace(stepId, CreateBehavior(newBehavior), description);
+
+        public void Replace<T>(string stepId, Func<T> factoryMethod, string description = null) where T : IBehavior
+        {
+            FindStep(stepId);
+            Replace(stepId, CreateBehavior(factoryMethod), description);
+        }
 
         public void Replace<T>(string stepId, T newBehavior, string description = null) where T : IBehavior
         {
@@ -194,6 +208,20 @@ namespace Bq.Messaging
             if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
             if (!steps.TryGetValue(stepId, out var invoke)) throw new InvalidOperationException("No pipeline step uses ID " + stepId);
             return invoke;
+        }
+
+        void ValidateNewStepId(string stepId)
+        {
+            if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
+            if (steps.ContainsKey(stepId)) throw new InvalidOperationException("A pipeline step already uses ID " + stepId);
+        }
+
+        static T CreateBehavior<T>(Func<T> factoryMethod) where T : IBehavior
+        {
+            if (factoryMethod == null) throw new ArgumentNullException(nameof(factoryMethod));
+            var behavior = factoryMethod();
+            if (behavior == null) throw new InvalidOperationException("The pipeline behavior factory returned null.");
+            return behavior;
         }
 
         static IBehavior CreateBehavior(Type behavior)
