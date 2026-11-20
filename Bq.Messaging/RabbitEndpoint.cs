@@ -102,8 +102,8 @@ namespace Bq.Messaging
                     });
                     var conventions = configuration.Conventions().Conventions;
                     var subscribed = new HashSet<Registration>(receivers.Values.Distinct().Where(registration =>
-                        registration.Subscribe || (registration.UseEventConvention && (conventions.EventRule != null || registration.SubscribeByMarker) &&
-                            conventions.IsEventType(registration.Type))));
+                        registration.Subscribe || (registration.UseEventConvention &&
+                            conventions.IsSubscribedEvent(registration.Type, registration.SubscribeByMarker))));
                     foreach (var entry in receivers.Where(entry => subscribed.Contains(entry.Value)))
                         consumerChannel.QueueBind(configuration.Name, eventsExchange, entry.Key);
                     consumerChannel.BasicQos(0, configuration.PrefetchCount ?? configuration.MaxConcurrency, false);

@@ -446,7 +446,7 @@ namespace Bq.Messaging.Tests
                 if (Interlocked.Increment(ref runtimeDeliveries) == 2) subscribed.TrySetResult(true);
                 return Task.CompletedTask;
             }), subscribe: false);
-            receiver.Conventions().DefiningEventsAs(type => type == typeof(RuntimeSubscriptionEvent)).Add(new PilotMessageConvention());
+            receiver.Conventions().Add(new PilotMessageConvention());
             receiver.Handle(() => new Handler<WorkflowBarrier>((message, context) =>
             {
                 barrier.TrySetResult(true);

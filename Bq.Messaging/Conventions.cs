@@ -27,6 +27,10 @@ namespace Bq.Messaging
         public bool IsEventType(Type type) => Match(type, EventRule, typeof(IEvent)) ||
             Additional.Any(convention => convention.IsEventType(type));
 
+        internal bool IsSubscribedEvent(Type type, bool includeMarker) =>
+            (EventRule?.Invoke(type) ?? (includeMarker && typeof(IEvent).IsAssignableFrom(type))) ||
+            Additional.Any(convention => convention.IsEventType(type));
+
         static bool Match(Type type, Func<Type, bool> rule, Type marker)
         {
             if (type == null) throw new ArgumentNullException(nameof(type));
