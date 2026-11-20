@@ -41,11 +41,20 @@ namespace Bq.Extensions.CastleWindsor
             });
         }
 
-        public void Handle<TMessage>(EndpointConfiguration configuration, bool subscribe = false)
+        public void Handle<TMessage>(EndpointConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
-            configuration.Handle<TMessage>(() => new ContainerHandler<TMessage>(container.Resolve<IHandleMessages<TMessage>>()), subscribe);
+            configuration.Handle<TMessage>(ResolveHandler<TMessage>);
         }
+
+        public void Handle<TMessage>(EndpointConfiguration configuration, bool subscribe)
+        {
+            if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            configuration.Handle<TMessage>(ResolveHandler<TMessage>, subscribe);
+        }
+
+        IHandleMessages<TMessage> ResolveHandler<TMessage>() =>
+            new ContainerHandler<TMessage>(container.Resolve<IHandleMessages<TMessage>>());
 
         public void HandleSagaNotFound(EndpointConfiguration configuration)
         {

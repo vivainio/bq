@@ -5,7 +5,10 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Bq.Messaging;
+using Bq.Extensions.CastleWindsor;
 using Bq.Persistence.Sqlite;
+using Castle.MicroKernel.Registration;
+using Castle.Windsor;
 using MessagePack;
 using MessagePack.Resolvers;
 using RabbitMQ.Client;
@@ -444,6 +447,9 @@ namespace Bq.Messaging.Tests
             sender.AddHeaderToAllOutgoingMessages("migration-group", "default");
             sender.AddHeaderToAllOutgoingMessages("migration-source", "pilot-producer");
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
+            using var container = new WindsorContainer();
+            var windsor = new WindsorMessaging(container);
+            windsor.Attach(receiver);
             receiver.ForwardReceivedMessagesTo(forwardQueue);
             receiver.AuditProcessedMessagesTo(auditQueue, TimeSpan.FromMinutes(1));
             receiver.RegisterMessageMutator(new PilotMessageMutator());
@@ -460,7 +466,7 @@ namespace Bq.Messaging.Tests
             receiver.Pipeline.Replace("first-observer", typeof(ObservePilotEvent), "Inspect the declared event contract");
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-            receiver.Handle(() => new Handler<IPilotEvent>((message, context) =>
+            container.Register(Component.For<IHandleMessages<IPilotEvent>>().UsingFactoryMethod(() => new Handler<IPilotEvent>((message, context) =>
             {
                 Assert(context.MessageHeaders["migration-group"] == "observed" &&
                     System.Text.Encoding.UTF8.GetString((byte[])context.Headers["migration-group"]) == "first",
@@ -472,7 +478,8 @@ namespace Bq.Messaging.Tests
                 Assert(context.Extensions.Get<int>("pilot-behaviors") == 2, "registered logical behaviors see the declared interface contract");
                 received.TrySetResult(message.Text);
                 return Task.CompletedTask;
-            }));
+            })).LifestyleScoped());
+            windsor.Handle<IPilotEvent>(receiver);
             var senderConventions = sender.Conventions().Add(new PilotMessageConvention()).Conventions;
             Assert(senderConventions.IsMessageType(typeof(WorkflowBarrier)) && senderConventions.IsMessageType(typeof(Command)),
                 "custom message and command conventions classify contracts");
