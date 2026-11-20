@@ -15,6 +15,7 @@ namespace Bq.Messaging
     public sealed class RabbitEndpoint : IEndpointInstance
     {
         readonly string localAddress;
+        readonly string forwardReceivedMessagesAddress;
         readonly string eventsExchange;
         readonly string errorExchange;
         const string ContentType = "application/x-msgpack";
@@ -56,6 +57,9 @@ namespace Bq.Messaging
         {
             this.configuration = configuration;
             localAddress = configuration.LocalAddress ?? configuration.Name;
+            forwardReceivedMessagesAddress = configuration.ForwardReceivedMessagesAddress;
+            if (forwardReceivedMessagesAddress == localAddress)
+                throw new ArgumentException("The forwarding destination must differ from the endpoint input queue.", nameof(configuration));
             mutateIncoming = configuration.MutateIncoming;
             incomingTransportMutators = configuration.IncomingTransportMutators.ToArray();
             mutateOutgoing = configuration.MutateOutgoing;
@@ -723,6 +727,8 @@ namespace Bq.Messaging
                                         await registration.Invoke(incomingContext.Message, context).ConfigureAwait(false);
                                         incomingContext.MessageHandled = true;
                                     }).ConfigureAwait(false);
+                                    if (forwardReceivedMessagesAddress != null && incomingContext.MessageHandled && !incomingContext.IsSagaTimeout)
+                                        await context.ForwardCurrentMessageTo(forwardReceivedMessagesAddress).ConfigureAwait(false);
                                 }
                                 finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; }
                             }

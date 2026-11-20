@@ -430,6 +430,7 @@ namespace Bq.Messaging.Tests
             var senderName = prefix + ".sender";
             var receiverName = prefix + ".receiver";
             var legacyQueue = prefix + ".legacy";
+            var forwardQueue = prefix + ".forward";
             var legacyExchange = prefix + ".xml";
             var pilotExchange = prefix + ".msgpack";
             var path = Path.Combine(Path.GetTempPath(), prefix + ".db");
@@ -442,6 +443,7 @@ namespace Bq.Messaging.Tests
             sender.AddHeaderToAllOutgoingMessages("migration-group", "default");
             sender.AddHeaderToAllOutgoingMessages("migration-source", "pilot-producer");
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
+            receiver.ForwardReceivedMessagesTo(forwardQueue);
             receiver.RegisterMessageMutator(new PilotMessageMutator());
             receiver.Pipeline.Register("first-observer", typeof(UnexpectedPilotBehavior), "Replace before startup");
             receiver.Pipeline.Register("removed-observer", new UnexpectedPilotBehavior(), "Remove before startup");
@@ -511,6 +513,7 @@ namespace Bq.Messaging.Tests
                     channel.QueueDeclare(legacyQueue, true, false, false);
                     var replyQueue = prefix + ".behavior-reply";
                     channel.QueueDeclare(replyQueue, false, true, true);
+                    channel.QueueDeclare(forwardQueue, false, true, true);
                     var contract = typeof(IPilotEvent).FullName;
                     channel.QueueBind(legacyQueue, legacyExchange, contract);
                     IStartableEndpoint startable = await Endpoint.Create(sender);
@@ -541,6 +544,15 @@ namespace Bq.Messaging.Tests
                         await producer.Send(initializeCommand);
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
                         Assert(await Within(received.Task) == "pilot mutated observed", "the migrated handler receives the replacement event");
+                        BasicGetResult forwarded = null;
+                        await WaitFor(() =>
+                        {
+                            forwarded = channel.BasicGet(forwardQueue, true);
+                            return Task.FromResult(forwarded?.BasicProperties.MessageId == prefix + ".pilot-event");
+                        }, "processed event is forwarded");
+                        Assert(forwarded.BasicProperties.Type == contract &&
+                            !forwarded.BasicProperties.Headers.ContainsKey("pilot-mutator"),
+                            "endpoint-wide forwarding uses the original wire message");
                         BasicGetResult behaviorReply = null;
                         await WaitFor(() =>
                         {

@@ -6,6 +6,12 @@ namespace Bq.Messaging
 {
     public static class EndpointConfigurationExtensions
     {
+        public static void ForwardReceivedMessagesTo(this EndpointConfiguration config, string address)
+        {
+            if (config == null) throw new ArgumentNullException(nameof(config));
+            config.ForwardReceivedMessagesAddress = MessageOptions.ValidateAddressField(address, nameof(address));
+        }
+
         public static void RegisterMessageMutator(this EndpointConfiguration endpointConfiguration, object messageMutator)
         {
             if (endpointConfiguration == null) throw new ArgumentNullException(nameof(endpointConfiguration));
