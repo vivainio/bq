@@ -212,17 +212,23 @@ namespace Bq.Messaging
         }
 
         public static void RegisterSaga<TSaga, TData>(this EndpointConfiguration endpoint, Func<TSaga> factory, Action<SagaMappings<TSaga, TData>> configure)
+            where TSaga : Saga<TData> where TData : class, new() =>
+            endpoint.RegisterSaga<TSaga, TData>(factory, configure, saga => (saga as IDisposable)?.Dispose());
+
+        public static void RegisterSaga<TSaga, TData>(this EndpointConfiguration endpoint, Func<TSaga> factory,
+            Action<SagaMappings<TSaga, TData>> configure, Action<TSaga> release)
             where TSaga : Saga<TData> where TData : class, new()
         {
             if (endpoint == null) throw new ArgumentNullException(nameof(endpoint));
             if (factory == null) throw new ArgumentNullException(nameof(factory));
             if (configure == null) throw new ArgumentNullException(nameof(configure));
+            if (release == null) throw new ArgumentNullException(nameof(release));
             var mappings = new SagaMappings<TSaga, TData>();
             configure(mappings);
             if (mappings.Messages.Count == 0) throw new InvalidOperationException("A saga must handle at least one message.");
             var name = EndpointConfiguration.MessageType(typeof(TSaga));
             if (endpoint.SagaTimeouts.ContainsKey(name)) throw new InvalidOperationException("Saga is already registered: " + name);
-            var runtime = new SagaRuntime<TSaga, TData>(factory, mappings.Timeouts, endpoint);
+            var runtime = new SagaRuntime<TSaga, TData>(factory, mappings.Timeouts, endpoint, release);
             foreach (var register in mappings.Messages) register(endpoint, runtime);
             endpoint.SagaTimeouts.Add(name, runtime.HandleTimeout);
             endpoint.HasSagas = true;
@@ -243,9 +249,17 @@ namespace Bq.Messaging
         static readonly MessagePackSerializerOptions Options = MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly string sagaType = EndpointConfiguration.MessageType(typeof(TSaga));
         readonly Func<TSaga> factory;
+        readonly Action<TSaga> release;
         readonly Dictionary<string, Func<TSaga, object, IMessageHandlerContext, Task>> timeouts;
         readonly EndpointConfiguration configuration;
-        public SagaRuntime(Func<TSaga> factory, Dictionary<string, Func<TSaga, object, IMessageHandlerContext, Task>> timeouts, EndpointConfiguration configuration) { this.factory = factory; this.timeouts = timeouts; this.configuration = configuration; }
+        public SagaRuntime(Func<TSaga> factory, Dictionary<string, Func<TSaga, object, IMessageHandlerContext, Task>> timeouts,
+            EndpointConfiguration configuration, Action<TSaga> release)
+        {
+            this.factory = factory;
+            this.timeouts = timeouts;
+            this.configuration = configuration;
+            this.release = release;
+        }
         public Task HandleMessage<TMessage>(TMessage message, IMessageHandlerContext context, Func<TMessage, string> correlation, bool canStart)
         {
             var key = correlation(message);
@@ -313,7 +327,7 @@ namespace Bq.Messaging
                 }
                 else await session.SaveSaga(sagaType, key, MessagePackSerializer.Serialize(state, Options), record?.Version).ConfigureAwait(false);
             }
-            finally { (saga as IDisposable)?.Dispose(); }
+            finally { release(saga); }
         }
     }
 }

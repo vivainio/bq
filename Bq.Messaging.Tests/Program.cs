@@ -720,7 +720,12 @@ namespace Bq.Messaging.Tests
                 }
                 return next();
             });
-            config.RegisterSaga<OrderWorkflow, OrderState>(() => new OrderWorkflow(), mappings =>
+            container.Register(Component.For<OrderWorkflow>().UsingFactoryMethod(() =>
+            {
+                Assert(windsor.Current.PersistenceSession != null, "Windsor creates the saga inside the active transaction");
+                return new OrderWorkflow();
+            }).LifestyleTransient());
+            windsor.RegisterSaga<OrderWorkflow, OrderState>(config, mappings =>
             {
                 mappings.Start<StartOrder>(m => m.OrderId);
                 mappings.Handle<ChangeOrder>(m => m.OrderId);

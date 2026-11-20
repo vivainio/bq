@@ -78,6 +78,13 @@ namespace Bq.Extensions.CastleWindsor
                 new ContainerSagaNotFoundHandler(container.Resolve<IHandleSagaNotFound>()));
         }
 
+        public void RegisterSaga<TSaga, TData>(EndpointConfiguration configuration, Action<SagaMappings<TSaga, TData>> configure)
+            where TSaga : Saga<TData> where TData : class, new()
+        {
+            if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            configuration.RegisterSaga<TSaga, TData>(() => container.Resolve<TSaga>(), configure, saga => container.Release(saga));
+        }
+
         sealed class ContainerSagaNotFoundHandler : IHandleSagaNotFound
         {
             readonly IHandleSagaNotFound handler;
