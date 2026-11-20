@@ -6,6 +6,12 @@ namespace Bq.Messaging
 {
     public static class EndpointConfigurationExtensions
     {
+        public static void DoNotCreateQueues(this EndpointConfiguration config)
+        {
+            if (config == null) throw new ArgumentNullException(nameof(config));
+            config.UsePreProvisionedTopology = true;
+        }
+
         public static void AddHeaderToAllOutgoingMessages(this EndpointConfiguration config, string key, string value)
         {
             if (config == null) throw new ArgumentNullException(nameof(config));

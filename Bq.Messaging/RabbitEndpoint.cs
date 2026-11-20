@@ -85,21 +85,31 @@ namespace Bq.Messaging
             try
             {
                 publisherChannel = connection.CreateModel();
-                publisherChannel.ExchangeDeclare(eventsExchange, ExchangeType.Topic, true);
+                if (configuration.UsePreProvisionedTopology) publisherChannel.ExchangeDeclarePassive(eventsExchange);
+                else publisherChannel.ExchangeDeclare(eventsExchange, ExchangeType.Topic, true);
                 publisherChannel.ConfirmSelect();
                 publisherChannel.BasicReturn += (sender, args) => { returned = true; };
                 if (!sendOnly)
                 {
                     consumerChannel = connection.CreateModel();
-                    consumerChannel.ExchangeDeclare(errorExchange, ExchangeType.Direct, true);
                     var errorQueue = configuration.Recoverability.ErrorQueue ?? configuration.Name + ".error";
-                    consumerChannel.QueueDeclare(errorQueue, true, false, false);
-                    consumerChannel.QueueBind(errorQueue, errorExchange, configuration.Name);
-                    consumerChannel.QueueDeclare(configuration.Name, true, false, false, new Dictionary<string, object>(configuration.InputQueueArguments)
+                    if (configuration.UsePreProvisionedTopology)
                     {
-                        ["x-dead-letter-exchange"] = errorExchange,
-                        ["x-dead-letter-routing-key"] = configuration.Name
-                    });
+                        consumerChannel.ExchangeDeclarePassive(errorExchange);
+                        consumerChannel.QueueDeclarePassive(errorQueue);
+                        consumerChannel.QueueDeclarePassive(configuration.Name);
+                    }
+                    else
+                    {
+                        consumerChannel.ExchangeDeclare(errorExchange, ExchangeType.Direct, true);
+                        consumerChannel.QueueDeclare(errorQueue, true, false, false);
+                        consumerChannel.QueueBind(errorQueue, errorExchange, configuration.Name);
+                        consumerChannel.QueueDeclare(configuration.Name, true, false, false, new Dictionary<string, object>(configuration.InputQueueArguments)
+                        {
+                            ["x-dead-letter-exchange"] = errorExchange,
+                            ["x-dead-letter-routing-key"] = configuration.Name
+                        });
+                    }
                     if (configuration.PurgeInputQueueOnStartup) consumerChannel.QueuePurge(configuration.Name);
                     var conventions = configuration.Conventions().Conventions;
                     var subscribed = new HashSet<Registration>(receivers.Values.Distinct().Where(registration =>

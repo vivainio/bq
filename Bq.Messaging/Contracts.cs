@@ -131,6 +131,7 @@ namespace Bq.Messaging
         internal Func<ICriticalErrorContext, Task> CriticalErrorAction { get; set; }
         internal string PublicReturnAddress { get; set; }
         internal bool PurgeInputQueueOnStartup { get; set; }
+        internal bool UsePreProvisionedTopology { get; set; }
         internal Dictionary<string, object> OutgoingHeaders { get; } = new Dictionary<string, object>(StringComparer.Ordinal);
         public TimeSpan CriticalErrorThreshold { get; set; } = TimeSpan.FromMinutes(10);
         public Action<TransportMessage> MutateIncoming { get; set; }

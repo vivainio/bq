@@ -83,6 +83,8 @@ namespace Bq.Messaging.Tests
                 using (var channel = connection.CreateModel())
                 {
                     using (var setup = RabbitEndpoint.Start(config)) await setup.StopAsync();
+                    config.DoNotCreateQueues();
+                    config.InputQueueArguments["x-max-length"] = 100;
                     channel.ConfirmSelect();
                     Publish(channel, queue, "stale");
                     Assert(channel.WaitForConfirms(TimeSpan.FromSeconds(5)) &&
