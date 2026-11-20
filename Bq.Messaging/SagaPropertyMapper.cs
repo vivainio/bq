@@ -45,7 +45,7 @@ namespace Bq.Messaging
         public ToSagaExpression<TData, TMessage> ConfigureMapping<TMessage>(Expression<Func<TMessage, object>> property)
             where TMessage : class => new ToSagaExpression<TData, TMessage>(property, Add);
 
-        public HeaderMapping<TMessage> ConfigureHeaderMapping<TMessage>(string headerName)
+        public IToSagaExpression<TData> ConfigureHeaderMapping<TMessage>(string headerName)
             where TMessage : class => new HeaderMapping<TMessage>(this, headerName);
 
         public CorrelatedSagaPropertyMapper<TData> MapSaga(Expression<Func<TData, object>> property) => new CorrelatedSagaPropertyMapper<TData>(this, property);
@@ -108,7 +108,7 @@ namespace Bq.Messaging
             foreach (var mapping in mappings.Values) mapping.Apply(target);
         }
 
-        public sealed class HeaderMapping<TMessage> : IToSagaExpression<TData> where TMessage : class
+        sealed class HeaderMapping<TMessage> : IToSagaExpression<TData> where TMessage : class
         {
             readonly SagaPropertyMapper<TData> owner;
             readonly string headerName;
