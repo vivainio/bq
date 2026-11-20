@@ -33,6 +33,12 @@ namespace Bq.Messaging.Tests
         public int Count { get; set; }
     }
 
+    sealed class TestPropertyEncryption : IMessagePropertyEncryptionService
+    {
+        public string Encrypt(string plaintext) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(plaintext));
+        public string Decrypt(string ciphertext) => System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(ciphertext));
+    }
+
     sealed class PilotMessageMutator : IMutateIncomingMessages, IMutateIncomingTransportMessages,
         IMutateOutgoingMessages, IMutateOutgoingTransportMessages
     {
@@ -447,6 +453,9 @@ namespace Bq.Messaging.Tests
             sender.AddHeaderToAllOutgoingMessages("migration-group", "default");
             sender.AddHeaderToAllOutgoingMessages("migration-source", "pilot-producer");
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
+            var encryption = new TestPropertyEncryption();
+            sender.EnableMessagePropertyEncryption(encryption, property => property.DeclaringType == typeof(IPilotMessage));
+            receiver.EnableMessagePropertyEncryption(encryption, property => property.DeclaringType == typeof(IPilotMessage));
             using var container = new WindsorContainer();
             var windsor = new WindsorMessaging(container);
             windsor.Attach(receiver);
@@ -557,6 +566,7 @@ namespace Bq.Messaging.Tests
                             message.Count = 7;
                         });
                         await messaging.Publish(created, publish);
+                        Assert(created.Text == "pilot", "property encryption leaves the caller's object unchanged");
                         Action<Command> initializeCommand = command => command.Text = "pilot command";
                         await producer.Send(initializeCommand);
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
@@ -570,6 +580,8 @@ namespace Bq.Messaging.Tests
                         Assert(forwarded.BasicProperties.Type == contract &&
                             !forwarded.BasicProperties.Headers.ContainsKey("pilot-mutator"),
                             "endpoint-wide forwarding uses the original wire message");
+                        Assert(System.Text.Encoding.UTF8.GetString(forwarded.Body.ToArray()).Contains(encryption.Encrypt("pilot")),
+                            "the forwarded wire body still contains the encoded property");
                         BasicGetResult audit = null;
                         await WaitFor(() =>
                         {

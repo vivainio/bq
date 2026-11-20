@@ -15,6 +15,7 @@ namespace Bq.Messaging
     public sealed class RabbitEndpoint : IEndpointInstance
     {
         readonly string localAddress;
+        readonly MessagePropertyEncryption propertyEncryption;
         readonly bool durableMessages;
         readonly Func<Type, TimeSpan> timeToBeReceived;
         readonly string forwardReceivedMessagesAddress;
@@ -61,6 +62,7 @@ namespace Bq.Messaging
         RabbitEndpoint(EndpointConfiguration configuration)
         {
             this.configuration = configuration;
+            propertyEncryption = configuration.PropertyEncryption;
             durableMessages = configuration.DurableMessages;
             timeToBeReceived = configuration.Conventions().Conventions.TimeToBeReceivedRule ?? AttributeLifetime;
             localAddress = configuration.LocalAddress ?? configuration.Name;
@@ -478,8 +480,15 @@ namespace Bq.Messaging
             }
             var serializationType = InterfaceMessage.SerializationType(contract);
             var value = InterfaceMessage.SerializationValue(contract, serializationType, outgoingMessage);
-            var transport = new TransportMessage(WireName(contract),
-                MessagePackSerializer.Serialize(serializationType, value, SerializerOptions), copiedHeaders,
+            var serialized = MessagePackSerializer.Serialize(serializationType, value, SerializerOptions);
+            var encryptedProperties = propertyEncryption?.Properties(contract);
+            if (encryptedProperties?.Length > 0)
+            {
+                var copy = MessagePackSerializer.Deserialize(serializationType, serialized, SerializerOptions);
+                propertyEncryption.Transform(copy, encryptedProperties, encrypt: true);
+                serialized = MessagePackSerializer.Serialize(serializationType, copy, SerializerOptions);
+            }
+            var transport = new TransportMessage(WireName(contract), serialized, copiedHeaders,
                 causingContext);
             mutateOutgoing?.Invoke(transport);
             foreach (var mutator in outgoingTransportMutators)
@@ -685,6 +694,14 @@ namespace Bq.Messaging
                 if (shutdownRequested && activeDeliveries == 0) drained.TrySetResult(true);
             }
         }
+        object DeserializeMessage(Type contract, ReadOnlyMemory<byte> body)
+        {
+            var message = MessagePackSerializer.Deserialize(InterfaceMessage.SerializationType(contract), body, SerializerOptions);
+            if (propertyEncryption != null && message != null)
+                propertyEncryption.Transform(message, propertyEncryption.Properties(contract), encrypt: false);
+            return message;
+        }
+
         async Task ProcessDelivery(BasicDeliverEventArgs delivery)
         {
             var props = delivery.BasicProperties;
@@ -723,7 +740,7 @@ namespace Bq.Messaging
                 if (props.ContentType != ContentType || typeName == null || !receivers.TryGetValue(typeName, out var registration))
                 { unrecoverable = true; throw new InvalidOperationException("Unknown message type or content type."); }
                 object message;
-                try { message = MessagePackSerializer.Deserialize(InterfaceMessage.SerializationType(registration.Type), body, SerializerOptions); }
+                try { message = DeserializeMessage(registration.Type, body); }
                 catch (Exception ex) { unrecoverable = true; throw new InvalidOperationException("Message deserialization failed.", ex); }
                 for (var attempt = 0; ; attempt++)
                 {
@@ -785,7 +802,7 @@ namespace Bq.Messaging
                         }
                         // Every attempt must deserialize afresh, since a failed handler may mutate the object.
                         action = null;
-                        message = MessagePackSerializer.Deserialize(InterfaceMessage.SerializationType(registration.Type), body, SerializerOptions);
+                        message = DeserializeMessage(registration.Type, body);
                     }
                 }
                 AcknowledgeCommittedDelivery(delivery.DeliveryTag);
