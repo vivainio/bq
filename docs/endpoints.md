@@ -156,3 +156,5 @@ Use `Pipeline.Register<TRegisterStep>()` or `Pipeline.Register(step)` to registe
 Pass a behavior factory to the `RegisterStep` constructor when a behavior needs constructor arguments. Bq calls the factory during registration and reuses the returned behavior across deliveries.
 
 The `Pipeline.Register` and `Pipeline.Replace` overloads also accept a `Func<TBehavior>` for behavior construction during configuration. A factory registration without a step ID uses the full name of `TBehavior`.
+
+Register infrastructure message predicates with `Conventions().Conventions.AddSystemMessagesConventions(...)`. Matching types satisfy `IsMessageType` and can be identified separately with `IsInSystemConventionList`.

@@ -14,13 +14,23 @@ namespace Bq.Messaging
 
     public sealed class Conventions
     {
+        readonly List<Func<Type, bool>> systemMessageRules = new List<Func<Type, bool>>();
         internal List<IMessageConvention> Additional { get; } = new List<IMessageConvention>();
         internal Func<Type, bool> MessageRule { get; set; }
         internal Func<Type, bool> CommandRule { get; set; }
         internal Func<Type, bool> EventRule { get; set; }
         internal Func<Type, TimeSpan> TimeToBeReceivedRule { get; set; }
 
-        public bool IsMessageType(Type type) => Match(type, MessageRule, typeof(IMessage)) ||
+        public void AddSystemMessagesConventions(Func<Type, bool> definesMessageType) =>
+            systemMessageRules.Add(definesMessageType ?? throw new ArgumentNullException(nameof(definesMessageType)));
+
+        public bool IsInSystemConventionList(Type t)
+        {
+            if (t == null) throw new ArgumentNullException(nameof(t));
+            return systemMessageRules.Any(rule => rule(t));
+        }
+
+        public bool IsMessageType(Type type) => IsInSystemConventionList(type) || Match(type, MessageRule, typeof(IMessage)) ||
             Additional.Any(convention => convention.IsMessageType(type)) || IsCommandType(type) || IsEventType(type);
 
         public bool IsCommandType(Type type) => Match(type, CommandRule, typeof(ICommand)) ||

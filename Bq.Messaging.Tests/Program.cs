@@ -188,6 +188,11 @@ namespace Bq.Messaging.Tests
         static async Task TestingSupportTests()
         {
             VerifyPipelineOrderingValidation();
+            var conventions = new ConventionsBuilder().DefiningMessagesAs(_ => false).Conventions;
+            conventions.AddSystemMessagesConventions(type => type == typeof(WorkflowBarrier));
+            Assert(conventions.IsInSystemConventionList(typeof(WorkflowBarrier)) &&
+                conventions.IsMessageType(typeof(WorkflowBarrier)) && !conventions.IsInSystemConventionList(typeof(Command)),
+                "system message rules classify infrastructure contracts independently of the application message predicate");
             var encryptedEndpoint = new EndpointConfiguration("invalid-encryption", new Uri("amqp://localhost"))
             {
                 Persistence = new SqlitePersistence(
