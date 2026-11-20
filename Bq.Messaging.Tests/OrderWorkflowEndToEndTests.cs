@@ -99,10 +99,15 @@ namespace Bq.Messaging.Tests
             }));
             intake.Route<BeginFulfillment>(fulfillmentName);
             var fulfillment = new EndpointConfiguration(fulfillmentName, uri) { Persistence = fulfillmentStore, EventsExchange = exchange };
+            fulfillment.Conventions().DefiningEventsAs(type => type == typeof(FulfillmentRecorded));
+            fulfillment.AutoSubscribe().DoNotAutoSubscribeSagas();
+            var sagaProbeDelivered = false;
             var starterId = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             fulfillment.Incoming.Use((incoming, next) =>
             {
                 if (incoming.Message is BeginFulfillment) starterId.TrySetResult(incoming.HandlerContext.MessageId);
+                if (incoming.Message is FulfillmentRecorded recorded && recorded.OrderId == "subscription-probe")
+                    sagaProbeDelivered = true;
                 return next();
             });
             fulfillment.RegisterSaga<FulfillmentSaga, FulfillmentState>();
@@ -144,6 +149,7 @@ namespace Bq.Messaging.Tests
                     using (var producer = RabbitEndpoint.Start(intake))
                     {
                         const string orderId = "order-1";
+                        await producer.Publish(new FulfillmentRecorded { OrderId = "subscription-probe" });
                         using (var firstRecorder = RabbitEndpoint.Start(recording))
                         {
                             await producer.ExecuteTransaction(async session =>
@@ -164,6 +170,7 @@ namespace Bq.Messaging.Tests
                         }
 
                         Assert(await CountMigrationRows(intakePath, "application_work") == 1, "intake committed its business row");
+                        Assert(!sagaProbeDelivered, "saga-only event is excluded from automatic subscription");
                         Assert(await CountMigrationRows(recordingPath, "application_work") == 0 &&
                             await CountMigrationRows(recordingPath, "bq_inbox") == 0 &&
                             await CountMigrationRows(recordingPath, "bq_outbox") == 0,

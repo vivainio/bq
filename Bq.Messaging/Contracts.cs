@@ -217,24 +217,24 @@ namespace Bq.Messaging
     internal sealed class Registration
     {
         readonly List<Func<object, IMessageHandlerContext, Task>> invocations = new List<Func<object, IMessageHandlerContext, Task>>();
-        public Registration(Type type, bool subscribe, Func<object, IMessageHandlerContext, Task> invoke, bool useEventConvention = false, bool subscribeByMarker = false)
+        public Registration(Type type, bool subscribe, Func<object, IMessageHandlerContext, Task> invoke, bool useEventConvention = false, bool useSagaEventConvention = false)
         {
             Type = type;
             Subscribe = subscribe;
             UseEventConvention = useEventConvention;
-            SubscribeByMarker = subscribeByMarker;
+            UseSagaEventConvention = useSagaEventConvention;
             invocations.Add(invoke);
         }
         public Type Type { get; }
         public bool Subscribe { get; private set; }
         public bool UseEventConvention { get; private set; }
-        public bool SubscribeByMarker { get; private set; }
+        public bool UseSagaEventConvention { get; private set; }
         public void Add(Registration registration)
         {
             if (Type != registration.Type) throw new InvalidOperationException("Message type name collision: " + Type.FullName);
             Subscribe |= registration.Subscribe;
             UseEventConvention |= registration.UseEventConvention;
-            SubscribeByMarker |= registration.SubscribeByMarker;
+            UseSagaEventConvention |= registration.UseSagaEventConvention;
             invocations.AddRange(registration.invocations);
         }
         public async Task Invoke(object message, IMessageHandlerContext context)

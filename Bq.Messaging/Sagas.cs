@@ -152,7 +152,7 @@ namespace Bq.Messaging
                     var typed = (TMessage)message;
                     var mapped = correlation(typed, context);
                     return runtime.HandleMappedMessage(typed, context, mapped.Key, start, mapped.Initialize);
-                }, useEventConvention: true, subscribeByMarker: true)));
+                }, useSagaEventConvention: true)));
         }
 
         public void Timeout<TTimeout>() where TTimeout : class

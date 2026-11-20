@@ -76,6 +76,9 @@ namespace Bq.Messaging
         }
 
         internal bool IsDisabled(Type eventType) => excluded.Contains(eventType);
+        internal bool SagaSubscriptionsDisabled { get; private set; }
+
+        public void DoNotAutoSubscribeSagas() => SagaSubscriptionsDisabled = true;
     }
 
     public sealed class RetryFailedSettings

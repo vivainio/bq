@@ -112,10 +112,14 @@ namespace Bq.Messaging
                     }
                     if (configuration.PurgeInputQueueOnStartup) consumerChannel.QueuePurge(configuration.Name);
                     var conventions = configuration.Conventions().Conventions;
+                    var autoSubscribe = configuration.AutoSubscriptionSettings;
                     var subscribed = new HashSet<Registration>(receivers.Values.Distinct().Where(registration =>
-                        registration.Subscribe || (registration.UseEventConvention &&
-                            !configuration.AutoSubscriptionSettings.IsDisabled(registration.Type) &&
-                            conventions.IsSubscribedEvent(registration.Type, registration.SubscribeByMarker))));
+                    {
+                        var sagaConvention = registration.UseSagaEventConvention && !autoSubscribe.SagaSubscriptionsDisabled;
+                        return registration.Subscribe || ((registration.UseEventConvention || sagaConvention) &&
+                            !autoSubscribe.IsDisabled(registration.Type) &&
+                            conventions.IsSubscribedEvent(registration.Type, sagaConvention));
+                    }));
                     foreach (var entry in receivers.Where(entry => subscribed.Contains(entry.Value)))
                         consumerChannel.QueueBind(configuration.Name, eventsExchange, entry.Key);
                     consumerChannel.BasicQos(0, configuration.PrefetchCount ?? configuration.MaxConcurrency, false);
