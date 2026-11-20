@@ -12,6 +12,7 @@ namespace Bq.Messaging
     {
         internal ContextBag Extensions { get; } = new ContextBag();
         internal bool ImmediateDispatch { get; set; }
+        internal IDictionary<string, object> Headers { get; } = new Dictionary<string, object>();
     }
 
     public static class ImmediateDispatchOptionExtensions

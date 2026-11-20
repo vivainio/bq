@@ -32,8 +32,6 @@ namespace Bq.Messaging
 
         public virtual void RequireImmediateDispatch() => ImmediateDispatch = true;
 
-        internal IDictionary<string, object> Headers { get; } = new Dictionary<string, object>();
-
         public void SetHeader(string name, object value)
         {
             ValidateHeaderName(name, nameof(name));
@@ -135,10 +133,24 @@ namespace Bq.Messaging
         Task PublishImmediately<T>(T message);
     }
 
+    public static class HeaderOptionExtensions
+    {
+        public static IReadOnlyDictionary<string, string> GetHeaders(this ExtendableOptions options) =>
+            MessageHeaders.AsText((options ?? throw new ArgumentNullException(nameof(options))).Headers);
+
+        public static void SetHeader(this ExtendableOptions options, string key, string value)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            MessageOptions.ValidateHeaderName(key, nameof(key));
+            options.Headers[key] = value;
+        }
+    }
+
     public static class MessageOptionsExtensions
     {
         public static string GetMessageId(this MessageOptions options) => options.MessageId;
-        public static IReadOnlyDictionary<string, string> GetHeaders(this MessageOptions options) => MessageHeaders.AsText(options.Headers);
+        public static IReadOnlyDictionary<string, string> GetHeaders(MessageOptions options) =>
+            HeaderOptionExtensions.GetHeaders(options);
         public static string GetDestination(this SendOptions options) => options.Destination;
         public static string GetDestination(this ReplyOptions options) => options.Destination;
         public static string GetReplyToRoute(this SendOptions options) => options.ReplyAddress;

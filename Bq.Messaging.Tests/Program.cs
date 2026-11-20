@@ -154,6 +154,10 @@ namespace Bq.Messaging.Tests
             Assert(creator.CreateInstance<Command>() != null && creator.CreateInstance(typeof(IPilotEvent)) is IPilotEvent,
                 "message creator supports concrete classes and interface contracts");
             var sendOptions = new SendOptions();
+            ExtendableOptions headerOptions = sendOptions;
+            headerOptions.SetHeader("shared-header", "from-helper");
+            Assert(sendOptions.GetHeaders()["shared-header"] == "from-helper",
+                "base and concrete options share header values");
             ExtendableOptions dispatchOptions = new SendOptions();
             Assert(!dispatchOptions.RequiredImmediateDispatch(), "immediate dispatch is opt-in");
             dispatchOptions.RequireImmediateDispatch();
