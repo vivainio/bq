@@ -30,6 +30,19 @@ namespace Bq.Messaging.Tests
         public int Count { get; set; }
     }
 
+    sealed class PilotMessageMutator : IMutateIncomingMessages
+    {
+        public Task MutateIncoming(MutateIncomingMessageContext context)
+        {
+            if (context.Message is IPilotEvent pilot)
+            {
+                context.Message = new ReplacementPilotEvent { Text = pilot.Text + " mutated", Count = pilot.Count };
+                context.Headers["pilot-mutator"] = "applied";
+            }
+            return Task.CompletedTask;
+        }
+    }
+
     public sealed class ObservePilotEvent : Behavior<IIncomingLogicalMessageContext>
     {
         public override async Task Invoke(IIncomingLogicalMessageContext context, Func<Task> next)
@@ -401,6 +414,7 @@ namespace Bq.Messaging.Tests
             sender.AddHeaderToAllOutgoingMessages("migration-group", "default");
             sender.AddHeaderToAllOutgoingMessages("migration-source", "pilot-producer");
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
+            receiver.RegisterMessageMutator(new PilotMessageMutator());
             receiver.Pipeline.Register("first-observer", typeof(UnexpectedPilotBehavior), "Replace before startup");
             receiver.Pipeline.Register("removed-observer", new UnexpectedPilotBehavior(), "Remove before startup");
             receiver.Pipeline.Remove("removed-observer");
@@ -420,6 +434,7 @@ namespace Bq.Messaging.Tests
                     System.Text.Encoding.UTF8.GetString((byte[])context.Headers["migration-group"]) == "first",
                     "logical header edits reach the handler while raw AMQP headers retain the received value");
                 Assert(context.GetHeader("migration-source") == "pilot-producer", "endpoint headers reach published events");
+                Assert(context.GetHeader("pilot-mutator") == "applied", "registered mutator headers reach the handler");
                 Assert(message.Count == 7, "interface event properties round-trip through MessagePack");
                 Assert(context.Extensions.Get<int>("pilot-behaviors") == 2, "registered logical behaviors see the declared interface contract");
                 received.TrySetResult(message.Text);
@@ -496,7 +511,7 @@ namespace Bq.Messaging.Tests
                         Action<Command> initializeCommand = command => command.Text = "pilot command";
                         await producer.Send(initializeCommand);
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
-                        Assert(await Within(received.Task) == "pilot observed", "the migrated handler receives the replacement event");
+                        Assert(await Within(received.Task) == "pilot mutated observed", "the migrated handler receives the replacement event");
                         BasicGetResult behaviorReply = null;
                         await WaitFor(() =>
                         {

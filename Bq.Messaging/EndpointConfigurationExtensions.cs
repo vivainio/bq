@@ -6,6 +6,22 @@ namespace Bq.Messaging
 {
     public static class EndpointConfigurationExtensions
     {
+        public static void RegisterMessageMutator(this EndpointConfiguration endpointConfiguration, object messageMutator)
+        {
+            if (endpointConfiguration == null) throw new ArgumentNullException(nameof(endpointConfiguration));
+            if (messageMutator == null) throw new ArgumentNullException(nameof(messageMutator));
+            if (!(messageMutator is IMutateIncomingMessages incoming))
+                throw new ArgumentException("An incoming logical message mutator is required.", nameof(messageMutator));
+
+            endpointConfiguration.Incoming.Use(async (context, next) =>
+            {
+                var mutation = new MutateIncomingMessageContext(context.Message, context.LogicalHeaders);
+                await incoming.MutateIncoming(mutation).ConfigureAwait(false);
+                context.UpdateMessageInstance(mutation.Message);
+                await next().ConfigureAwait(false);
+            });
+        }
+
         public static void OverrideLocalAddress(this EndpointConfiguration config, string baseInputQueueName)
         {
             if (config == null) throw new ArgumentNullException(nameof(config));
