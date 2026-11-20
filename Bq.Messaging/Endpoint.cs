@@ -16,25 +16,33 @@ namespace Bq.Messaging
     public sealed class SubscribeOptions : ExtendableOptions { }
     public sealed class UnsubscribeOptions : ExtendableOptions { }
 
-    public static class SubscriptionExtensions
+    public static class IMessageSessionExtensions
     {
         public static Task Subscribe<T>(this IMessageSession session) =>
             session.Subscribe(typeof(T), new SubscribeOptions());
 
-        public static Task Subscribe<T>(this IMessageSession session, SubscribeOptions options) =>
-            session.Subscribe(typeof(T), options ?? new SubscribeOptions());
-
         public static Task Unsubscribe<T>(this IMessageSession session) =>
             session.Unsubscribe(typeof(T), new UnsubscribeOptions());
 
+        public static Task Subscribe(this IMessageSession session, Type messageType) =>
+            session.Subscribe(messageType, new SubscribeOptions());
+
+        public static Task Unsubscribe(this IMessageSession session, Type messageType) =>
+            session.Unsubscribe(messageType, new UnsubscribeOptions());
+    }
+
+    public static class SubscriptionExtensions
+    {
+        public static Task Subscribe<T>(IMessageSession session) => IMessageSessionExtensions.Subscribe<T>(session);
+        public static Task Unsubscribe<T>(IMessageSession session) => IMessageSessionExtensions.Unsubscribe<T>(session);
+        public static Task Subscribe(IMessageSession session, Type eventType) => IMessageSessionExtensions.Subscribe(session, eventType);
+        public static Task Unsubscribe(IMessageSession session, Type eventType) => IMessageSessionExtensions.Unsubscribe(session, eventType);
+
+        public static Task Subscribe<T>(this IMessageSession session, SubscribeOptions options) =>
+            session.Subscribe(typeof(T), options ?? new SubscribeOptions());
+
         public static Task Unsubscribe<T>(this IMessageSession session, UnsubscribeOptions options) =>
             session.Unsubscribe(typeof(T), options ?? new UnsubscribeOptions());
-
-        public static Task Subscribe(this IMessageSession session, Type eventType) =>
-            session.Subscribe(eventType, new SubscribeOptions());
-
-        public static Task Unsubscribe(this IMessageSession session, Type eventType) =>
-            session.Unsubscribe(eventType, new UnsubscribeOptions());
     }
 
     public interface IEndpointInstance : IMessageSession, IDisposable

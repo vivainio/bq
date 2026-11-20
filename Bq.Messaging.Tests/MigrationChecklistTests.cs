@@ -592,7 +592,7 @@ namespace Bq.Messaging.Tests
                         Func<Task> subscribe = subscriptions.Subscribe<RuntimeSubscriptionEvent>;
                         Func<Task> unsubscribe = subscriptions.Unsubscribe<RuntimeSubscriptionEvent>;
                         await subscribe();
-                        await subscriber.Subscribe(typeof(RuntimeSubscriptionEvent), new SubscribeOptions());
+                        await IMessageSessionExtensions.Subscribe(subscriptions, messageType: typeof(RuntimeSubscriptionEvent));
                         await messaging.Publish(new RuntimeSubscriptionEvent { Value = 1 }, new PublishOptions());
                         PublishSubscriptionProbe(channel, pilotExchange, runtimeAlias, runtimeAlias, new RuntimeSubscriptionEvent { Value = 2 });
                         await Within(subscribed.Task);
