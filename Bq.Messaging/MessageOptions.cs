@@ -223,6 +223,45 @@ namespace Bq.Messaging
         }
     }
 
+    public static class IPipelineContextExtensions
+    {
+        public static Task Send(this IPipelineContext context, string destination, object message) =>
+            context.Send(message, IMessageSessionExtensions.DestinationOptions(destination));
+
+        public static Task Send<T>(this IPipelineContext context, string destination, Action<T> initialize) =>
+            context.Send(initialize, IMessageSessionExtensions.DestinationOptions(destination));
+
+        public static Task SendLocal(this IPipelineContext context, object message) =>
+            context.Send(message, IMessageSessionExtensions.LocalOptions());
+
+        public static Task SendLocal<T>(this IPipelineContext context, Action<T> initialize) =>
+            context.Send(initialize, IMessageSessionExtensions.LocalOptions());
+
+        public static Task Send(this IPipelineContext context, object message) =>
+            context.Send(message, new SendOptions());
+
+        public static Task Publish(this IPipelineContext context, object message) =>
+            context.Publish(message, new PublishOptions());
+
+        public static Task Publish<T>(this IPipelineContext context) =>
+            context.Publish<T>(_ => { }, new PublishOptions());
+
+        public static Task Send<T>(this IPipelineContext context, Action<T> initialize) =>
+            context.Send(initialize, new SendOptions());
+
+        public static Task Publish<T>(this IPipelineContext context, Action<T> initialize) =>
+            context.Publish(initialize, new PublishOptions());
+    }
+
+    public static class IMessageProcessingContextExtensions
+    {
+        public static Task Reply(this IMessageProcessingContext context, object message) =>
+            context.Reply(message, new ReplyOptions());
+
+        public static Task Reply<T>(this IMessageProcessingContext context, Action<T> initialize) =>
+            context.Reply(initialize, new ReplyOptions());
+    }
+
     public static class MessageOptionsExtensions
     {
         public static string GetMessageId(MessageOptions options) => MessageIdExtensions.GetMessageId(options);
@@ -250,31 +289,34 @@ namespace Bq.Messaging
         public static Task SendLocal<T>(IMessageSession session, Action<T> initialize) =>
             IMessageSessionExtensions.SendLocal<T>(session, initialize);
 
-        public static Task Send(this IPipelineContext context, string destination, object message) =>
-            context.Send(message, IMessageSessionExtensions.DestinationOptions(destination));
-        public static Task Send<T>(this IPipelineContext context, string destination, Action<T> initialize) =>
-            context.Send(initialize, IMessageSessionExtensions.DestinationOptions(destination));
-        public static Task SendLocal(this IPipelineContext context, object message) =>
-            context.Send(message, IMessageSessionExtensions.LocalOptions());
-        public static Task SendLocal<T>(this IPipelineContext context, Action<T> initialize) =>
-            context.Send(initialize, IMessageSessionExtensions.LocalOptions());
+        public static Task Send(IPipelineContext context, string destination, object message) =>
+            IPipelineContextExtensions.Send(context, destination, message);
+        public static Task Send<T>(IPipelineContext context, string destination, Action<T> initialize) =>
+            IPipelineContextExtensions.Send<T>(context, destination, initialize);
+        public static Task SendLocal(IPipelineContext context, object message) =>
+            IPipelineContextExtensions.SendLocal(context, message);
+        public static Task SendLocal<T>(IPipelineContext context, Action<T> initialize) =>
+            IPipelineContextExtensions.SendLocal<T>(context, initialize);
 
         internal static T Initialize<T>(Action<T> initialize) => MessageCreator.Default.CreateInstance(initialize);
 
-        public static Task Send(this IPipelineContext context, object message) => context.Send(message, new SendOptions());
-        public static Task Publish(this IPipelineContext context, object message) => context.Publish(message, new PublishOptions());
-        public static Task Publish<T>(this IPipelineContext context) =>
-            context.Publish<T>(_ => { }, new PublishOptions());
-        public static Task Reply(this IMessageProcessingContext context, object message) => context.Reply(message, new ReplyOptions());
+        public static Task Send(IPipelineContext context, object message) =>
+            IPipelineContextExtensions.Send(context, message);
+        public static Task Publish(IPipelineContext context, object message) =>
+            IPipelineContextExtensions.Publish(context, message);
+        public static Task Publish<T>(IPipelineContext context) =>
+            IPipelineContextExtensions.Publish<T>(context);
+        public static Task Reply(IMessageProcessingContext context, object message) =>
+            IMessageProcessingContextExtensions.Reply(context, message);
 
-        public static Task Send<T>(this IPipelineContext context, Action<T> initialize) =>
-            context.Send(initialize, new SendOptions());
+        public static Task Send<T>(IPipelineContext context, Action<T> initialize) =>
+            IPipelineContextExtensions.Send<T>(context, initialize);
 
-        public static Task Publish<T>(this IPipelineContext context, Action<T> initialize) =>
-            context.Publish(initialize, new PublishOptions());
+        public static Task Publish<T>(IPipelineContext context, Action<T> initialize) =>
+            IPipelineContextExtensions.Publish<T>(context, initialize);
 
-        public static Task Reply<T>(this IMessageProcessingContext context, Action<T> initialize) =>
-            context.Reply(initialize, new ReplyOptions());
+        public static Task Reply<T>(IMessageProcessingContext context, Action<T> initialize) =>
+            IMessageProcessingContextExtensions.Reply<T>(context, initialize);
 
         public static Task Send<T>(IMessageSession session, Action<T> initialize) =>
             IMessageSessionExtensions.Send<T>(session, initialize);
