@@ -187,6 +187,22 @@ namespace Bq.Messaging.Tests
         }
         static async Task TestingSupportTests()
         {
+            var encryptedEndpoint = new EndpointConfiguration("invalid-encryption", new Uri("amqp://localhost"))
+            {
+                Persistence = new SqlitePersistence(
+                    () => throw new InvalidOperationException("Startup validation must not open a database connection."),
+                    "invalid-encryption")
+            };
+            encryptedEndpoint.RegisterMessageContract<RuntimeSubscriptionEvent>("invalid-encryption-contract");
+            encryptedEndpoint.EnableMessagePropertyEncryption(new TestPropertyEncryption(), property => property.Name == "Value");
+            var invalidEncryptionRejected = false;
+            try { using (RabbitEndpoint.Start(encryptedEndpoint)) { } }
+            catch (InvalidOperationException error) when (error.Message == "Encryption requires a public read/write string property: Value")
+            {
+                invalidEncryptionRejected = true;
+            }
+            Assert(invalidEncryptionRejected, "endpoint startup validates known encryption selections before connecting");
+
             IMessageCreator creator = new MessageCreator();
             Assert(creator.CreateInstance<Command>() != null && creator.CreateInstance(typeof(IPilotEvent)) is IPilotEvent,
                 "message creator supports concrete classes and interface contracts");

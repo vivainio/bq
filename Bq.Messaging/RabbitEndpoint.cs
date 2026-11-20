@@ -82,6 +82,7 @@ namespace Bq.Messaging
                 .Concat(configuration.Routes.Keys).Distinct();
             foreach (var type in types)
             {
+                propertyEncryption?.Properties(type);
                 var names = configuration.ContractNames.TryGetValue(type, out var configured)
                     ? configured : new[] { EndpointConfiguration.MessageType(type) };
                 wireNames.Add(type, names[0]);
