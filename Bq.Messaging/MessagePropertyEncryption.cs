@@ -32,6 +32,7 @@ namespace Bq.Messaging
 
     internal sealed class MessagePropertyEncryption
     {
+        static readonly ConcurrentDictionary<Type, bool> markedContracts = new ConcurrentDictionary<Type, bool>();
         readonly IMessagePropertyEncryptionService service;
         readonly Func<PropertyInfo, bool> convention;
         readonly ConcurrentDictionary<Type, PropertyInfo[]> selected = new ConcurrentDictionary<Type, PropertyInfo[]>();
@@ -42,17 +43,28 @@ namespace Bq.Messaging
             this.convention = convention;
         }
 
-        public PropertyInfo[] Properties(Type contract) => selected.GetOrAdd(contract, FindProperties);
+        public static PropertyInfo[] Properties(Type contract, MessagePropertyEncryption settings)
+        {
+            if (settings != null) return settings.selected.GetOrAdd(contract, settings.FindProperties);
+            if (markedContracts.GetOrAdd(contract, type => ContractProperties(type).Any(IsMarked)))
+                throw new InvalidOperationException("Configure message property encryption for " + contract.FullName + ".");
+            return Array.Empty<PropertyInfo>();
+        }
+
+        static bool IsMarked(PropertyInfo property) =>
+            Attribute.IsDefined(property, typeof(EncryptedPropertyAttribute), inherit: true);
+
+        static System.Collections.Generic.IEnumerable<PropertyInfo> ContractProperties(Type contract)
+        {
+            var properties = contract.GetProperties(BindingFlags.Instance | BindingFlags.Public).AsEnumerable();
+            return contract.IsInterface
+                ? properties.Concat(contract.GetInterfaces().SelectMany(type => type.GetProperties()))
+                : properties;
+        }
 
         PropertyInfo[] FindProperties(Type contract)
         {
-            var properties = contract.GetProperties(BindingFlags.Instance | BindingFlags.Public).AsEnumerable();
-            if (contract.IsInterface)
-                properties = properties.Concat(contract.GetInterfaces().SelectMany(type => type.GetProperties()));
-
-            var matches = properties.Where(property =>
-                Attribute.IsDefined(property, typeof(EncryptedPropertyAttribute), inherit: true) ||
-                convention(property)).ToArray();
+            var matches = ContractProperties(contract).Where(property => IsMarked(property) || convention(property)).ToArray();
             foreach (var property in matches)
                 if (property.PropertyType != typeof(string) || property.GetMethod?.IsPublic != true ||
                     property.SetMethod?.IsPublic != true || property.GetIndexParameters().Length != 0)

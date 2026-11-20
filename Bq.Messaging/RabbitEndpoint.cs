@@ -82,7 +82,7 @@ namespace Bq.Messaging
                 .Concat(configuration.Routes.Keys).Distinct();
             foreach (var type in types)
             {
-                propertyEncryption?.Properties(type);
+                MessagePropertyEncryption.Properties(type, propertyEncryption);
                 var names = configuration.ContractNames.TryGetValue(type, out var configured)
                     ? configured : new[] { EndpointConfiguration.MessageType(type) };
                 wireNames.Add(type, names[0]);
@@ -482,8 +482,8 @@ namespace Bq.Messaging
             var serializationType = InterfaceMessage.SerializationType(contract);
             var value = InterfaceMessage.SerializationValue(contract, serializationType, outgoingMessage);
             var serialized = MessagePackSerializer.Serialize(serializationType, value, SerializerOptions);
-            var encryptedProperties = propertyEncryption?.Properties(contract);
-            if (encryptedProperties?.Length > 0)
+            var encryptedProperties = MessagePropertyEncryption.Properties(contract, propertyEncryption);
+            if (encryptedProperties.Length > 0)
             {
                 var copy = MessagePackSerializer.Deserialize(serializationType, serialized, SerializerOptions);
                 propertyEncryption.Transform(copy, encryptedProperties, encrypt: true);
@@ -699,7 +699,7 @@ namespace Bq.Messaging
         {
             var message = MessagePackSerializer.Deserialize(InterfaceMessage.SerializationType(contract), body, SerializerOptions);
             if (propertyEncryption != null && message != null)
-                propertyEncryption.Transform(message, propertyEncryption.Properties(contract), encrypt: false);
+                propertyEncryption.Transform(message, MessagePropertyEncryption.Properties(contract, propertyEncryption), encrypt: false);
             return message;
         }
 
