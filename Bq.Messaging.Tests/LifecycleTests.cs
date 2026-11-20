@@ -65,10 +65,11 @@ namespace Bq.Messaging.Tests
             var queue = "bq.lifecycle." + Guid.NewGuid().ToString("N");
             var store = new LifecycleStore();
             var bothStarted = Signal(); var release = Signal(); var third = Signal();
-            int started = 0, active = 0, maxActive = 0;
+            int started = 0, active = 0, maxActive = 0, stale = 0;
             var config = new EndpointConfiguration(queue, uri) { Persistence = store, MaxConcurrency = 2 };
             config.Handle(() => new Handler<Command>(async (m, c) =>
             {
+                if (m.Text == "stale") Interlocked.Increment(ref stale);
                 var count = Interlocked.Increment(ref active);
                 if (count > maxActive) maxActive = count;
                 if (Interlocked.Increment(ref started) == 2) bothStarted.TrySetResult(true);
@@ -81,7 +82,14 @@ namespace Bq.Messaging.Tests
                 using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                 using (var channel = connection.CreateModel())
                 {
+                    using (var setup = RabbitEndpoint.Start(config)) await setup.StopAsync();
+                    channel.ConfirmSelect();
+                    Publish(channel, queue, "stale");
+                    Assert(channel.WaitForConfirms(TimeSpan.FromSeconds(5)) &&
+                        channel.QueueDeclarePassive(queue).MessageCount == 1, "startup purge test has a queued message");
+                    config.PurgeOnStartup(true);
                     var endpoint = RabbitEndpoint.Start(config);
+                    config.PurgeOnStartup(false);
                     Publish(channel, queue, "first"); Publish(channel, queue, "second"); Publish(channel, queue, "third");
                     await Within(bothStarted.Task, "two handlers run concurrently");
                     await Task.Delay(250);
@@ -98,6 +106,7 @@ namespace Bq.Messaging.Tests
                         await Within(third.Task, "pending delivery after restart");
                         await restarted.StopAsync();
                     }
+                    Assert(Volatile.Read(ref stale) == 0, "startup purge removes the queued delivery before consumer startup");
 
                     var cancelled = Signal(); var entered = Signal(); var deliveredAgain = Signal();
                     var forced = new EndpointConfiguration(queue, uri) { Persistence = store };

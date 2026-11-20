@@ -6,6 +6,12 @@ namespace Bq.Messaging
 {
     public static class EndpointConfigurationExtensions
     {
+        public static void PurgeOnStartup(this EndpointConfiguration config, bool value)
+        {
+            if (config == null) throw new ArgumentNullException(nameof(config));
+            config.PurgeInputQueueOnStartup = value;
+        }
+
         public static void OverridePublicReturnAddress(this EndpointConfiguration configuration, string address)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));

@@ -100,6 +100,7 @@ namespace Bq.Messaging
                         ["x-dead-letter-exchange"] = errorExchange,
                         ["x-dead-letter-routing-key"] = configuration.Name
                     });
+                    if (configuration.PurgeInputQueueOnStartup) consumerChannel.QueuePurge(configuration.Name);
                     var conventions = configuration.Conventions().Conventions;
                     var subscribed = new HashSet<Registration>(receivers.Values.Distinct().Where(registration =>
                         registration.Subscribe || (registration.UseEventConvention &&
