@@ -85,9 +85,9 @@ namespace Bq.Messaging
         internal void Initialize(TData data, Func<DateTimeOffset, object, Type, Task> request) { Data = data; BindTimeoutScheduler(request); }
         protected virtual void ConfigureHowToFindSaga(SagaPropertyMapper<TData> mapper) { }
 
-        protected SagaPropertyMapper<TData>.MessageMapping<TMessage> ConfigureMapping<TMessage>(
+        protected ToSagaExpression<TData, TMessage> ConfigureMapping<TMessage>(
             System.Linq.Expressions.Expression<Func<TMessage, object>> property) where TMessage : class =>
-            new SagaPropertyMapper<TData>.MessageMapping<TMessage>(property,
+            new ToSagaExpression<TData, TMessage>(property,
                 (data, message) => (configuringMapper ?? throw new InvalidOperationException("Configure mappings inside ConfigureHowToFindSaga."))
                     .Add(data, message));
 

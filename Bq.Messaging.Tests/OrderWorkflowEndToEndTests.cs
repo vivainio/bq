@@ -29,7 +29,9 @@ namespace Bq.Messaging.Tests
         {
             IToSagaExpression<FulfillmentState> header = mapper.ConfigureHeaderMapping<BeginFulfillment>("order-id");
             header.ToSaga(data => data.OrderId);
-            mapper.ConfigureMapping<FulfillmentRecorded>(message => message.OrderId).ToSaga(data => data.OrderId);
+            ToSagaExpression<FulfillmentState, FulfillmentRecorded> recorded =
+                mapper.ConfigureMapping<FulfillmentRecorded>(message => message.OrderId);
+            recorded.ToSaga(data => data.OrderId);
         }
 
         public async Task Handle(BeginFulfillment message, IMessageHandlerContext context)

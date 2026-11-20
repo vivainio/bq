@@ -42,13 +42,13 @@ namespace Bq.Messaging
         readonly Dictionary<Type, IMapping> mappings = new Dictionary<Type, IMapping>();
         PropertyInfo sagaProperty;
 
-        public MessageMapping<TMessage> ConfigureMapping<TMessage>(Expression<Func<TMessage, object>> property)
-            where TMessage : class => new MessageMapping<TMessage>(property, Add);
+        public ToSagaExpression<TData, TMessage> ConfigureMapping<TMessage>(Expression<Func<TMessage, object>> property)
+            where TMessage : class => new ToSagaExpression<TData, TMessage>(property, Add);
 
         public HeaderMapping<TMessage> ConfigureHeaderMapping<TMessage>(string headerName)
             where TMessage : class => new HeaderMapping<TMessage>(this, headerName);
 
-        public SagaMapping MapSaga(Expression<Func<TData, object>> property) => new SagaMapping(this, property);
+        public CorrelatedSagaPropertyMapper<TData> MapSaga(Expression<Func<TData, object>> property) => new CorrelatedSagaPropertyMapper<TData>(this, property);
 
         internal void Add<TMessage>(Expression<Func<TData, object>> data, Expression<Func<TMessage, object>> message)
             where TMessage : class
@@ -108,30 +108,6 @@ namespace Bq.Messaging
             foreach (var mapping in mappings.Values) mapping.Apply(target);
         }
 
-        public sealed class SagaMapping
-        {
-            readonly SagaPropertyMapper<TData> owner;
-            readonly Expression<Func<TData, object>> data;
-
-            internal SagaMapping(SagaPropertyMapper<TData> owner, Expression<Func<TData, object>> data)
-            {
-                this.owner = owner;
-                this.data = data;
-            }
-
-            public SagaMapping ToMessageHeader<TMessage>(string headerName) where TMessage : class
-            {
-                owner.ConfigureHeaderMapping<TMessage>(headerName).ToSaga(data);
-                return this;
-            }
-
-            public SagaMapping ToMessage<TMessage>(Expression<Func<TMessage, object>> message) where TMessage : class
-            {
-                owner.Add(data, message);
-                return this;
-            }
-        }
-
         public sealed class HeaderMapping<TMessage> : IToSagaExpression<TData> where TMessage : class
         {
             readonly SagaPropertyMapper<TData> owner;
@@ -146,20 +122,44 @@ namespace Bq.Messaging
 
             public void ToSaga(Expression<Func<TData, object>> data) => owner.AddHeader<TMessage>(data, headerName);
         }
+    }
 
-        public sealed class MessageMapping<TMessage> : IToSagaExpression<TData> where TMessage : class
+    public sealed class CorrelatedSagaPropertyMapper<TData> where TData : class, new()
+    {
+        readonly SagaPropertyMapper<TData> owner;
+        readonly Expression<Func<TData, object>> data;
+
+        internal CorrelatedSagaPropertyMapper(SagaPropertyMapper<TData> owner, Expression<Func<TData, object>> data)
         {
-            readonly Expression<Func<TMessage, object>> message;
-            readonly Action<Expression<Func<TData, object>>, Expression<Func<TMessage, object>>> add;
-
-            internal MessageMapping(Expression<Func<TMessage, object>> message,
-                Action<Expression<Func<TData, object>>, Expression<Func<TMessage, object>>> add)
-            {
-                this.message = message;
-                this.add = add;
-            }
-
-            public void ToSaga(Expression<Func<TData, object>> data) => add(data, message);
+            this.owner = owner;
+            this.data = data;
         }
+
+        public CorrelatedSagaPropertyMapper<TData> ToMessageHeader<TMessage>(string headerName) where TMessage : class
+        {
+            owner.ConfigureHeaderMapping<TMessage>(headerName).ToSaga(data);
+            return this;
+        }
+
+        public CorrelatedSagaPropertyMapper<TData> ToMessage<TMessage>(Expression<Func<TMessage, object>> message) where TMessage : class
+        {
+            owner.Add(data, message);
+            return this;
+        }
+    }
+
+    public sealed class ToSagaExpression<TData, TMessage> : IToSagaExpression<TData> where TData : class where TMessage : class
+    {
+        readonly Expression<Func<TMessage, object>> message;
+        readonly Action<Expression<Func<TData, object>>, Expression<Func<TMessage, object>>> add;
+
+        internal ToSagaExpression(Expression<Func<TMessage, object>> message,
+            Action<Expression<Func<TData, object>>, Expression<Func<TMessage, object>>> add)
+        {
+            this.message = message;
+            this.add = add;
+        }
+
+        public void ToSaga(Expression<Func<TData, object>> data) => add(data, message);
     }
 }
