@@ -22,6 +22,7 @@ namespace Bq.Messaging
     {
         IUniformSession WithHeader(string name, object value);
         Task Send<T>(T message);
+        Task Send<T>(Action<T> initialize);
         Task Send<T>(T message, SendOptions options);
         Task Send(object message, SendOptions options);
         Task Send<T>(Action<T> initialize, SendOptions options);
@@ -29,6 +30,7 @@ namespace Bq.Messaging
         Task Send<T>(string destination, T message);
         Task SendLocal<T>(T message);
         Task Publish<T>(T message);
+        Task Publish<T>(Action<T> initialize);
         Task Publish<T>(T message, PublishOptions options);
         Task Publish(object message, PublishOptions options);
         Task Publish<T>(Action<T> initialize, PublishOptions options);

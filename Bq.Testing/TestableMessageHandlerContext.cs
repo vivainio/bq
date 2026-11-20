@@ -143,9 +143,11 @@ namespace Bq.Testing
                 return Task.CompletedTask;
             }
 
+            public Task Send<T>(Action<T> initialize) => Send(MessageOptionsExtensions.Initialize(initialize));
             public Task Send<T>(T message) => Record(MessageOperation.Send, message);
             public Task Send<T>(string destination, T message) => Record(MessageOperation.Send, message, destination);
             public Task SendLocal<T>(T message) => Record(MessageOperation.SendLocal, message);
+            public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
             public Task Publish<T>(T message) => Record(MessageOperation.Publish, message);
             public Task SendAt<T>(T message, DateTimeOffset dueAt) => Record(MessageOperation.Send, message, dueAt: dueAt);
             public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => Record(MessageOperation.Send, message, destination, dueAt);

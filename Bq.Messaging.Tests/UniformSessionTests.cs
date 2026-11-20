@@ -25,6 +25,7 @@ namespace Bq.Messaging.Tests
             var store = new SqlitePersistence(() => createConnection(path), name);
             await store.Initialize();
             var config = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
+            config.Route<UniformWork>(name);
             config.Recoverability.DelayedRetries = new TimeSpan[0];
             var processed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var errorAttempted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -46,12 +47,14 @@ namespace Bq.Messaging.Tests
                     catch (InvalidOperationException) { rejected = true; }
                     Assert(rejected, "outside session rejected within handler");
                     await Task.Yield();
-                    await session.SendLocalAt(new UniformWork { Text = "committed" }, DateTimeOffset.UtcNow.AddMilliseconds(100));
+                    Action<UniformWork> initialize = work => work.Text = "committed";
+                    await session.Send(initialize);
                     if (message.Fail) { errorAttempted.TrySetResult(true); throw new Exception("rollback"); }
                 });
             });
             config.Handle(() => new Handler<UniformWork>((message, context) =>
             {
+                Assert(message.Text == "committed", "session initializes the message before sending");
                 Interlocked.Increment(ref received);
                 processed.TrySetResult(context.CorrelationId);
                 return Task.CompletedTask;

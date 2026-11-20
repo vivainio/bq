@@ -260,6 +260,7 @@ namespace Bq.Messaging
             public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
             public Task Publish<T>(Action<T> initialize, PublishOptions options) =>
                 Publish(MessageOptionsExtensions.Initialize(initialize), options);
+            public Task Send<T>(Action<T> initialize) => Send(MessageOptionsExtensions.Initialize(initialize));
             public Task Send<T>(T message)
             {
                 return Send(endpoint.RouteFor(message), message);
@@ -275,6 +276,7 @@ namespace Bq.Messaging
             public Task PublishAt<T>(T message, DateTimeOffset dueAt) => PublishAt(message, dueAt, headers);
             public Task PublishAt<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> messageHeaders) =>
                 endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null, messageHeaders);
+            public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
             public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
                 message, endpoint.eventsExchange, endpoint.WireName(ContractType(message)), null, false, headers));
             Task IImmediateDispatch.SendImmediately<T>(T message, string destination, bool local)
@@ -938,6 +940,7 @@ namespace Bq.Messaging
             public Task Publish(object message, PublishOptions options) => Publish<object>(message, options);
             public Task Publish<T>(Action<T> initialize, PublishOptions options) =>
                 Publish(MessageOptionsExtensions.Initialize(initialize), options);
+            public Task Send<T>(Action<T> initialize) => Send(MessageOptionsExtensions.Initialize(initialize));
             public Task Send<T>(T message) { var context = Validate(); return context == null ? endpoint.SendCore(message, null, null, headers) : context.SendWithHeaders(message, null, headers); }
             public Task Send<T>(string destination, T message)
             {
@@ -945,6 +948,7 @@ namespace Bq.Messaging
                 return context == null ? endpoint.SendCore(message, null, RequireDestination(destination), headers) : context.SendWithHeaders(message, RequireDestination(destination), headers);
             }
             public Task SendLocal<T>(T message) { var context = Validate(); return context == null ? endpoint.SendCore(message, null, endpoint.configuration.Name, headers) : context.SendWithHeaders(message, endpoint.configuration.Name, headers); }
+            public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
             public Task Publish<T>(T message) { var context = Validate(); return context == null ? endpoint.PublishCore(message, null, headers) : context.PublishWithHeaders(message, headers); }
             public Task SendAt<T>(T message, DateTimeOffset dueAt)
             {
