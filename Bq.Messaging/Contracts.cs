@@ -134,6 +134,7 @@ namespace Bq.Messaging
         internal string ForwardReceivedMessagesAddress { get; set; }
         internal string AuditQueue { get; set; }
         internal string AuditExpiration { get; set; }
+        internal bool DurableMessages { get; set; } = true;
         internal bool PurgeInputQueueOnStartup { get; set; }
         internal bool UsePreProvisionedTopology { get; set; }
         internal AutoSubscribeSettings AutoSubscriptionSettings { get; } = new AutoSubscribeSettings();

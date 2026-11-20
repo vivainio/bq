@@ -15,6 +15,7 @@ namespace Bq.Messaging
     public sealed class RabbitEndpoint : IEndpointInstance
     {
         readonly string localAddress;
+        readonly bool durableMessages;
         readonly string forwardReceivedMessagesAddress;
         readonly string auditQueue;
         readonly string auditExpiration;
@@ -59,6 +60,7 @@ namespace Bq.Messaging
         RabbitEndpoint(EndpointConfiguration configuration)
         {
             this.configuration = configuration;
+            durableMessages = configuration.DurableMessages;
             localAddress = configuration.LocalAddress ?? configuration.Name;
             forwardReceivedMessagesAddress = configuration.ForwardReceivedMessagesAddress;
             auditQueue = configuration.AuditQueue;
@@ -514,7 +516,7 @@ namespace Bq.Messaging
             {
                 if (disposed) throw new ObjectDisposedException(nameof(RabbitEndpoint));
                 var props = publisherChannel.CreateBasicProperties();
-                props.Persistent = true;
+                props.Persistent = durableMessages;
                 props.MessageId = message.Id;
                 props.CorrelationId = message.CorrelationId;
                 props.ReplyTo = message.ReplyTo;

@@ -519,6 +519,7 @@ namespace Bq.Messaging.Tests
                         connectionConfigured = true;
                     };
                     producerConfig.SendOnly();
+                    producerConfig.DisableDurableMessages();
                     producerConfig.OverridePublicReturnAddress(producerName + ".public");
                     using (var producer = RabbitEndpoint.Start(producerConfig))
                     {
@@ -543,7 +544,8 @@ namespace Bq.Messaging.Tests
                                 IMessageSession session = producer;
                                 await session.SendLocal<LocalMessage>(message => message.Text = "shared endpoint");
                                 var local = queueOwner.BasicGet(producerName, true);
-                                Assert(local != null && local.BasicProperties.ReplyTo == producerName + ".public",
+                                Assert(local != null && local.BasicProperties.ReplyTo == producerName + ".public" &&
+                                    local.BasicProperties.DeliveryMode == 1,
                                     "send-only local send advertises the configured return address while routing to the named queue");
                                 var delay = TimeSpan.FromMilliseconds(500);
                                 var options = new SendOptions();
@@ -565,7 +567,7 @@ namespace Bq.Messaging.Tests
                                     "relative delivery delay and custom header survive durable scheduling");
                                 Assert(scheduled.BasicProperties.MessageId == "scheduled-local-id" &&
                                     scheduled.BasicProperties.CorrelationId == "scheduled-local-id" &&
-                                    scheduled.BasicProperties.ReplyTo == receiverName &&
+                                    scheduled.BasicProperties.ReplyTo == receiverName && scheduled.BasicProperties.DeliveryMode == 1 &&
                                     !scheduled.BasicProperties.Headers.ContainsKey("x-bq-override-reply-to"),
                                     "explicit wire identity and reply address survive scheduling on a send-only endpoint");
                             }

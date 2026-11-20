@@ -6,6 +6,12 @@ namespace Bq.Messaging
 {
     public static class EndpointConfigurationExtensions
     {
+        public static void DisableDurableMessages(this EndpointConfiguration config) =>
+            (config ?? throw new ArgumentNullException(nameof(config))).DurableMessages = false;
+
+        public static void EnableDurableMessages(this EndpointConfiguration config) =>
+            (config ?? throw new ArgumentNullException(nameof(config))).DurableMessages = true;
+
         public static void AuditProcessedMessagesTo(this EndpointConfiguration config, string auditQueue, TimeSpan? timeToBeReceived = null)
         {
             if (config == null) throw new ArgumentNullException(nameof(config));
