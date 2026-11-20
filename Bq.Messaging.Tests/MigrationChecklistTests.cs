@@ -489,7 +489,7 @@ namespace Bq.Messaging.Tests
                         });
                         await messaging.Publish(created, publish);
                         Action<Command> initializeCommand = command => command.Text = "pilot command";
-                        await producer.Send(initializeCommand, new SendOptions());
+                        await producer.Send(initializeCommand);
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
                         Assert(await Within(received.Task) == "pilot observed", "the migrated handler receives the replacement event");
                         BasicGetResult behaviorReply = null;

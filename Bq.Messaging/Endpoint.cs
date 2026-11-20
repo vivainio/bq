@@ -34,11 +34,13 @@ namespace Bq.Messaging
     public interface IEndpointInstance : IMessageSession, IDisposable
     {
         Task Send<T>(T message);
+        Task Send<T>(Action<T> initialize);
         Task Send<T>(T message, SendOptions options);
         new Task Send(object message, SendOptions options);
         new Task Send<T>(Action<T> initialize, SendOptions options);
         Task Send(string message, SendOptions options);
         Task Publish<T>(T message);
+        Task Publish<T>(Action<T> initialize);
         Task Publish<T>(T message, PublishOptions options);
         new Task Publish(object message, PublishOptions options);
         new Task Publish<T>(Action<T> initialize, PublishOptions options);

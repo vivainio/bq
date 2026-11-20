@@ -367,6 +367,7 @@ namespace Bq.Messaging
         public Task Publish<T>(Action<T> initialize, PublishOptions options) =>
             Publish(MessageOptionsExtensions.Initialize(initialize), options);
         public Task Send<T>(T message) => SendCore(message, null, null);
+        public Task Send<T>(Action<T> initialize) => Send(MessageOptionsExtensions.Initialize(initialize));
         public Task Send<T>(string destination, T message) => SendCore(message, null, RequireDestination(destination));
         static string RequireDestination(string destination)
         {
@@ -375,6 +376,7 @@ namespace Bq.Messaging
         }
         public Task SendLocal<T>(T message) => SendCore(message, null, configuration.Name);
         public Task Publish<T>(T message) => PublishCore(message, null);
+        public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
         internal Task SendCore<T>(T message, string correlationId, string destination, IDictionary<string, object> headers = null)
         {
             return Dispatch(message, "", destination ?? RouteFor(message), correlationId, true, headers);
