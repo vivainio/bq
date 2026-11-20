@@ -18,8 +18,7 @@ namespace Bq.Messaging
     {
         public static void EnableMessagePropertyEncryption(this EndpointConfiguration endpointConfiguration,
             IMessagePropertyEncryptionService encryptionService) =>
-            EnableMessagePropertyEncryption(endpointConfiguration, encryptionService,
-                property => Attribute.IsDefined(property, typeof(EncryptedPropertyAttribute), inherit: true));
+            EnableMessagePropertyEncryption(endpointConfiguration, encryptionService, _ => false);
 
         public static void EnableMessagePropertyEncryption(this EndpointConfiguration endpointConfiguration,
             IMessagePropertyEncryptionService encryptionService, Func<PropertyInfo, bool> encryptedPropertyConvention)
@@ -51,7 +50,9 @@ namespace Bq.Messaging
             if (contract.IsInterface)
                 properties = properties.Concat(contract.GetInterfaces().SelectMany(type => type.GetProperties()));
 
-            var matches = properties.Where(convention).ToArray();
+            var matches = properties.Where(property =>
+                Attribute.IsDefined(property, typeof(EncryptedPropertyAttribute), inherit: true) ||
+                convention(property)).ToArray();
             foreach (var property in matches)
                 if (property.PropertyType != typeof(string) || property.GetMethod?.IsPublic != true ||
                     property.SetMethod?.IsPublic != true || property.GetIndexParameters().Length != 0)

@@ -463,7 +463,7 @@ namespace Bq.Messaging.Tests
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
             var encryption = new TestPropertyEncryption();
             sender.EnableMessagePropertyEncryption(encryption);
-            receiver.EnableMessagePropertyEncryption(encryption, property => property.DeclaringType == typeof(IPilotMessage));
+            receiver.EnableMessagePropertyEncryption(encryption, _ => false);
             using var container = new WindsorContainer();
             var windsor = new WindsorMessaging(container);
             windsor.Attach(receiver);
