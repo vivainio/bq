@@ -158,3 +158,5 @@ Pass a behavior factory to the `RegisterStep` constructor when a behavior needs 
 The `Pipeline.Register` and `Pipeline.Replace` overloads also accept a `Func<TBehavior>` for behavior construction during configuration. A factory registration without a step ID uses the full name of `TBehavior`.
 
 Register infrastructure message predicates with `Conventions().Conventions.AddSystemMessagesConventions(...)`. Matching types satisfy `IsMessageType` and can be identified separately with `IsInSystemConventionList`.
+
+Use `MessageMapper` to create messages and inspect Bq's generated interface implementations. `Initialize(types)` registers CLR names for string lookup. Unknown names return `null`. RabbitMQ contract names and aliases are configured separately.

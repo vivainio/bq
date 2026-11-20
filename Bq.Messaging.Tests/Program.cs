@@ -218,6 +218,15 @@ namespace Bq.Messaging.Tests
             Assert(invalidEncryptionRejected, "endpoint startup validates known encryption selections before connecting");
 
             IMessageCreator creator = new MessageCreator();
+            IMessageMapper mapper = new MessageMapper();
+            mapper.Initialize(new[] { typeof(IPilotEvent), typeof(Command) });
+            var implementation = mapper.GetMappedTypeFor(typeof(IPilotEvent));
+            Assert(mapper.CreateInstance<IPilotEvent>().GetType() == implementation &&
+                mapper.GetMappedTypeFor(implementation) == typeof(IPilotEvent) &&
+                mapper.GetMappedTypeFor(typeof(IPilotEvent).AssemblyQualifiedName) == typeof(IPilotEvent) &&
+                mapper.GetMappedTypeFor(typeof(Command)) == typeof(Command) &&
+                mapper.GetMappedTypeFor("Unknown.Message") == null,
+                "message mapper exposes creation and lookup for known contracts");
             Assert(creator.CreateInstance<Command>() != null && creator.CreateInstance(typeof(IPilotEvent)) is IPilotEvent,
                 "message creator supports concrete classes and interface contracts");
             var sendOptions = new SendOptions();
