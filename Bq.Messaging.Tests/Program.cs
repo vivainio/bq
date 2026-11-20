@@ -10,6 +10,9 @@ using Bq.Testing;
 using MessagePack;
 using MessagePack.Resolvers;
 using RabbitMQ.Client;
+using Bq.Extensions.CastleWindsor;
+using Castle.MicroKernel.Registration;
+using Castle.Windsor;
 
 namespace Bq.Messaging.Tests
 {
@@ -31,11 +34,20 @@ namespace Bq.Messaging.Tests
     public class OrderState { public string Status { get; set; } public int TimeoutCount { get; set; } }
     sealed class MissingOrderHandler : IHandleSagaNotFound
     {
-        public int Count { get; private set; }
+        readonly IMessageHandlerContext scopedContext;
+        readonly Action onMissing;
+
+        public MissingOrderHandler(IMessageHandlerContext scopedContext, Action onMissing)
+        {
+            this.scopedContext = scopedContext;
+            this.onMissing = onMissing;
+        }
 
         public Task Handle(object message, IMessageProcessingContext context)
         {
-            if (message is ChangeOrder change && change.OrderId == "missing" && context.MessageId != null) Count++;
+            if (!ReferenceEquals(context, scopedContext) || scopedContext.PersistenceSession == null)
+                throw new InvalidOperationException("The Windsor component must use the active message transaction.");
+            if (message is ChangeOrder change && change.OrderId == "missing" && context.MessageId != null) onMissing();
             return Task.CompletedTask;
         }
     }
@@ -677,12 +689,17 @@ namespace Bq.Messaging.Tests
             var store = new SqlitePersistence(() => Sqlite(path), endpointName);
             await store.Initialize();
             var missingCount = 0;
-            var missingHandler = new MissingOrderHandler();
+            var missingHandlerCount = 0;
             var otherHandlerCount = 0;
             var config = new EndpointConfiguration(endpointName, uri) { Persistence = store };
             config.SagaNotFound = (sagaType, key, message, context) => { if (key == "missing") Interlocked.Increment(ref missingCount); return Task.CompletedTask; };
-            config.RegisterSagaNotFoundHandler(context => context.PersistenceSession != null
-                ? missingHandler : throw new InvalidOperationException("Expected an active handler transaction."));
+            using var container = new WindsorContainer();
+            var windsor = new WindsorMessaging(container);
+            container.Register(Component.For<IHandleSagaNotFound>().UsingFactoryMethod(() =>
+                new MissingOrderHandler(container.Resolve<IMessageHandlerContext>(),
+                    () => Interlocked.Increment(ref missingHandlerCount))).LifestyleScoped());
+            windsor.Attach(config);
+            windsor.HandleSagaNotFound(config);
             config.Handle(() => new Handler<ChangeOrder>((message, context) => { Interlocked.Increment(ref otherHandlerCount); return Task.CompletedTask; }));
             config.Incoming.Use((incoming, next) =>
             {
@@ -722,7 +739,7 @@ namespace Bq.Messaging.Tests
                         var pending = await store.ListPendingDispatches(DispatchKind.SagaTimeout);
                         Assert(pending.Count == 1 && pending[0].DueAtUtc == timeoutAt.UtcDateTime, "absolute timeout preserves due time across retry");
                         Assert(await ReadOrder(store, "missing") == null && missingCount == 1, "non-start message invokes not-found callback");
-                        Assert(missingHandler.Count == 1, "the saga-not-found handler receives the original logical message and context");
+                        Assert(missingHandlerCount == 1, "Windsor resolves the saga-not-found handler inside the message scope");
                         Assert(otherHandlerCount == 1, "ordinary handler and saga share message");
                     }
                     // Timeout is stored in SQLite and is still due after endpoint restart.
