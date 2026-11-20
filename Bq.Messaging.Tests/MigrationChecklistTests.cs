@@ -464,6 +464,13 @@ namespace Bq.Messaging.Tests
             var encryption = new TestPropertyEncryption();
             sender.EnableMessagePropertyEncryption(encryption);
             receiver.EnableMessagePropertyEncryption(encryption, _ => false);
+            sender.Route<ReplacementPilotEvent>(receiverName);
+            var concreteReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            receiver.Handle(() => new Handler<ReplacementPilotEvent>((message, context) =>
+            {
+                concreteReceived.TrySetResult(message.Text);
+                return Task.CompletedTask;
+            }));
             using var container = new WindsorContainer();
             var windsor = new WindsorMessaging(container);
             windsor.Attach(receiver);
@@ -637,6 +644,23 @@ namespace Bq.Messaging.Tests
                         PublishSubscriptionProbe(channel, "", receiverName, barrierContract, new WorkflowBarrier());
                         await Within(barrier.Task);
                         Assert(Volatile.Read(ref runtimeDeliveries) == 2, "unsubscribe removes both the event contract and its alias");
+
+                        var concrete = new ReplacementPilotEvent { Text = "concrete secret", Count = 7 };
+                        var concreteOptions = new SendOptions();
+                        concreteOptions.SetMessageId(prefix + ".concrete");
+                        await messaging.Send(concrete, concreteOptions);
+                        Assert(await Within(concreteReceived.Task) == "concrete secret mutated",
+                            "a concrete handler receives the decrypted interface property");
+                        BasicGetResult concreteCopy = null;
+                        await WaitFor(() =>
+                        {
+                            concreteCopy = channel.BasicGet(forwardQueue, true);
+                            return Task.FromResult(concreteCopy?.BasicProperties.MessageId == prefix + ".concrete");
+                        }, "concrete message forwarded");
+                        var wire = MessagePackSerializer.Deserialize<ReplacementPilotEvent>(concreteCopy.Body,
+                            MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance));
+                        Assert(wire.Text == encryption.Encrypt(concrete.Text) && wire.Count == 7 && concrete.Text == "concrete secret",
+                            "a concrete message protects the inherited property on the wire without changing the caller's object");
 
                         var invalid = new ReplacementPilotEvent { Text = "invalid ciphertext!", Count = 7 };
                         PublishSubscriptionProbe(channel, pilotExchange, contract, contract, invalid);
