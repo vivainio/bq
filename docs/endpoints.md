@@ -148,3 +148,5 @@ A contract marked with `[EncryptedProperty]` requires an encryption provider. A 
 ## Message body encryption
 
 Call `EnableMessageEncryption(encryptionService)` with an `IMessageBodyEncryptionService` on participating endpoints. Supply a thread-safe provider that authenticates ciphertext and manages keys. Bq encrypts the serialized body after outgoing transport mutation and before persistence or publish. It decrypts incoming bodies before transport mutation and deserialization. Forwarding, auditing, and recovery retain the received ciphertext. Headers and routing metadata remain visible. Every incoming body on an enabled endpoint must be decryptable by the provider.
+
+Call `context.DoNotContinueDispatchingCurrentMessageToHandlers()` to skip subsequent handlers for the current delivery attempt. The current handler can finish, and ordinary transaction and recoverability rules apply.

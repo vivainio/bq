@@ -1111,6 +1111,10 @@ namespace Bq.Messaging
         }
         internal sealed class HandlerContext : IMessageHandlerContext, IReplyWithOptions
         {
+            internal bool HandlerDispatchStopped { get; private set; }
+
+            public void DoNotContinueDispatchingCurrentMessageToHandlers() => HandlerDispatchStopped = true;
+
             readonly RabbitEndpoint endpoint;
             readonly string replyTo;
             readonly IBasicProperties wireProperties;

@@ -40,6 +40,10 @@ namespace Bq.Testing
 
     public sealed class TestableMessageHandlerContext : IMessageHandlerContext, IReplyWithOptions
     {
+        public bool HandlerDispatchStopped { get; private set; }
+
+        public void DoNotContinueDispatchingCurrentMessageToHandlers() => HandlerDispatchStopped = true;
+
         readonly ConcurrentQueue<RecordedMessage> messages = new ConcurrentQueue<RecordedMessage>();
 
         public TestableMessageHandlerContext()

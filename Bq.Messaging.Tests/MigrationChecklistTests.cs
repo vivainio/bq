@@ -519,8 +519,11 @@ namespace Bq.Messaging.Tests
             {
                 Assert(context.GetHeader("migration-group") == "default", "endpoint headers reach sends without an override");
                 commandReceived.TrySetResult(message.Text);
+                context.DoNotContinueDispatchingCurrentMessageToHandlers();
                 return Task.CompletedTask;
             }));
+            receiver.Handle(() => new Handler<Command>((message, context) =>
+                throw new InvalidOperationException("The first command handler stopped dispatch.")));
 
             const string runtimeContract = "migration.runtime";
             const string runtimeAlias = "migration.runtime.previous";

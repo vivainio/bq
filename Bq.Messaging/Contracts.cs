@@ -73,6 +73,7 @@ namespace Bq.Messaging
         IReadOnlyDictionary<string, object> Headers { get; }
         IPersistenceSession PersistenceSession { get; }
         SynchronizedStorageSession SynchronizedStorageSession { get; }
+        void DoNotContinueDispatchingCurrentMessageToHandlers();
         Task Send<T>(T message);
         Task Send<T>(Action<T> initialize);
         Task Send<T>(T message, SendOptions options);
@@ -249,9 +250,13 @@ namespace Bq.Messaging
             UseSagaEventConvention |= registration.UseSagaEventConvention;
             invocations.AddRange(registration.invocations);
         }
-        public async Task Invoke(object message, IMessageHandlerContext context)
+        public async Task Invoke(object message, RabbitEndpoint.HandlerContext context)
         {
-            foreach (var invocation in invocations) await invocation(message, context).ConfigureAwait(false);
+            foreach (var invocation in invocations)
+            {
+                await invocation(message, context).ConfigureAwait(false);
+                if (context.HandlerDispatchStopped) break;
+            }
         }
     }
 }
