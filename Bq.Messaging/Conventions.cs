@@ -18,6 +18,7 @@ namespace Bq.Messaging
         internal Func<Type, bool> MessageRule { get; set; }
         internal Func<Type, bool> CommandRule { get; set; }
         internal Func<Type, bool> EventRule { get; set; }
+        internal Func<Type, TimeSpan> TimeToBeReceivedRule { get; set; }
 
         public bool IsMessageType(Type type) => Match(type, MessageRule, typeof(IMessage)) ||
             Additional.Any(convention => convention.IsMessageType(type)) || IsCommandType(type) || IsEventType(type);
@@ -64,6 +65,18 @@ namespace Bq.Messaging
         {
             Conventions.EventRule = definesEventType ?? throw new ArgumentNullException(nameof(definesEventType));
             return this;
+        }
+    }
+
+    public static class TimeToBeReceivedConventionExtensions
+    {
+        public static ConventionsBuilder DefiningTimeToBeReceivedAs(this ConventionsBuilder builder,
+            Func<Type, TimeSpan> retrieveTimeToBeReceived)
+        {
+            if (builder == null) throw new ArgumentNullException(nameof(builder));
+            builder.Conventions.TimeToBeReceivedRule = retrieveTimeToBeReceived ??
+                throw new ArgumentNullException(nameof(retrieveTimeToBeReceived));
+            return builder;
         }
     }
 }

@@ -16,6 +16,7 @@ namespace Bq.Messaging
     {
         readonly string localAddress;
         readonly bool durableMessages;
+        readonly Func<Type, TimeSpan> timeToBeReceived;
         readonly string forwardReceivedMessagesAddress;
         readonly string auditQueue;
         readonly string auditExpiration;
@@ -61,6 +62,7 @@ namespace Bq.Messaging
         {
             this.configuration = configuration;
             durableMessages = configuration.DurableMessages;
+            timeToBeReceived = configuration.Conventions().Conventions.TimeToBeReceivedRule ?? AttributeLifetime;
             localAddress = configuration.LocalAddress ?? configuration.Name;
             forwardReceivedMessagesAddress = configuration.ForwardReceivedMessagesAddress;
             auditQueue = configuration.AuditQueue;
@@ -493,9 +495,10 @@ namespace Bq.Messaging
             transport.Headers.Remove(MessageOptions.WireIdHeader);
             transport.Headers.Remove(MessageOptions.ReplyAddressHeader);
             transport.Headers.Remove(OutboxExpirationHeader);
-            var lifetime = (TimeToBeReceivedAttribute)Attribute.GetCustomAttribute(contract, typeof(TimeToBeReceivedAttribute));
-            if (lifetime != null)
-                transport.Headers[OutboxExpirationHeader] = TimeToBeReceivedAttribute.ToExpiration(lifetime.TimeToBeReceived);
+            var lifetime = timeToBeReceived(contract);
+            if (lifetime < TimeSpan.Zero) throw new InvalidOperationException("Message time to be received cannot be negative.");
+            if (lifetime != TimeSpan.MaxValue)
+                transport.Headers[OutboxExpirationHeader] = TimeToBeReceivedAttribute.ToExpiration(lifetime);
             if (customId != null) transport.Headers[MessageOptions.WireIdHeader] = customId;
             if (string.IsNullOrWhiteSpace(transport.TypeName) || transport.Body == null)
                 throw new InvalidOperationException("An outgoing transport message requires a type name and body.");
@@ -508,6 +511,10 @@ namespace Bq.Messaging
                 Type = transport.TypeName, Exchange = exchange, RoutingKey = routingKey,
                 Mandatory = mandatory, Headers = copiedHeaders, Body = transport.Body };
         }
+        static TimeSpan AttributeLifetime(Type contract) =>
+            ((TimeToBeReceivedAttribute)Attribute.GetCustomAttribute(contract, typeof(TimeToBeReceivedAttribute)))?.TimeToBeReceived
+            ?? TimeSpan.MaxValue;
+
         async Task Dispatch<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
             IDictionary<string, object> headers = null)
         {

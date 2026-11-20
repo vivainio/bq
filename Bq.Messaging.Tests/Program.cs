@@ -522,6 +522,8 @@ namespace Bq.Messaging.Tests
                     };
                     producerConfig.SendOnly();
                     producerConfig.DisableDurableMessages();
+                    producerConfig.Conventions().DefiningTimeToBeReceivedAs(type =>
+                        type == typeof(LocalMessage) ? TimeSpan.FromMinutes(2) : TimeSpan.MaxValue);
                     producerConfig.OverridePublicReturnAddress(producerName + ".public");
                     using (var producer = RabbitEndpoint.Start(producerConfig))
                     {
@@ -570,7 +572,7 @@ namespace Bq.Messaging.Tests
                                 Assert(scheduled.BasicProperties.MessageId == "scheduled-local-id" &&
                                     scheduled.BasicProperties.CorrelationId == "scheduled-local-id" &&
                                     scheduled.BasicProperties.ReplyTo == receiverName && scheduled.BasicProperties.DeliveryMode == 1 &&
-                                    scheduled.BasicProperties.Expiration == "600000" &&
+                                    scheduled.BasicProperties.Expiration == "120000" &&
                                     !scheduled.BasicProperties.Headers.ContainsKey("x-bq-override-reply-to"),
                                     "explicit wire identity and reply address survive scheduling on a send-only endpoint");
                             }
