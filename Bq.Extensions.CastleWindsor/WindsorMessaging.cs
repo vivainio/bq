@@ -18,7 +18,8 @@ namespace Bq.Extensions.CastleWindsor
         {
             this.container = container ?? throw new ArgumentNullException(nameof(container));
             container.Register(
-                Component.For<IMessageHandlerContext>().UsingFactoryMethod(() => Current).LifestyleScoped(),
+                Component.For<IMessageHandlerContext>().Forward<IMessageProcessingContext>().Forward<IPipelineContext>()
+                    .UsingFactoryMethod(() => Current).LifestyleScoped(),
                 Component.For<SynchronizedStorageSession>().UsingFactoryMethod(() =>
                     new StorageSessionView(Current.SynchronizedStorageSession ??
                         throw new InvalidOperationException("No active synchronized storage session.")))

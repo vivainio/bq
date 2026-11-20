@@ -706,9 +706,14 @@ namespace Bq.Messaging.Tests
             using var container = new WindsorContainer();
             var windsor = new WindsorMessaging(container);
             container.Register(Component.For<IHandleSagaNotFound>().UsingFactoryMethod(() =>
-                new MissingOrderHandler(container.Resolve<IMessageHandlerContext>(),
-                    container.Resolve<SynchronizedStorageSession>(),
-                    () => Interlocked.Increment(ref missingHandlerCount))).LifestyleScoped());
+            {
+                var handlerContext = container.Resolve<IMessageHandlerContext>();
+                Assert(ReferenceEquals(handlerContext, container.Resolve<IMessageProcessingContext>()) &&
+                    ReferenceEquals(handlerContext, container.Resolve<IPipelineContext>()),
+                    "Windsor context interfaces resolve to the same delivery context");
+                return new MissingOrderHandler(handlerContext, container.Resolve<SynchronizedStorageSession>(),
+                    () => Interlocked.Increment(ref missingHandlerCount));
+            }).LifestyleScoped());
             windsor.Attach(config);
             windsor.HandleSagaNotFound(config);
             config.Handle(() => new Handler<ChangeOrder>((message, context) => { Interlocked.Increment(ref otherHandlerCount); return Task.CompletedTask; }));
