@@ -6,6 +6,11 @@ using MessagePack.Resolvers;
 
 namespace Bq.Messaging
 {
+    public interface IHandleSagaNotFound
+    {
+        Task Handle(object message, IMessageProcessingContext context);
+    }
+
     public interface IAmStartedByMessages<T> : IHandleMessages<T> { }
     public interface IHandleTimeouts<T>
     {
@@ -164,6 +169,12 @@ namespace Bq.Messaging
 
     public static class SagaConfigurationExtensions
     {
+        public static void RegisterSagaNotFoundHandler(this EndpointConfiguration endpoint, IHandleSagaNotFound handler)
+        {
+            if (endpoint == null) throw new ArgumentNullException(nameof(endpoint));
+            endpoint.SagaNotFoundHandlers.Add(handler ?? throw new ArgumentNullException(nameof(handler)));
+        }
+
         public static void RegisterSaga<TSaga, TData>(this EndpointConfiguration endpoint)
             where TSaga : Saga<TData>, new() where TData : class, new() =>
             endpoint.RegisterSaga<TSaga, TData>(() => new TSaga());
@@ -250,8 +261,13 @@ namespace Bq.Messaging
             var record = await session.LoadSaga(sagaType, key).ConfigureAwait(false);
             if (record == null && !canStart)
             {
-                if (expectedInstance == null && configuration.SagaNotFound != null)
-                    await configuration.SagaNotFound(typeof(TSaga), key, incomingMessage, context).ConfigureAwait(false);
+                if (expectedInstance == null)
+                {
+                    if (configuration.SagaNotFound != null)
+                        await configuration.SagaNotFound(typeof(TSaga), key, incomingMessage, context).ConfigureAwait(false);
+                    foreach (var handler in configuration.SagaNotFoundHandlers)
+                        await handler.Handle(incomingMessage, context).ConfigureAwait(false);
+                }
                 return;
             }
             var state = record == null ? new SagaStoredState<TData> { InstanceId = Guid.NewGuid().ToString("N"), Data = new TData() } : MessagePackSerializer.Deserialize<SagaStoredState<TData>>(record.Data, Options);

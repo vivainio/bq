@@ -29,6 +29,16 @@ namespace Bq.Messaging.Tests
     public class ChangeOrder { public string OrderId { get; set; } public bool Complete { get; set; } }
     public class OrderTimeout { public string OrderId { get; set; } }
     public class OrderState { public string Status { get; set; } public int TimeoutCount { get; set; } }
+    sealed class MissingOrderHandler : IHandleSagaNotFound
+    {
+        public int Count { get; private set; }
+
+        public Task Handle(object message, IMessageProcessingContext context)
+        {
+            if (message is ChangeOrder change && change.OrderId == "missing" && context.MessageId != null) Count++;
+            return Task.CompletedTask;
+        }
+    }
     public class OrderWorkflow : Saga<OrderState>, IAmStartedByMessages<StartOrder>, IHandleMessages<ChangeOrder>, IHandleTimeouts<OrderTimeout>
     {
         public static int StartAttempts;
@@ -667,9 +677,11 @@ namespace Bq.Messaging.Tests
             var store = new SqlitePersistence(() => Sqlite(path), endpointName);
             await store.Initialize();
             var missingCount = 0;
+            var missingHandler = new MissingOrderHandler();
             var otherHandlerCount = 0;
             var config = new EndpointConfiguration(endpointName, uri) { Persistence = store };
             config.SagaNotFound = (sagaType, key, message, context) => { if (key == "missing") Interlocked.Increment(ref missingCount); return Task.CompletedTask; };
+            config.RegisterSagaNotFoundHandler(missingHandler);
             config.Handle(() => new Handler<ChangeOrder>((message, context) => { Interlocked.Increment(ref otherHandlerCount); return Task.CompletedTask; }));
             config.Incoming.Use((incoming, next) =>
             {
@@ -709,6 +721,7 @@ namespace Bq.Messaging.Tests
                         var pending = await store.ListPendingDispatches(DispatchKind.SagaTimeout);
                         Assert(pending.Count == 1 && pending[0].DueAtUtc == timeoutAt.UtcDateTime, "absolute timeout preserves due time across retry");
                         Assert(await ReadOrder(store, "missing") == null && missingCount == 1, "non-start message invokes not-found callback");
+                        Assert(missingHandler.Count == 1, "the saga-not-found handler receives the original logical message and context");
                         Assert(otherHandlerCount == 1, "ordinary handler and saga share message");
                     }
                     // Timeout is stored in SQLite and is still due after endpoint restart.
