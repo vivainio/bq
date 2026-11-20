@@ -11,8 +11,16 @@ namespace Bq.Messaging
         string Decrypt(string ciphertext);
     }
 
+    [AttributeUsage(AttributeTargets.Property, Inherited = true)]
+    public sealed class EncryptedPropertyAttribute : Attribute { }
+
     public static class MessagePropertyEncryptionExtensions
     {
+        public static void EnableMessagePropertyEncryption(this EndpointConfiguration endpointConfiguration,
+            IMessagePropertyEncryptionService encryptionService) =>
+            EnableMessagePropertyEncryption(endpointConfiguration, encryptionService,
+                property => Attribute.IsDefined(property, typeof(EncryptedPropertyAttribute), inherit: true));
+
         public static void EnableMessagePropertyEncryption(this EndpointConfiguration endpointConfiguration,
             IMessagePropertyEncryptionService encryptionService, Func<PropertyInfo, bool> encryptedPropertyConvention)
         {

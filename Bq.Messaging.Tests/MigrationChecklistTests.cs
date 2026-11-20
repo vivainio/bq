@@ -25,7 +25,11 @@ namespace Bq.Messaging.Tests
         public bool IsMessageType(Type type) => type == typeof(WorkflowBarrier);
     }
 
-    public interface IPilotMessage { string Text { get; set; } }
+    public interface IPilotMessage
+    {
+        [EncryptedProperty]
+        string Text { get; set; }
+    }
     public interface IPilotEvent : IPilotMessage { int Count { get; set; } }
     public sealed class ReplacementPilotEvent : IPilotEvent
     {
@@ -458,7 +462,7 @@ namespace Bq.Messaging.Tests
             sender.AddHeaderToAllOutgoingMessages("migration-source", "pilot-producer");
             var receiver = new EndpointConfiguration(receiverName, uri) { Persistence = receiverStore, EventsExchange = pilotExchange };
             var encryption = new TestPropertyEncryption();
-            sender.EnableMessagePropertyEncryption(encryption, property => property.DeclaringType == typeof(IPilotMessage));
+            sender.EnableMessagePropertyEncryption(encryption);
             receiver.EnableMessagePropertyEncryption(encryption, property => property.DeclaringType == typeof(IPilotMessage));
             using var container = new WindsorContainer();
             var windsor = new WindsorMessaging(container);
