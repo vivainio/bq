@@ -178,7 +178,7 @@ namespace Bq.Messaging.Tests
             Assert(subscriptionOptions.GetExtensions().Get<int>() == 42, "subscription options expose the same extension API");
             Assert(sendOptions.GetDestination() == null && !sendOptions.IsRoutingToThisEndpoint() && sendOptions.GetMessageId() == null,
                 "unset send options report no explicit routing or identity");
-            sendOptions.RouteToThisEndpoint();
+            RoutingOptionExtensions.RouteToThisEndpoint(sendOptions);
             headerOptions.SetMessageId("custom-id");
             sendOptions.RouteReplyTo("reply");
             sendOptions.SetHeader("attempt", 3);
@@ -191,7 +191,7 @@ namespace Bq.Messaging.Tests
             Assert(sendOptions.GetDeliveryDelay() == null && sendOptions.GetDeliveryDate() == deliveryDate,
                 "absolute scheduling replaces the relative delay");
             var replyOptions = new ReplyOptions();
-            replyOptions.SetDestination("receiver");
+            RoutingOptionExtensions.SetDestination(replyOptions, "receiver");
             replyOptions.RouteReplyTo("return");
             Assert(replyOptions.GetDestination() == "receiver" && replyOptions.GetReplyToRoute() == "return",
                 "reply readers distinguish destination and return address");

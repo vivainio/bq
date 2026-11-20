@@ -157,16 +157,30 @@ namespace Bq.Messaging
         }
     }
 
-    public static class MessageOptionsExtensions
+    public static class RoutingOptionExtensions
     {
-        public static string GetMessageId(MessageOptions options) => MessageIdExtensions.GetMessageId(options);
-        public static IReadOnlyDictionary<string, string> GetHeaders(MessageOptions options) =>
-            HeaderOptionExtensions.GetHeaders(options);
         public static string GetDestination(this SendOptions options) => options.Destination;
         public static string GetDestination(this ReplyOptions options) => options.Destination;
         public static string GetReplyToRoute(this SendOptions options) => options.ReplyAddress;
         public static string GetReplyToRoute(this ReplyOptions options) => options.ReplyAddress;
         public static bool IsRoutingToThisEndpoint(this SendOptions options) => options.Local;
+        public static void SetDestination(this SendOptions options, string destination) => options.SetDestination(destination);
+        public static void SetDestination(this ReplyOptions options, string destination) => options.SetDestination(destination);
+        public static void RouteReplyTo(this SendOptions options, string address) => options.RouteReplyTo(address);
+        public static void RouteReplyTo(this ReplyOptions options, string address) => options.RouteReplyTo(address);
+        public static void RouteToThisEndpoint(this SendOptions options) => options.RouteToThisEndpoint();
+    }
+
+    public static class MessageOptionsExtensions
+    {
+        public static string GetMessageId(MessageOptions options) => MessageIdExtensions.GetMessageId(options);
+        public static IReadOnlyDictionary<string, string> GetHeaders(MessageOptions options) =>
+            HeaderOptionExtensions.GetHeaders(options);
+        public static string GetDestination(SendOptions options) => RoutingOptionExtensions.GetDestination(options);
+        public static string GetDestination(ReplyOptions options) => RoutingOptionExtensions.GetDestination(options);
+        public static string GetReplyToRoute(SendOptions options) => RoutingOptionExtensions.GetReplyToRoute(options);
+        public static string GetReplyToRoute(ReplyOptions options) => RoutingOptionExtensions.GetReplyToRoute(options);
+        public static bool IsRoutingToThisEndpoint(SendOptions options) => RoutingOptionExtensions.IsRoutingToThisEndpoint(options);
         public static TimeSpan? GetDeliveryDelay(this SendOptions options) => options.DeliveryDelay;
         public static DateTimeOffset? GetDeliveryDate(this SendOptions options) => options.DeliveryDate;
 
