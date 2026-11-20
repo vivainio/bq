@@ -38,3 +38,5 @@ Inject `SynchronizedStorageSession` into a scoped Windsor component to use the a
 Register a saga as a transient Windsor component and call `messaging.RegisterSaga<TSaga, TData>(configuration, mappings => ...)`. Supply the message and timeout mappings during configuration. Windsor resolves and releases the saga during each processing attempt.
 
 For a saga with a public parameterless constructor, `messaging.RegisterSaga<TSaga, TData>(configuration)` reads its `ConfigureHowToFindSaga` mappings and discovers timeout handlers at startup. Bq constructs the mapping instance at startup and resolves runtime instances through Windsor.
+
+For constructor-injected sagas, pass a `definitionFactory` if you want Bq to read `ConfigureHowToFindSaga` at startup. The factory creates a separate instance using dependencies available at startup. Bq disposes that instance if it implements `IDisposable`. If the constructor needs an active delivery, use the explicit mappings overload.

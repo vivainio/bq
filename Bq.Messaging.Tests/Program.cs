@@ -730,7 +730,13 @@ namespace Bq.Messaging.Tests
                 Assert(windsor.Current.PersistenceSession != null, "Windsor creates the saga inside the active transaction");
                 return new OrderWorkflow();
             }).LifestyleTransient());
-            windsor.RegisterSaga<OrderWorkflow, OrderState>(config);
+            var sagaDefinitions = 0;
+            windsor.RegisterSaga<OrderWorkflow, OrderState>(config, definitionFactory: () =>
+            {
+                sagaDefinitions++;
+                return new OrderWorkflow();
+            });
+            Assert(sagaDefinitions == 1, "the saga definition factory runs once during registration");
             var senderPath = Path.Combine(Path.GetTempPath(), "bq-saga-sender-" + suffix + ".db");
             var senderStore = new SqlitePersistence(() => Sqlite(senderPath), senderName); await senderStore.Initialize();
             var sender = new EndpointConfiguration(senderName, uri) { Persistence = senderStore };

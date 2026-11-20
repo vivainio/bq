@@ -79,10 +79,14 @@ namespace Bq.Extensions.CastleWindsor
         }
 
         public void RegisterSaga<TSaga, TData>(EndpointConfiguration configuration)
-            where TSaga : Saga<TData>, new() where TData : class, new()
+            where TSaga : Saga<TData>, new() where TData : class, new() =>
+            RegisterSaga<TSaga, TData>(configuration, () => new TSaga());
+
+        public void RegisterSaga<TSaga, TData>(EndpointConfiguration configuration, Func<TSaga> definitionFactory)
+            where TSaga : Saga<TData> where TData : class, new()
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
-            configuration.RegisterSaga<TSaga, TData>(() => container.Resolve<TSaga>(), () => new TSaga(), saga => container.Release(saga));
+            configuration.RegisterSaga<TSaga, TData>(() => container.Resolve<TSaga>(), definitionFactory, saga => container.Release(saga));
         }
 
         public void RegisterSaga<TSaga, TData>(EndpointConfiguration configuration, Action<SagaMappings<TSaga, TData>> configure)
