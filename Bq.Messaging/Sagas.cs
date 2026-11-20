@@ -28,6 +28,10 @@ namespace Bq.Messaging
 
     public abstract class Saga
     {
+        Func<DateTimeOffset, object, Type, Task> requestTimeout;
+
+        internal void BindTimeoutScheduler(Func<DateTimeOffset, object, Type, Task> request) => requestTimeout = request;
+
         public bool Completed { get; private set; }
         public abstract IContainSagaData Entity { get; set; }
 
@@ -43,34 +47,6 @@ namespace Bq.Messaging
         }
 
         protected void MarkAsComplete() { Completed = true; }
-    }
-
-    // A new saga object is constructed for each message attempt.
-    public abstract class Saga<TData> : Saga where TData : class, new()
-    {
-        Func<DateTimeOffset, object, Type, Task> requestTimeout;
-        public TData Data { get; set; }
-        public override IContainSagaData Entity
-        {
-            get => Data as IContainSagaData;
-            set => Data = (TData)value;
-        }
-        internal void Initialize(TData data, Func<DateTimeOffset, object, Type, Task> request) { Data = data; requestTimeout = request; }
-        protected virtual void ConfigureHowToFindSaga(SagaPropertyMapper<TData> mapper) { }
-
-        protected SagaPropertyMapper<TData>.MessageMapping<TMessage> ConfigureMapping<TMessage>(
-            System.Linq.Expressions.Expression<Func<TMessage, object>> property) where TMessage : class =>
-            new SagaPropertyMapper<TData>.MessageMapping<TMessage>(property,
-                (data, message) => (configuringMapper ?? throw new InvalidOperationException("Configure mappings inside ConfigureHowToFindSaga."))
-                    .Add(data, message));
-
-        SagaPropertyMapper<TData> configuringMapper;
-        internal void ConfigureMappings(SagaPropertyMapper<TData> mapper)
-        {
-            configuringMapper = mapper;
-            try { ConfigureHowToFindSaga(mapper); }
-            finally { configuringMapper = null; }
-        }
 
         protected Task RequestTimeout<T>(IMessageHandlerContext context, TimeSpan delay) where T : new() =>
             RequestTimeout(context, delay, new T());
@@ -95,6 +71,34 @@ namespace Bq.Messaging
             if (state == null) throw new ArgumentNullException(nameof(state));
             return requestTimeout(dueAt, state, typeof(T));
         }
+    }
+
+    // A new saga object is constructed for each message attempt.
+    public abstract class Saga<TData> : Saga where TData : class, new()
+    {
+        public TData Data { get; set; }
+        public override IContainSagaData Entity
+        {
+            get => Data as IContainSagaData;
+            set => Data = (TData)value;
+        }
+        internal void Initialize(TData data, Func<DateTimeOffset, object, Type, Task> request) { Data = data; BindTimeoutScheduler(request); }
+        protected virtual void ConfigureHowToFindSaga(SagaPropertyMapper<TData> mapper) { }
+
+        protected SagaPropertyMapper<TData>.MessageMapping<TMessage> ConfigureMapping<TMessage>(
+            System.Linq.Expressions.Expression<Func<TMessage, object>> property) where TMessage : class =>
+            new SagaPropertyMapper<TData>.MessageMapping<TMessage>(property,
+                (data, message) => (configuringMapper ?? throw new InvalidOperationException("Configure mappings inside ConfigureHowToFindSaga."))
+                    .Add(data, message));
+
+        SagaPropertyMapper<TData> configuringMapper;
+        internal void ConfigureMappings(SagaPropertyMapper<TData> mapper)
+        {
+            configuringMapper = mapper;
+            try { ConfigureHowToFindSaga(mapper); }
+            finally { configuringMapper = null; }
+        }
+
     }
 
     // Persisted as part of a timeout message. InstanceId distinguishes a restarted
