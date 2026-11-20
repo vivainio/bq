@@ -30,8 +30,16 @@ namespace Bq.Messaging.Tests
         public int Count { get; set; }
     }
 
-    sealed class PilotMessageMutator : IMutateIncomingMessages
+    sealed class PilotMessageMutator : IMutateIncomingMessages, IMutateIncomingTransportMessages
     {
+        public async Task MutateIncoming(MutateIncomingTransportMessageContext context)
+        {
+            if (!context.Headers.ContainsKey("migration-source")) return;
+            await Task.Yield();
+            context.Body = context.Body.ToArray();
+            context.Headers["pilot-transport-mutator"] = "applied";
+        }
+
         public Task MutateIncoming(MutateIncomingMessageContext context)
         {
             if (context.Message is IPilotEvent pilot)
@@ -435,6 +443,7 @@ namespace Bq.Messaging.Tests
                     "logical header edits reach the handler while raw AMQP headers retain the received value");
                 Assert(context.GetHeader("migration-source") == "pilot-producer", "endpoint headers reach published events");
                 Assert(context.GetHeader("pilot-mutator") == "applied", "registered mutator headers reach the handler");
+                Assert(context.GetHeader("pilot-transport-mutator") == "applied", "transport mutator headers reach the handler");
                 Assert(message.Count == 7, "interface event properties round-trip through MessagePack");
                 Assert(context.Extensions.Get<int>("pilot-behaviors") == 2, "registered logical behaviors see the declared interface contract");
                 received.TrySetResult(message.Text);

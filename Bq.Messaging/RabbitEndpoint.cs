@@ -22,6 +22,7 @@ namespace Bq.Messaging
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly EndpointConfiguration configuration;
         readonly Action<TransportMessage> mutateIncoming;
+        readonly IMutateIncomingTransportMessages[] incomingTransportMutators;
         readonly Action<TransportMessage> mutateOutgoing;
         readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
         readonly Dictionary<Type, string> wireNames = new Dictionary<Type, string>();
@@ -54,6 +55,7 @@ namespace Bq.Messaging
             this.configuration = configuration;
             localAddress = configuration.LocalAddress ?? configuration.Name;
             mutateIncoming = configuration.MutateIncoming;
+            incomingTransportMutators = configuration.IncomingTransportMutators.ToArray();
             mutateOutgoing = configuration.MutateOutgoing;
             incoming = configuration.Incoming.Build();
             var owners = new Dictionary<string, Type>();
@@ -636,12 +638,21 @@ namespace Bq.Messaging
                 var typeName = props.Type;
                 var body = delivery.Body;
                 var headers = props.Headers;
-                if (mutateIncoming != null)
+                if (mutateIncoming != null || incomingTransportMutators.Length != 0)
                 {
                     // Mutators work on a separate copy so recovery can replay the original wire bytes.
                     var transport = new TransportMessage(typeName, body.ToArray(),
                         RecoveryWire.DecodeHeaders(RecoveryWire.EncodeHeaders(headers)));
-                    mutateIncoming(transport);
+                    mutateIncoming?.Invoke(transport);
+                    foreach (var mutator in incomingTransportMutators)
+                    {
+                        var original = MessageHeaders.AsText(transport.Headers);
+                        var mutation = new MutateIncomingTransportMessageContext(transport.Body,
+                            original.ToDictionary(header => header.Key, header => header.Value, StringComparer.Ordinal));
+                        await mutator.MutateIncoming(mutation).ConfigureAwait(false);
+                        RecoveryWire.ApplyTextHeaderEdits(transport.Headers, original, mutation.Headers);
+                        transport.Body = mutation.Body;
+                    }
                     typeName = transport.TypeName;
                     headers = transport.Headers;
                     body = transport.Body ?? throw new InvalidOperationException("An incoming transport message requires a body.");

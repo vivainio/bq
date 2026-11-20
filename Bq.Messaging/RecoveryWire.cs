@@ -107,12 +107,18 @@ namespace Bq.Messaging
             var original = MessageHeaders.AsText(headers);
             var changed = original.ToDictionary(header => header.Key, header => header.Value, StringComparer.Ordinal);
             customize(changed);
+            ApplyTextHeaderEdits(headers, original, changed);
+            SetHeaders(envelope, headers);
+        }
+
+        internal static void ApplyTextHeaderEdits(IDictionary<string, object> headers,
+            IReadOnlyDictionary<string, string> original, Dictionary<string, string> changed)
+        {
             foreach (var key in original.Keys)
                 if (!changed.ContainsKey(key)) headers.Remove(key);
             foreach (var header in changed)
                 if (!original.TryGetValue(header.Key, out var value) || value != header.Value)
                     headers[header.Key] = header.Value;
-            SetHeaders(envelope, headers);
         }
         public static void Apply(RecoveryEnvelope e, IBasicProperties p)
         {

@@ -4,6 +4,23 @@ using System.Threading.Tasks;
 
 namespace Bq.Messaging
 {
+    public interface IMutateIncomingTransportMessages
+    {
+        Task MutateIncoming(MutateIncomingTransportMessageContext context);
+    }
+
+    public sealed class MutateIncomingTransportMessageContext
+    {
+        public MutateIncomingTransportMessageContext(byte[] body, Dictionary<string, string> headers)
+        {
+            Body = body ?? throw new ArgumentNullException(nameof(body));
+            Headers = headers ?? throw new ArgumentNullException(nameof(headers));
+        }
+
+        public byte[] Body { get; set; }
+        public Dictionary<string, string> Headers { get; }
+    }
+
     public interface IMutateIncomingMessages
     {
         Task MutateIncoming(MutateIncomingMessageContext context);

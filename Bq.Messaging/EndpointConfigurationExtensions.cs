@@ -10,8 +10,13 @@ namespace Bq.Messaging
         {
             if (endpointConfiguration == null) throw new ArgumentNullException(nameof(endpointConfiguration));
             if (messageMutator == null) throw new ArgumentNullException(nameof(messageMutator));
+            if (messageMutator is IMutateIncomingTransportMessages transport)
+                endpointConfiguration.IncomingTransportMutators.Add(transport);
             if (!(messageMutator is IMutateIncomingMessages incoming))
-                throw new ArgumentException("An incoming logical message mutator is required.", nameof(messageMutator));
+            {
+                if (messageMutator is IMutateIncomingTransportMessages) return;
+                throw new ArgumentException("An incoming message mutator is required.", nameof(messageMutator));
+            }
 
             endpointConfiguration.Incoming.Use(async (context, next) =>
             {
