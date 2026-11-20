@@ -18,7 +18,7 @@ namespace Bq.Messaging
             if (timeToBeReceived < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeToBeReceived));
             config.AuditQueue = MessageOptions.ValidateAddressField(auditQueue, nameof(auditQueue));
             config.AuditExpiration = timeToBeReceived.HasValue
-                ? Math.Ceiling(timeToBeReceived.Value.TotalMilliseconds).ToString("0", System.Globalization.CultureInfo.InvariantCulture)
+                ? TimeToBeReceivedAttribute.ToExpiration(timeToBeReceived.Value)
                 : null;
         }
 

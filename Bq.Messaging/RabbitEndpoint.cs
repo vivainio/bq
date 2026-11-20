@@ -19,7 +19,7 @@ namespace Bq.Messaging
         readonly string forwardReceivedMessagesAddress;
         readonly string auditQueue;
         readonly string auditExpiration;
-        const string AuditExpirationHeader = "x-bq-outbox-audit-expiration";
+        const string OutboxExpirationHeader = "x-bq-outbox-audit-expiration";
         readonly string eventsExchange;
         readonly string errorExchange;
         const string ContentType = "application/x-msgpack";
@@ -492,7 +492,10 @@ namespace Bq.Messaging
             }
             transport.Headers.Remove(MessageOptions.WireIdHeader);
             transport.Headers.Remove(MessageOptions.ReplyAddressHeader);
-            transport.Headers.Remove(AuditExpirationHeader);
+            transport.Headers.Remove(OutboxExpirationHeader);
+            var lifetime = (TimeToBeReceivedAttribute)Attribute.GetCustomAttribute(contract, typeof(TimeToBeReceivedAttribute));
+            if (lifetime != null)
+                transport.Headers[OutboxExpirationHeader] = TimeToBeReceivedAttribute.ToExpiration(lifetime.TimeToBeReceived);
             if (customId != null) transport.Headers[MessageOptions.WireIdHeader] = customId;
             if (string.IsNullOrWhiteSpace(transport.TypeName) || transport.Body == null)
                 throw new InvalidOperationException("An outgoing transport message requires a type name and body.");
@@ -529,9 +532,9 @@ namespace Bq.Messaging
                     if (headers.TryGetValue(MessageOptions.WireIdHeader, out var originalId) && originalId is string id)
                         props.MessageId = id;
                     headers.Remove(MessageOptions.WireIdHeader);
-                    if (headers.TryGetValue(AuditExpirationHeader, out var expiration) && expiration is string ttl)
+                    if (headers.TryGetValue(OutboxExpirationHeader, out var expiration) && expiration is string ttl)
                         props.Expiration = ttl;
-                    headers.Remove(AuditExpirationHeader);
+                    headers.Remove(OutboxExpirationHeader);
                     props.Headers = headers;
                 }
                 returned = false;
@@ -1146,8 +1149,8 @@ namespace Bq.Messaging
                 {
                     [MessageOptions.WireIdHeader] = MessageId
                 };
-                headers.Remove(AuditExpirationHeader);
-                if (expiration != null) headers[AuditExpirationHeader] = expiration;
+                headers.Remove(OutboxExpirationHeader);
+                if (expiration != null) headers[OutboxExpirationHeader] = expiration;
                 return PersistenceSession.StoreOutgoing(new OutgoingMessage
                 {
                     Id = Guid.NewGuid().ToString("N"), CorrelationId = wireProperties.CorrelationId, ReplyTo = replyTo,

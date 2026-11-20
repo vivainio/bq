@@ -15,6 +15,8 @@ namespace Bq.Messaging.Tests
 {
     public class Command : ICommand { public string Text { get; set; } }
     public class Event : IEvent { public string Text { get; set; } }
+    [TimeToBeReceived("00:10:00")]
+
     public class LocalMessage { public string Text { get; set; } }
     public class Response { public string Text { get; set; } }
     public class Failed { public string Text { get; set; } }
@@ -568,6 +570,7 @@ namespace Bq.Messaging.Tests
                                 Assert(scheduled.BasicProperties.MessageId == "scheduled-local-id" &&
                                     scheduled.BasicProperties.CorrelationId == "scheduled-local-id" &&
                                     scheduled.BasicProperties.ReplyTo == receiverName && scheduled.BasicProperties.DeliveryMode == 1 &&
+                                    scheduled.BasicProperties.Expiration == "600000" &&
                                     !scheduled.BasicProperties.Headers.ContainsKey("x-bq-override-reply-to"),
                                     "explicit wire identity and reply address survive scheduling on a send-only endpoint");
                             }
