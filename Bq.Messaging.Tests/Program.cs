@@ -218,6 +218,14 @@ namespace Bq.Messaging.Tests
             Assert(invalidEncryptionRejected, "endpoint startup validates known encryption selections before connecting");
 
             IMessageCreator creator = new MessageCreator();
+            using (var creatorContainer = new WindsorContainer())
+            {
+                _ = new WindsorMessaging(creatorContainer);
+                var injectedMapper = creatorContainer.Resolve<IMessageMapper>();
+                Assert(ReferenceEquals(injectedMapper, creatorContainer.Resolve<IMessageCreator>()) &&
+                    injectedMapper.CreateInstance<IPilotEvent>() != null,
+                    "Windsor exposes one message mapper through both creation interfaces");
+            }
             IMessageMapper mapper = new MessageMapper();
             mapper.Initialize(new[] { typeof(IPilotEvent), typeof(Command) });
             var implementation = mapper.GetMappedTypeFor(typeof(IPilotEvent));

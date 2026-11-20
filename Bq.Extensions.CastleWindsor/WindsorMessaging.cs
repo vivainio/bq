@@ -17,6 +17,12 @@ namespace Bq.Extensions.CastleWindsor
         public WindsorMessaging(IWindsorContainer container, Func<IUniformSession> outsideSession = null)
         {
             this.container = container ?? throw new ArgumentNullException(nameof(container));
+            if (!container.Kernel.HasComponent(typeof(IMessageMapper)) &&
+                !container.Kernel.HasComponent(typeof(IMessageCreator)))
+            {
+                container.Register(Component.For<IMessageMapper>().Forward<IMessageCreator>()
+                    .ImplementedBy<MessageMapper>().LifestyleSingleton());
+            }
             container.Register(
                 Component.For<IMessageHandlerContext>().Forward<IMessageProcessingContext>().Forward<IPipelineContext>()
                     .UsingFactoryMethod(() => Current).LifestyleScoped(),
