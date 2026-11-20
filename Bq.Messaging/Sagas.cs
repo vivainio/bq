@@ -26,12 +26,35 @@ namespace Bq.Messaging
         public string OriginalMessageId { get; set; }
     }
 
+    public abstract class Saga
+    {
+        public bool Completed { get; private set; }
+        public abstract IContainSagaData Entity { get; set; }
+
+        protected Task ReplyToOriginator(IMessageHandlerContext context, object message)
+        {
+            if (context == null) throw new ArgumentNullException(nameof(context));
+            var data = Entity;
+            if (data == null || string.IsNullOrEmpty(data.Originator))
+                throw new InvalidOperationException("The saga has no recorded originator.");
+            var options = new ReplyOptions { CorrelationId = data.OriginalMessageId };
+            options.SetDestination(data.Originator);
+            return context.Reply(message, options);
+        }
+
+        protected void MarkAsComplete() { Completed = true; }
+    }
+
     // A new saga object is constructed for each message attempt.
-    public abstract class Saga<TData> where TData : class, new()
+    public abstract class Saga<TData> : Saga where TData : class, new()
     {
         Func<DateTimeOffset, object, Type, Task> requestTimeout;
-        public TData Data { get; internal set; }
-        internal bool Completed { get; private set; }
+        public TData Data { get; set; }
+        public override IContainSagaData Entity
+        {
+            get => Data as IContainSagaData;
+            set => Data = (TData)value;
+        }
         internal void Initialize(TData data, Func<DateTimeOffset, object, Type, Task> request) { Data = data; requestTimeout = request; }
         protected virtual void ConfigureHowToFindSaga(SagaPropertyMapper<TData> mapper) { }
 
@@ -59,17 +82,6 @@ namespace Bq.Messaging
         protected Task RequestTimeout<T>(IMessageHandlerContext context, DateTime utcDueAt, T state) =>
             RequestTimeout(new DateTimeOffset(utcDueAt), state);
 
-        protected Task ReplyToOriginator(IMessageHandlerContext context, object message)
-        {
-            if (context == null) throw new ArgumentNullException(nameof(context));
-            if (!(Data is IContainSagaData data) || string.IsNullOrEmpty(data.Originator))
-                throw new InvalidOperationException("The saga has no recorded originator.");
-            var options = new ReplyOptions { CorrelationId = data.OriginalMessageId };
-            options.SetDestination(data.Originator);
-            return context.Reply(message, options);
-        }
-
-        protected void MarkAsComplete() { Completed = true; }
         protected Task RequestTimeout<T>(TimeSpan delay, T state)
         {
             if (requestTimeout == null) throw new InvalidOperationException("Timeouts can only be requested while handling a saga message.");

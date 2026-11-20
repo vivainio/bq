@@ -55,9 +55,12 @@ namespace Bq.Messaging.Tests
         async Task CompleteIfReady(string orderId, IMessageHandlerContext context)
         {
             if (!Data.Recorded || !Data.DeadlineReached) return;
+            if (Completed || !ReferenceEquals(Entity, Data))
+                throw new InvalidOperationException("Saga lifecycle state does not match the loaded data.");
             await context.Publish(new FulfillmentCompleted { OrderId = orderId });
             await ReplyToOriginator(context, new FulfillmentRecorded { OrderId = orderId });
             MarkAsComplete();
+            if (!Completed) throw new InvalidOperationException("Saga completion is not visible to the handler.");
         }
     }
 
