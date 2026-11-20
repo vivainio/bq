@@ -16,7 +16,7 @@ namespace Bq.Messaging
 
         internal void SetReplyAddress(string address) => ReplyAddress = ValidateAddressField(address, nameof(address));
 
-        static string ValidateAddressField(string value, string parameter)
+        internal static string ValidateAddressField(string value, string parameter)
         {
             if (string.IsNullOrWhiteSpace(value) || System.Text.Encoding.UTF8.GetByteCount(value) > 255)
                 throw new ArgumentException("A nonempty value of at most 255 UTF-8 bytes is required.", parameter);

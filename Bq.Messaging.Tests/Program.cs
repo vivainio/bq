@@ -180,6 +180,11 @@ namespace Bq.Messaging.Tests
                 "reply readers distinguish destination and return address");
 
             var configuration = new EndpointConfiguration("config-test", new Uri("amqp://localhost"));
+            configuration.OverridePublicReturnAddress(new string('é', 127) + "a");
+            var oversizedAddressRejected = false;
+            try { configuration.OverridePublicReturnAddress(new string('é', 128)); }
+            catch (ArgumentException error) when (error.ParamName == "address") { oversizedAddressRejected = true; }
+            Assert(oversizedAddressRejected, "public return address validates the AMQP field size in UTF-8 bytes");
             configuration.LimitMessageProcessingConcurrencyTo(4);
             configuration.SendFailedMessagesTo("config-test.error");
             configuration.Recoverability()

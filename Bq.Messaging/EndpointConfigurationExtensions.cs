@@ -32,8 +32,7 @@ namespace Bq.Messaging
         public static void OverridePublicReturnAddress(this EndpointConfiguration configuration, string address)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
-            if (string.IsNullOrWhiteSpace(address)) throw new ArgumentException("A return address is required.", nameof(address));
-            configuration.PublicReturnAddress = address;
+            configuration.PublicReturnAddress = MessageOptions.ValidateAddressField(address, nameof(address));
         }
 
         public static void LimitMessageProcessingConcurrencyTo(this EndpointConfiguration configuration, int maxConcurrency)
