@@ -36,7 +36,11 @@ namespace Bq.Messaging.Tests
     sealed class TestPropertyEncryption : IMessagePropertyEncryptionService
     {
         public string Encrypt(string plaintext) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(plaintext));
-        public string Decrypt(string ciphertext) => System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(ciphertext));
+        public string Decrypt(string ciphertext)
+        {
+            if (ciphertext == "invalid ciphertext!") throw new FormatException("provider diagnostic with sensitive details");
+            return System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(ciphertext));
+        }
     }
 
     sealed class PilotMessageMutator : IMutateIncomingMessages, IMutateIncomingTransportMessages,
@@ -640,9 +644,11 @@ namespace Bq.Messaging.Tests
                         }, "undecryptable message reaches the error queue");
                         var retained = MessagePackSerializer.Deserialize<ReplacementPilotEvent>(rejected.Body,
                             MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance));
+                        var failureDetail = (await subscriber.ListErrors()).Single().ExceptionDetail;
                         Assert(retained.Text == invalid.Text && rejected.BasicProperties.Type == contract &&
-                            (await subscriber.ListErrors()).Single().ExceptionDetail.Contains(nameof(FormatException)),
-                            "recovery retains the received property and records the decryption failure");
+                            failureDetail.Contains("Message property decryption failed.") &&
+                            !failureDetail.Contains("provider diagnostic with sensitive details"),
+                            "recovery retains the wire body and records a sanitized decryption failure");
                     }
                 }
                 finally

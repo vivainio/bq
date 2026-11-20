@@ -138,3 +138,5 @@ Use `ForwardReceivedMessagesTo` to forward successfully handled messages through
 ## Message property encryption
 
 Call `EnableMessagePropertyEncryption(encryptionService, encryptedPropertyConvention)` on each participating endpoint. Supply an `IMessagePropertyEncryptionService` that authenticates ciphertext and manages keys, and select public read/write string properties on the message contract. Bq encrypts selected values on a copy before transport dispatch and decrypts them before the incoming logical pipeline. Use the same convention on the sender and receiver. The service defines the ciphertext format and must support concurrent calls.
+
+If the provider throws, Bq reports which operation failed and omits the provider's exception text. A decryption failure goes to recoverability with the received wire body.

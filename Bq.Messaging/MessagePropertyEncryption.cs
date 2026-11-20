@@ -56,7 +56,13 @@ namespace Bq.Messaging
             foreach (var property in properties)
             {
                 if (!(property.GetValue(message) is string value)) continue;
-                var transformed = encrypt ? service.Encrypt(value) : service.Decrypt(value);
+                string transformed;
+                try { transformed = encrypt ? service.Encrypt(value) : service.Decrypt(value); }
+                catch (Exception)
+                {
+                    // Provider diagnostics can contain keys or message values.
+                    throw new InvalidOperationException(encrypt ? "Message property encryption failed." : "Message property decryption failed.");
+                }
                 if (transformed == null) throw new InvalidOperationException("The message encryption service returned null.");
                 property.SetValue(message, transformed);
             }
