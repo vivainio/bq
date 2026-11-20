@@ -46,7 +46,8 @@ namespace Bq.Messaging
         public static PropertyInfo[] Properties(Type contract, MessagePropertyEncryption settings)
         {
             if (settings != null) return settings.selected.GetOrAdd(contract, settings.FindProperties);
-            if (markedContracts.GetOrAdd(contract, type => ContractProperties(type).Any(IsMarked)))
+            if (markedContracts.GetOrAdd(contract, type => ContractProperties(type).Any(IsMarked) ||
+                type.GetInterfaces().Any(iface => iface.GetProperties().Any(IsMarked))))
                 throw new InvalidOperationException("Configure message property encryption for " + contract.FullName + ".");
             return Array.Empty<PropertyInfo>();
         }
@@ -64,12 +65,36 @@ namespace Bq.Messaging
 
         PropertyInfo[] FindProperties(Type contract)
         {
-            var matches = ContractProperties(contract).Where(property => IsMarked(property) || convention(property)).ToArray();
-            foreach (var property in matches)
+            var properties = ContractProperties(contract).ToArray();
+            var matches = properties.Where(property => IsMarked(property) || convention(property));
+            if (!contract.IsInterface)
+                matches = matches.Concat(ImplementedMarkedProperties(contract, properties));
+            var selectedProperties = matches.ToArray();
+            foreach (var property in selectedProperties)
                 if (property.PropertyType != typeof(string) || property.GetMethod?.IsPublic != true ||
                     property.SetMethod?.IsPublic != true || property.GetIndexParameters().Length != 0)
                     throw new InvalidOperationException("Encryption requires a public read/write string property: " + property.Name);
-            return matches.GroupBy(property => property.Name, StringComparer.Ordinal).Select(group => group.First()).ToArray();
+            return selectedProperties.GroupBy(property => property.Name, StringComparer.Ordinal).Select(group => group.First()).ToArray();
+        }
+
+        static System.Collections.Generic.IEnumerable<PropertyInfo> ImplementedMarkedProperties(Type contract, PropertyInfo[] properties)
+        {
+            foreach (var iface in contract.GetInterfaces())
+            {
+                foreach (var property in iface.GetProperties().Where(IsMarked))
+                {
+                    var map = contract.GetInterfaceMap(iface);
+                    var getterIndex = Array.IndexOf(map.InterfaceMethods, property.GetMethod);
+                    var setterIndex = Array.IndexOf(map.InterfaceMethods, property.SetMethod);
+                    var implementation = getterIndex >= 0 && setterIndex >= 0
+                        ? properties.FirstOrDefault(candidate => candidate.GetMethod == map.TargetMethods[getterIndex] &&
+                            candidate.SetMethod == map.TargetMethods[setterIndex])
+                        : null;
+                    if (implementation == null)
+                        throw new InvalidOperationException("A marked interface property needs a public implementation: " + property.Name);
+                    yield return implementation;
+                }
+            }
         }
 
         public void Transform(object message, PropertyInfo[] properties, bool encrypt)

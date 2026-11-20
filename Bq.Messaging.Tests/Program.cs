@@ -194,10 +194,10 @@ namespace Bq.Messaging.Tests
                     "invalid-encryption")
             };
             encryptedEndpoint.RegisterMessageContract<RuntimeSubscriptionEvent>("invalid-encryption-contract");
-            encryptedEndpoint.RegisterMessageContract<IPilotEvent>("marked-encryption-contract");
+            encryptedEndpoint.RegisterMessageContract<ReplacementPilotEvent>("marked-encryption-contract");
             var missingEncryptionRejected = false;
             try { using (RabbitEndpoint.Start(encryptedEndpoint)) { } }
-            catch (InvalidOperationException error) when (error.Message == "Configure message property encryption for " + typeof(IPilotEvent).FullName + ".")
+            catch (InvalidOperationException error) when (error.Message == "Configure message property encryption for " + typeof(ReplacementPilotEvent).FullName + ".")
             {
                 missingEncryptionRejected = true;
             }

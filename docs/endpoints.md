@@ -143,4 +143,4 @@ If the provider throws, Bq reports which operation failed and omits the provider
 
 Bq validates encryption selections for registered contracts, handlers, and routes at startup. Other outgoing contracts are validated the first time they are sent or published.
 
-A contract marked with `[EncryptedProperty]` requires an encryption provider. Bq rejects a known marked contract during startup and rejects an unregistered marked contract before sending or publishing it.
+A contract marked with `[EncryptedProperty]` requires an encryption provider. A concrete contract also honors markers on the interfaces it implements. Bq rejects a known marked contract during startup and rejects an unregistered marked contract before sending or publishing it.
