@@ -119,16 +119,21 @@ namespace Bq.Messaging.Tests
 
     public sealed class OrderedPilotBehavior : Behavior<IIncomingLogicalMessageContext>
     {
+        readonly bool ordered;
+
+        public OrderedPilotBehavior(bool ordered) { this.ordered = ordered; }
+
         public override Task Invoke(IIncomingLogicalMessageContext context, Func<Task> next)
         {
-            context.Extensions.Set("pilot-step-ordered", true);
+            context.Extensions.Set("pilot-step-ordered", ordered);
             return next();
         }
     }
 
     public sealed class OrderedPilotStep : RegisterStep
     {
-        public OrderedPilotStep() : base("pilot-ordering", typeof(OrderedPilotBehavior), "Run before the first observer")
+        public OrderedPilotStep() : base("pilot-ordering", typeof(OrderedPilotBehavior), "Run before the first observer",
+            () => new OrderedPilotBehavior(true))
         {
             InsertBefore("first-observer");
             InsertAfterIfExists("optional-observer");

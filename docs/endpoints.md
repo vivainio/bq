@@ -152,3 +152,5 @@ Call `EnableMessageEncryption(encryptionService)` with an `IMessageBodyEncryptio
 Call `context.DoNotContinueDispatchingCurrentMessageToHandlers()` to skip subsequent handlers for the current delivery attempt. The current handler can finish, and ordinary transaction and recoverability rules apply.
 
 Use `Pipeline.Register<TRegisterStep>()` or `Pipeline.Register(step)` to register an incoming behavior with ordering constraints. Derive from `RegisterStep` and declare dependencies with `InsertBefore` or `InsertAfter` by step ID. The `IfExists` forms allow optional steps. Bq resolves ordering at startup and rejects missing required steps and cycles.
+
+Pass a behavior factory to the `RegisterStep` constructor when a behavior needs constructor arguments. Bq calls the factory during registration and reuses the returned behavior across deliveries.

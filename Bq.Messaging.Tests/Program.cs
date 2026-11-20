@@ -739,7 +739,7 @@ namespace Bq.Messaging.Tests
 
         sealed class CircularPilotStep : RegisterStep
         {
-            public CircularPilotStep() : base("first-observer", typeof(OrderedPilotBehavior), "Create a cycle")
+            public CircularPilotStep() : base("first-observer", typeof(UnexpectedPilotBehavior), "Create a cycle")
             {
                 InsertBefore("pilot-ordering");
             }

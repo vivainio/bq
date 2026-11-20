@@ -54,16 +54,21 @@ namespace Bq.Messaging
             new List<(string Id, bool Before, bool Optional)>();
 
         protected RegisterStep(string stepId, Type behavior, string description)
+            : this(stepId, behavior, description, null) { }
+
+        protected RegisterStep(string stepId, Type behavior, string description, Func<IBehavior> factoryMethod)
         {
             if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
             StepId = stepId;
             BehaviorType = behavior ?? throw new ArgumentNullException(nameof(behavior));
             Description = description;
+            Factory = factoryMethod;
         }
 
         public string StepId { get; }
         public Type BehaviorType { get; }
         public string Description { get; }
+        internal Func<IBehavior> Factory { get; }
         public void InsertBefore(string id) => AddDependency(id, before: true, optional: false);
         public void InsertBeforeIfExists(string id) => AddDependency(id, before: true, optional: true);
         public void InsertAfter(string id) => AddDependency(id, before: false, optional: false);
@@ -91,7 +96,12 @@ namespace Bq.Messaging
         public void Register(RegisterStep registration)
         {
             if (registration == null) throw new ArgumentNullException(nameof(registration));
-            Register(registration.StepId, registration.BehaviorType, registration.Description);
+            if (steps.ContainsKey(registration.StepId))
+                throw new InvalidOperationException("A pipeline step already uses ID " + registration.StepId);
+            var behavior = registration.Factory == null ? CreateBehavior(registration.BehaviorType) : registration.Factory();
+            if (!registration.BehaviorType.IsInstanceOfType(behavior))
+                throw new InvalidOperationException("The factory must return a behavior assignable to " + registration.BehaviorType.FullName + ".");
+            Register(registration.StepId, behavior, registration.Description);
             ordering.Add(registration.StepId, registration.Dependencies.ToArray());
         }
 
