@@ -30,11 +30,21 @@ namespace Bq.Messaging.Tests
         public int Count { get; set; }
     }
 
-    sealed class PilotMessageMutator : IMutateIncomingMessages, IMutateIncomingTransportMessages, IMutateOutgoingTransportMessages
+    sealed class PilotMessageMutator : IMutateIncomingMessages, IMutateIncomingTransportMessages,
+        IMutateOutgoingMessages, IMutateOutgoingTransportMessages
     {
+        public Task MutateOutgoing(MutateOutgoingMessageContext context)
+        {
+            if (context.OutgoingMessage is Response reply)
+                context.OutgoingMessage = new Response { Text = reply.Text + " mutated" };
+            return Task.CompletedTask;
+        }
+
         public async Task MutateOutgoing(MutateOutgoingTransportMessageContext context)
         {
-            if (!(context.OutgoingMessage is Response)) return;
+            if (!(context.OutgoingMessage is Response reply)) return;
+            if (!reply.Text.EndsWith(" mutated", StringComparison.Ordinal))
+                throw new InvalidOperationException("The transport mutator must see the replacement message.");
             await Task.Yield();
             if (!context.TryGetIncomingMessage(out var incoming) || !(incoming is ReplacementPilotEvent) ||
                 !context.TryGetIncomingHeaders(out var headers) || headers["pilot-mutator"] != "applied")
@@ -542,6 +552,9 @@ namespace Bq.Messaging.Tests
                             "logical behavior reply uses the incoming message identity");
                         Assert(System.Text.Encoding.UTF8.GetString((byte[])behaviorReply.BasicProperties.Headers["pilot-outgoing-mutator"]) == "applied",
                             "outgoing transport mutations survive the reply outbox");
+                        var replyBody = MessagePackSerializer.Deserialize<Response>(behaviorReply.Body,
+                            MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance));
+                        Assert(replyBody.Text == prefix + ".pilot-event mutated", "logical mutation is serialized into the reply");
                         var legacy = channel.BasicGet(legacyQueue, true);
                         Assert(legacy != null && legacy.BasicProperties.ContentType == "text/xml" &&
                             System.Text.Encoding.UTF8.GetString(legacy.Body.ToArray()) == legacyXml,

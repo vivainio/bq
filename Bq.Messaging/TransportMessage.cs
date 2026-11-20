@@ -4,6 +4,42 @@ using System.Threading.Tasks;
 
 namespace Bq.Messaging
 {
+    public interface IMutateOutgoingMessages
+    {
+        Task MutateOutgoing(MutateOutgoingMessageContext context);
+    }
+
+    public sealed class MutateOutgoingMessageContext
+    {
+        readonly object incomingMessage;
+        readonly IReadOnlyDictionary<string, string> incomingHeaders;
+
+        public MutateOutgoingMessageContext(object outgoingMessage,
+            Dictionary<string, string> outgoingHeaders, object incomingMessage,
+            IReadOnlyDictionary<string, string> incomingHeaders)
+        {
+            OutgoingMessage = outgoingMessage;
+            OutgoingHeaders = outgoingHeaders;
+            this.incomingMessage = incomingMessage;
+            this.incomingHeaders = incomingHeaders;
+        }
+
+        public object OutgoingMessage { get; set; }
+        public Dictionary<string, string> OutgoingHeaders { get; }
+
+        public bool TryGetIncomingMessage(out object message)
+        {
+            message = incomingMessage;
+            return message != null;
+        }
+
+        public bool TryGetIncomingHeaders(out IReadOnlyDictionary<string, string> headers)
+        {
+            headers = incomingHeaders;
+            return headers != null;
+        }
+    }
+
     public interface IMutateOutgoingTransportMessages
     {
         Task MutateOutgoing(MutateOutgoingTransportMessageContext context);

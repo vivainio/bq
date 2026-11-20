@@ -12,11 +12,14 @@ namespace Bq.Messaging
             if (messageMutator == null) throw new ArgumentNullException(nameof(messageMutator));
             if (messageMutator is IMutateIncomingTransportMessages transport)
                 endpointConfiguration.IncomingTransportMutators.Add(transport);
+            if (messageMutator is IMutateOutgoingMessages outgoingLogical)
+                endpointConfiguration.OutgoingMessageMutators.Add(outgoingLogical);
             if (messageMutator is IMutateOutgoingTransportMessages outgoing)
                 endpointConfiguration.OutgoingTransportMutators.Add(outgoing);
             if (!(messageMutator is IMutateIncomingMessages incoming))
             {
-                if (messageMutator is IMutateIncomingTransportMessages || messageMutator is IMutateOutgoingTransportMessages) return;
+                if (messageMutator is IMutateIncomingTransportMessages || messageMutator is IMutateOutgoingTransportMessages ||
+                    messageMutator is IMutateOutgoingMessages) return;
                 throw new ArgumentException("A supported message mutator is required.", nameof(messageMutator));
             }
 

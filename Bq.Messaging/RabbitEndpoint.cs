@@ -24,6 +24,7 @@ namespace Bq.Messaging
         readonly Action<TransportMessage> mutateIncoming;
         readonly IMutateIncomingTransportMessages[] incomingTransportMutators;
         readonly Action<TransportMessage> mutateOutgoing;
+        readonly IMutateOutgoingMessages[] outgoingMessageMutators;
         readonly IMutateOutgoingTransportMessages[] outgoingTransportMutators;
         readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
         readonly Dictionary<Type, string> wireNames = new Dictionary<Type, string>();
@@ -58,6 +59,7 @@ namespace Bq.Messaging
             mutateIncoming = configuration.MutateIncoming;
             incomingTransportMutators = configuration.IncomingTransportMutators.ToArray();
             mutateOutgoing = configuration.MutateOutgoing;
+            outgoingMessageMutators = configuration.OutgoingMessageMutators.ToArray();
             outgoingTransportMutators = configuration.OutgoingTransportMutators.ToArray();
             incoming = configuration.Incoming.Build();
             var owners = new Dictionary<string, Type>();
@@ -447,17 +449,30 @@ namespace Bq.Messaging
             if (deferred) copiedHeaders[MessageHeaders.Deferred] = true;
             var scope = uniformScope.Value;
             var contract = ContractType(message);
+            var causingContext = scope != null && Volatile.Read(ref scope.Active) != 0 ? scope.Context : null;
+            object outgoingMessage = message;
+            foreach (var mutator in outgoingMessageMutators)
+            {
+                var original = MessageHeaders.AsText(copiedHeaders);
+                var mutation = new MutateOutgoingMessageContext(outgoingMessage,
+                    original.ToDictionary(header => header.Key, header => header.Value, StringComparer.Ordinal),
+                    causingContext?.LogicalMessage, causingContext?.MessageHeaders);
+                await mutator.MutateOutgoing(mutation).ConfigureAwait(false);
+                if (!contract.IsInstanceOfType(mutation.OutgoingMessage))
+                    throw new InvalidOperationException("An outgoing replacement must implement the declared message contract.");
+                RecoveryWire.ApplyTextHeaderEdits(copiedHeaders, original, mutation.OutgoingHeaders);
+                outgoingMessage = mutation.OutgoingMessage;
+            }
             var serializationType = InterfaceMessage.SerializationType(contract);
-            var value = InterfaceMessage.SerializationValue(contract, serializationType, message);
+            var value = InterfaceMessage.SerializationValue(contract, serializationType, outgoingMessage);
             var transport = new TransportMessage(WireName(contract),
                 MessagePackSerializer.Serialize(serializationType, value, SerializerOptions), copiedHeaders,
-                scope != null && Volatile.Read(ref scope.Active) != 0 ? scope.Context : null);
+                causingContext);
             mutateOutgoing?.Invoke(transport);
             foreach (var mutator in outgoingTransportMutators)
             {
                 var original = MessageHeaders.AsText(transport.Headers);
-                var causingContext = transport.IncomingMessage as HandlerContext;
-                var mutation = new MutateOutgoingTransportMessageContext(transport.Body, message,
+                var mutation = new MutateOutgoingTransportMessageContext(transport.Body, outgoingMessage,
                     original.ToDictionary(header => header.Key, header => header.Value, StringComparer.Ordinal),
                     causingContext?.LogicalMessage, causingContext?.MessageHeaders);
                 await mutator.MutateOutgoing(mutation).ConfigureAwait(false);
