@@ -138,6 +138,7 @@ namespace Bq.Messaging
         public TimeSpan CriticalErrorThreshold { get; set; } = TimeSpan.FromMinutes(10);
         public Action<TransportMessage> MutateIncoming { get; set; }
         internal List<IMutateIncomingTransportMessages> IncomingTransportMutators { get; } = new List<IMutateIncomingTransportMessages>();
+        internal List<IMutateOutgoingTransportMessages> OutgoingTransportMutators { get; } = new List<IMutateOutgoingTransportMessages>();
         public Action<TransportMessage> MutateOutgoing { get; set; }
         public IncomingPipeline Incoming { get; } = new IncomingPipeline();
         public PipelineSettings Pipeline { get; }

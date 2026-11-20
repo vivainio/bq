@@ -30,8 +30,18 @@ namespace Bq.Messaging.Tests
         public int Count { get; set; }
     }
 
-    sealed class PilotMessageMutator : IMutateIncomingMessages, IMutateIncomingTransportMessages
+    sealed class PilotMessageMutator : IMutateIncomingMessages, IMutateIncomingTransportMessages, IMutateOutgoingTransportMessages
     {
+        public async Task MutateOutgoing(MutateOutgoingTransportMessageContext context)
+        {
+            if (!(context.OutgoingMessage is Response)) return;
+            await Task.Yield();
+            if (!context.TryGetIncomingMessage(out var incoming) || !(incoming is ReplacementPilotEvent) ||
+                !context.TryGetIncomingHeaders(out var headers) || headers["pilot-mutator"] != "applied")
+                throw new InvalidOperationException("The outgoing mutator must see the active logical message and headers.");
+            context.OutgoingHeaders["pilot-outgoing-mutator"] = "applied";
+        }
+
         public async Task MutateIncoming(MutateIncomingTransportMessageContext context)
         {
             if (!context.Headers.ContainsKey("migration-source")) return;
@@ -530,6 +540,8 @@ namespace Bq.Messaging.Tests
                         Assert(behaviorReply.BasicProperties.Type == typeof(Response).FullName &&
                             behaviorReply.BasicProperties.CorrelationId == prefix + ".pilot-event",
                             "logical behavior reply uses the incoming message identity");
+                        Assert(System.Text.Encoding.UTF8.GetString((byte[])behaviorReply.BasicProperties.Headers["pilot-outgoing-mutator"]) == "applied",
+                            "outgoing transport mutations survive the reply outbox");
                         var legacy = channel.BasicGet(legacyQueue, true);
                         Assert(legacy != null && legacy.BasicProperties.ContentType == "text/xml" &&
                             System.Text.Encoding.UTF8.GetString(legacy.Body.ToArray()) == legacyXml,

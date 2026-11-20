@@ -24,6 +24,7 @@ namespace Bq.Messaging
         readonly Action<TransportMessage> mutateIncoming;
         readonly IMutateIncomingTransportMessages[] incomingTransportMutators;
         readonly Action<TransportMessage> mutateOutgoing;
+        readonly IMutateOutgoingTransportMessages[] outgoingTransportMutators;
         readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
         readonly Dictionary<Type, string> wireNames = new Dictionary<Type, string>();
         readonly Dictionary<string, Registration> receivers = new Dictionary<string, Registration>();
@@ -57,6 +58,7 @@ namespace Bq.Messaging
             mutateIncoming = configuration.MutateIncoming;
             incomingTransportMutators = configuration.IncomingTransportMutators.ToArray();
             mutateOutgoing = configuration.MutateOutgoing;
+            outgoingTransportMutators = configuration.OutgoingTransportMutators.ToArray();
             incoming = configuration.Incoming.Build();
             var owners = new Dictionary<string, Type>();
             var types = configuration.ContractNames.Keys.Concat(configuration.Handlers.Values.Select(handler => handler.Type))
@@ -285,8 +287,12 @@ namespace Bq.Messaging
             {
                 return Send(endpoint.RouteFor(message), message);
             }
-            public Task Send<T>(string destination, T message) =>
-                ActivePersistence.StoreOutgoing(endpoint.Prepare(message, "", RequireDestination(destination), null, true, headers));
+            public async Task Send<T>(string destination, T message)
+            {
+                var persistence = ActivePersistence;
+                var outgoing = await endpoint.Prepare(message, "", RequireDestination(destination), null, true, headers).ConfigureAwait(false);
+                await persistence.StoreOutgoing(outgoing).ConfigureAwait(false);
+            }
             public Task SendLocal<T>(T message) => Send(endpoint.localAddress, message);
             public Task SendAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.RouteFor(message), message, dueAt);
             public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => SendAt(endpoint.localAddress, message, dueAt);
@@ -297,8 +303,13 @@ namespace Bq.Messaging
             public Task PublishAt<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> messageHeaders) =>
                 endpoint.StoreScheduledEvent(ActivePersistence, message, dueAt.UtcDateTime, null, messageHeaders);
             public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
-            public Task Publish<T>(T message) => ActivePersistence.StoreOutgoing(endpoint.Prepare(
-                message, endpoint.eventsExchange, endpoint.WireName(ContractType(message)), null, false, headers));
+            public async Task Publish<T>(T message)
+            {
+                var persistence = ActivePersistence;
+                var outgoing = await endpoint.Prepare(message, endpoint.eventsExchange, endpoint.WireName(ContractType(message)),
+                    null, false, headers).ConfigureAwait(false);
+                await persistence.StoreOutgoing(outgoing).ConfigureAwait(false);
+            }
             Task IImmediateDispatch.SendImmediately<T>(T message, string destination, bool local)
             {
                 _ = ActivePersistence;
@@ -338,13 +349,15 @@ namespace Bq.Messaging
         Task PublishAtWithHeaders<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
             ExecuteTransaction(session => ((TransactionalSession)session).PublishAt(message, dueAt, headers));
 
-        Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId,
+        async Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
-            session.StoreTimeout(Prepare(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers, deferred: true), dueUtc);
+            await session.StoreTimeout(
+                await Prepare(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers, deferred: true).ConfigureAwait(false), dueUtc).ConfigureAwait(false);
 
-        Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId,
+        async Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
-            session.StoreTimeout(Prepare(message, "", RequireDestination(destination), correlationId, true, headers, deferred: true), dueUtc);
+            await session.StoreTimeout(
+                await Prepare(message, "", RequireDestination(destination), correlationId, true, headers, deferred: true).ConfigureAwait(false), dueUtc).ConfigureAwait(false);
 
         public Task Subscribe(Type eventType, SubscribeOptions options)
         {
@@ -419,7 +432,7 @@ namespace Bq.Messaging
 
         internal Task PublishCore<T>(T message, string correlationId, IDictionary<string, object> headers = null) =>
             Dispatch(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers);
-        OutgoingMessage Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
+        async Task<OutgoingMessage> Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
             IDictionary<string, object> headers = null, bool deferred = false)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
@@ -440,6 +453,17 @@ namespace Bq.Messaging
                 MessagePackSerializer.Serialize(serializationType, value, SerializerOptions), copiedHeaders,
                 scope != null && Volatile.Read(ref scope.Active) != 0 ? scope.Context : null);
             mutateOutgoing?.Invoke(transport);
+            foreach (var mutator in outgoingTransportMutators)
+            {
+                var original = MessageHeaders.AsText(transport.Headers);
+                var causingContext = transport.IncomingMessage as HandlerContext;
+                var mutation = new MutateOutgoingTransportMessageContext(transport.Body, message,
+                    original.ToDictionary(header => header.Key, header => header.Value, StringComparer.Ordinal),
+                    causingContext?.LogicalMessage, causingContext?.MessageHeaders);
+                await mutator.MutateOutgoing(mutation).ConfigureAwait(false);
+                RecoveryWire.ApplyTextHeaderEdits(transport.Headers, original, mutation.OutgoingHeaders);
+                transport.Body = mutation.OutgoingBody;
+            }
             transport.Headers.Remove(MessageOptions.WireIdHeader);
             transport.Headers.Remove(MessageOptions.ReplyAddressHeader);
             if (customId != null) transport.Headers[MessageOptions.WireIdHeader] = customId;
@@ -454,11 +478,10 @@ namespace Bq.Messaging
                 Type = transport.TypeName, Exchange = exchange, RoutingKey = routingKey,
                 Mandatory = mandatory, Headers = copiedHeaders, Body = transport.Body };
         }
-        Task Dispatch<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
+        async Task Dispatch<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
             IDictionary<string, object> headers = null)
         {
-            PublishPrepared(Prepare(message, exchange, routingKey, correlationId, mandatory, headers));
-            return Task.CompletedTask;
+            PublishPrepared(await Prepare(message, exchange, routingKey, correlationId, mandatory, headers).ConfigureAwait(false));
         }
         void PublishPrepared(OutgoingMessage message)
         {
@@ -1030,6 +1053,7 @@ namespace Bq.Messaging
             public ContextBag Extensions { get; } = new ContextBag();
             public string ReplyToAddress => replyTo;
             public IReadOnlyDictionary<string, string> MessageHeaders { get; }
+            internal object LogicalMessage { get; set; }
             internal Dictionary<string, string> LogicalHeaders { get; }
             public string MessageId { get; }
             public string CorrelationId { get; }
@@ -1045,19 +1069,20 @@ namespace Bq.Messaging
                 Publish(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Send<T>(T message) => SendWithHeaders(message, null, null);
             public Task Send<T>(Action<T> initialize) => Send(MessageOptionsExtensions.Initialize(initialize));
-            internal Task SendWithHeaders<T>(T message, string destination, IDictionary<string, object> headers)
+            internal async Task SendWithHeaders<T>(T message, string destination, IDictionary<string, object> headers)
             {
                 destination = destination ?? endpoint.RouteFor(message);
                 RequireDestination(destination);
-                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, CorrelationId, true, headers));
+                await PersistenceSession.StoreOutgoing(
+                    await endpoint.Prepare(message, "", destination, CorrelationId, true, headers).ConfigureAwait(false)).ConfigureAwait(false);
             }
             public Task Send<T>(string destination, T message) => SendWithHeaders(message, RequireDestination(destination), null);
             public Task SendLocal<T>(T message) => SendWithHeaders(message, endpoint.localAddress, null);
             public Task Publish<T>(T message) => PublishWithHeaders(message, null);
             public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
-            internal Task PublishWithHeaders<T>(T message, IDictionary<string, object> headers) =>
-                PersistenceSession.StoreOutgoing(endpoint.Prepare(message, endpoint.eventsExchange,
-                    endpoint.WireName(ContractType(message)), CorrelationId, false, headers));
+            internal async Task PublishWithHeaders<T>(T message, IDictionary<string, object> headers) =>
+                await PersistenceSession.StoreOutgoing(await endpoint.Prepare(message, endpoint.eventsExchange,
+                    endpoint.WireName(ContractType(message)), CorrelationId, false, headers).ConfigureAwait(false)).ConfigureAwait(false);
             internal Task SendAtWithHeaders<T>(string destination, T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
                 endpoint.StoreScheduled(PersistenceSession, destination, message, dueAt.UtcDateTime, CorrelationId, headers);
             internal Task PublishAtWithHeaders<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
@@ -1097,15 +1122,17 @@ namespace Bq.Messaging
             public Task Reply<T>(T message) => ((IReplyWithOptions)this).ReplyWithOptions(message, null);
             public Task Reply<T>(Action<T> initialize) => Reply(MessageOptionsExtensions.Initialize(initialize));
 
-            Task IReplyWithOptions.ReplyWithOptions<T>(T message, ReplyOptions options)
+            async Task IReplyWithOptions.ReplyWithOptions<T>(T message, ReplyOptions options)
             {
                 var destination = options?.Destination ?? replyTo;
                 if (string.IsNullOrEmpty(destination)) throw new InvalidOperationException("Message has no reply address.");
                 var correlationId = options?.CorrelationId ?? CorrelationId;
                 var headers = options?.ApplyEnvelope(options.Headers);
                 if (PersistenceSession == null || options?.ImmediateDispatch == true)
-                    return endpoint.SendCore(message, correlationId, destination, headers);
-                return PersistenceSession.StoreOutgoing(endpoint.Prepare(message, "", destination, correlationId, true, headers));
+                    await endpoint.SendCore(message, correlationId, destination, headers).ConfigureAwait(false);
+                else
+                    await PersistenceSession.StoreOutgoing(
+                        await endpoint.Prepare(message, "", destination, correlationId, true, headers).ConfigureAwait(false)).ConfigureAwait(false);
             }
         }
     }

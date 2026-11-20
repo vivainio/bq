@@ -11,7 +11,8 @@ namespace Bq.Messaging
         internal IncomingMessageContext(object message, RabbitEndpoint.HandlerContext handlerContext,
             Type messageType, string contractName, int immediateRetries, int delayedRetries)
         {
-            Message = message;
+            this.handlerContext = handlerContext;
+            handlerContext.LogicalMessage = message;
             MessageType = messageType;
             HandlerContext = handlerContext;
             LogicalHeaders = handlerContext.LogicalHeaders;
@@ -20,13 +21,14 @@ namespace Bq.Messaging
             DelayedRetries = delayedRetries;
         }
 
-        public object Message { get; private set; }
+        public object Message => handlerContext.LogicalMessage;
+        readonly RabbitEndpoint.HandlerContext handlerContext;
         internal void UpdateMessageInstance(object newInstance)
         {
             if (newInstance == null) throw new ArgumentNullException(nameof(newInstance));
             if (!MessageType.IsInstanceOfType(newInstance))
                 throw new ArgumentException("The replacement must implement the incoming message contract.", nameof(newInstance));
-            Message = newInstance;
+            handlerContext.LogicalMessage = newInstance;
         }
         public Type MessageType { get; }
         public string ContractName { get; }
