@@ -179,7 +179,7 @@ namespace Bq.Messaging.Tests
             Assert(sendOptions.GetDestination() == null && !sendOptions.IsRoutingToThisEndpoint() && sendOptions.GetMessageId() == null,
                 "unset send options report no explicit routing or identity");
             sendOptions.RouteToThisEndpoint();
-            sendOptions.SetMessageId("custom-id");
+            headerOptions.SetMessageId("custom-id");
             sendOptions.RouteReplyTo("reply");
             sendOptions.SetHeader("attempt", 3);
             sendOptions.DelayDeliveryWith(TimeSpan.FromSeconds(2));

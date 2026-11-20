@@ -8,7 +8,6 @@ namespace Bq.Messaging
     {
         internal const string WireIdHeader = "x-bq-forwarded-message-id";
         internal const string ReplyAddressHeader = "x-bq-override-reply-to";
-        internal string MessageId { get; private set; }
         internal string ReplyAddress { get; private set; }
 
         public void SetMessageId(string messageId) => MessageId = ValidateAddressField(messageId, nameof(messageId));
@@ -133,6 +132,18 @@ namespace Bq.Messaging
         Task PublishImmediately<T>(T message);
     }
 
+    public static class MessageIdExtensions
+    {
+        public static string GetMessageId(this ExtendableOptions options) =>
+            (options ?? throw new ArgumentNullException(nameof(options))).MessageId;
+
+        public static void SetMessageId(this ExtendableOptions options, string messageId)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            options.MessageId = MessageOptions.ValidateAddressField(messageId, nameof(messageId));
+        }
+    }
+
     public static class HeaderOptionExtensions
     {
         public static IReadOnlyDictionary<string, string> GetHeaders(this ExtendableOptions options) =>
@@ -148,7 +159,7 @@ namespace Bq.Messaging
 
     public static class MessageOptionsExtensions
     {
-        public static string GetMessageId(this MessageOptions options) => options.MessageId;
+        public static string GetMessageId(MessageOptions options) => MessageIdExtensions.GetMessageId(options);
         public static IReadOnlyDictionary<string, string> GetHeaders(MessageOptions options) =>
             HeaderOptionExtensions.GetHeaders(options);
         public static string GetDestination(this SendOptions options) => options.Destination;
