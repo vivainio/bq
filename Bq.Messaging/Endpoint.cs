@@ -16,7 +16,7 @@ namespace Bq.Messaging
     public sealed class SubscribeOptions : ExtendableOptions { }
     public sealed class UnsubscribeOptions : ExtendableOptions { }
 
-    public static class IMessageSessionExtensions
+    public static partial class IMessageSessionExtensions
     {
         public static Task Subscribe<T>(this IMessageSession session) =>
             session.Subscribe(typeof(T), new SubscribeOptions());

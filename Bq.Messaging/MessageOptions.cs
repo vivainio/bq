@@ -179,6 +179,50 @@ namespace Bq.Messaging
         public static DateTimeOffset? GetDeliveryDate(this SendOptions options) => options.DeliveryDate;
     }
 
+    public static partial class IMessageSessionExtensions
+    {
+        public static Task Send(this IMessageSession session, object message) =>
+            session.Send(message, new SendOptions());
+
+        public static Task Publish(this IMessageSession session, object message) =>
+            session.Publish(message, new PublishOptions());
+
+        public static Task Send(this IMessageSession session, string destination, object message) =>
+            session.Send(message, DestinationOptions(destination));
+
+        public static Task Send<T>(this IMessageSession session, string destination, Action<T> messageConstructor) =>
+            session.Send(messageConstructor, DestinationOptions(destination));
+
+        public static Task SendLocal(this IMessageSession session, object message) =>
+            session.Send(message, LocalOptions());
+
+        public static Task SendLocal<T>(this IMessageSession session, Action<T> messageConstructor) =>
+            session.Send(messageConstructor, LocalOptions());
+
+        public static Task Send<T>(this IMessageSession session, Action<T> messageConstructor) =>
+            session.Send(messageConstructor, new SendOptions());
+
+        public static Task Publish<T>(this IMessageSession session) =>
+            session.Publish<T>(_ => { }, new PublishOptions());
+
+        public static Task Publish<T>(this IMessageSession session, Action<T> messageConstructor) =>
+            session.Publish(messageConstructor, new PublishOptions());
+
+        internal static SendOptions DestinationOptions(string destination)
+        {
+            var options = new SendOptions();
+            options.SetDestination(destination);
+            return options;
+        }
+
+        internal static SendOptions LocalOptions()
+        {
+            var options = new SendOptions();
+            options.RouteToThisEndpoint();
+            return options;
+        }
+    }
+
     public static class MessageOptionsExtensions
     {
         public static string GetMessageId(MessageOptions options) => MessageIdExtensions.GetMessageId(options);
@@ -192,40 +236,28 @@ namespace Bq.Messaging
         public static TimeSpan? GetDeliveryDelay(SendOptions options) => DelayedDeliveryOptionExtensions.GetDeliveryDelay(options);
         public static DateTimeOffset? GetDeliveryDate(SendOptions options) => DelayedDeliveryOptionExtensions.GetDeliveryDate(options);
 
-        public static Task Send(this IMessageSession session, object message) => session.Send(message, new SendOptions());
-        public static Task Publish(this IMessageSession session, object message) => session.Publish(message, new PublishOptions());
+        public static Task Send(IMessageSession session, object message) =>
+            IMessageSessionExtensions.Send(session, message);
+        public static Task Publish(IMessageSession session, object message) =>
+            IMessageSessionExtensions.Publish(session, message);
 
-        public static Task Send(this IMessageSession session, string destination, object message) =>
-            session.Send(message, DestinationOptions(destination));
-        public static Task Send<T>(this IMessageSession session, string destination, Action<T> initialize) =>
-            session.Send(initialize, DestinationOptions(destination));
-        public static Task SendLocal(this IMessageSession session, object message) =>
-            session.Send(message, LocalOptions());
-        public static Task SendLocal<T>(this IMessageSession session, Action<T> initialize) =>
-            session.Send(initialize, LocalOptions());
+        public static Task Send(IMessageSession session, string destination, object message) =>
+            IMessageSessionExtensions.Send(session, destination, message);
+        public static Task Send<T>(IMessageSession session, string destination, Action<T> initialize) =>
+            IMessageSessionExtensions.Send<T>(session, destination, initialize);
+        public static Task SendLocal(IMessageSession session, object message) =>
+            IMessageSessionExtensions.SendLocal(session, message);
+        public static Task SendLocal<T>(IMessageSession session, Action<T> initialize) =>
+            IMessageSessionExtensions.SendLocal<T>(session, initialize);
 
         public static Task Send(this IPipelineContext context, string destination, object message) =>
-            context.Send(message, DestinationOptions(destination));
+            context.Send(message, IMessageSessionExtensions.DestinationOptions(destination));
         public static Task Send<T>(this IPipelineContext context, string destination, Action<T> initialize) =>
-            context.Send(initialize, DestinationOptions(destination));
+            context.Send(initialize, IMessageSessionExtensions.DestinationOptions(destination));
         public static Task SendLocal(this IPipelineContext context, object message) =>
-            context.Send(message, LocalOptions());
+            context.Send(message, IMessageSessionExtensions.LocalOptions());
         public static Task SendLocal<T>(this IPipelineContext context, Action<T> initialize) =>
-            context.Send(initialize, LocalOptions());
-
-        static SendOptions DestinationOptions(string destination)
-        {
-            var options = new SendOptions();
-            options.SetDestination(destination);
-            return options;
-        }
-
-        static SendOptions LocalOptions()
-        {
-            var options = new SendOptions();
-            options.RouteToThisEndpoint();
-            return options;
-        }
+            context.Send(initialize, IMessageSessionExtensions.LocalOptions());
 
         internal static T Initialize<T>(Action<T> initialize) => MessageCreator.Default.CreateInstance(initialize);
 
@@ -244,14 +276,14 @@ namespace Bq.Messaging
         public static Task Reply<T>(this IMessageProcessingContext context, Action<T> initialize) =>
             context.Reply(initialize, new ReplyOptions());
 
-        public static Task Send<T>(this IMessageSession session, Action<T> initialize) =>
-            session.Send(initialize, new SendOptions());
+        public static Task Send<T>(IMessageSession session, Action<T> initialize) =>
+            IMessageSessionExtensions.Send<T>(session, initialize);
 
-        public static Task Publish<T>(this IMessageSession session) =>
-            session.Publish<T>(_ => { }, new PublishOptions());
+        public static Task Publish<T>(IMessageSession session) =>
+            IMessageSessionExtensions.Publish<T>(session);
 
-        public static Task Publish<T>(this IMessageSession session, Action<T> initialize) =>
-            session.Publish(initialize, new PublishOptions());
+        public static Task Publish<T>(IMessageSession session, Action<T> initialize) =>
+            IMessageSessionExtensions.Publish<T>(session, initialize);
 
         public static Task Send<T>(this IMessageHandlerContext context, Action<T> initialize) =>
             context.Send(initialize, new SendOptions());
