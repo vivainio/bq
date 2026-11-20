@@ -587,7 +587,7 @@ namespace Bq.Messaging.Tests
                         Assert(channel.BasicGet(legacyQueue, true) == null && (await subscriber.ListErrors()).Count == 0,
                             "wire formats stay on their own exchanges during phased cutover");
 
-                        await messaging.Publish(new RuntimeSubscriptionEvent { Value = 0 }, new PublishOptions());
+                        await messaging.Publish<RuntimeSubscriptionEvent>();
                         IMessageSession subscriptions = subscriber;
                         Func<Task> subscribe = subscriptions.Subscribe<RuntimeSubscriptionEvent>;
                         Func<Task> unsubscribe = subscriptions.Unsubscribe<RuntimeSubscriptionEvent>;

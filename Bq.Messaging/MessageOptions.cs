@@ -231,6 +231,8 @@ namespace Bq.Messaging
 
         public static Task Send(this IPipelineContext context, object message) => context.Send(message, new SendOptions());
         public static Task Publish(this IPipelineContext context, object message) => context.Publish(message, new PublishOptions());
+        public static Task Publish<T>(this IPipelineContext context) =>
+            context.Publish<T>(_ => { }, new PublishOptions());
         public static Task Reply(this IMessageProcessingContext context, object message) => context.Reply(message, new ReplyOptions());
 
         public static Task Send<T>(this IPipelineContext context, Action<T> initialize) =>
@@ -244,6 +246,9 @@ namespace Bq.Messaging
 
         public static Task Send<T>(this IMessageSession session, Action<T> initialize) =>
             session.Send(initialize, new SendOptions());
+
+        public static Task Publish<T>(this IMessageSession session) =>
+            session.Publish<T>(_ => { }, new PublishOptions());
 
         public static Task Publish<T>(this IMessageSession session, Action<T> initialize) =>
             session.Publish(initialize, new PublishOptions());

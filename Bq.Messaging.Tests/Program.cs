@@ -254,6 +254,8 @@ namespace Bq.Messaging.Tests
                 pipelineRecorder.Messages[1].Operation == MessageOperation.SendLocal &&
                 ((Command)pipelineRecorder.Messages[1].Message).Text == "local",
                 "pipeline send shortcuts preserve destination and initializer");
+            await pipeline.Publish<IPilotEvent>();
+            Assert(pipelineRecorder.Messages[2].Message is IPilotEvent, "parameterless publish constructs an interface event");
             IMessageHandlerContext initializerContext = initialized;
             await initializerContext.Send<Command>(command => command.Text = "created", send);
             Action<IPilotEvent> publishMessage = message => message.Text = "published";
