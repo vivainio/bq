@@ -234,7 +234,8 @@ namespace Bq.Messaging.Tests
                 "pipeline send shortcuts preserve destination and initializer");
             IMessageHandlerContext initializerContext = initialized;
             await initializerContext.Send<Command>(command => command.Text = "created", send);
-            await initializerContext.Publish<IPilotEvent>(message => message.Text = "published");
+            Action<IPilotEvent> publishMessage = message => message.Text = "published";
+            await initializerContext.Publish(publishMessage);
             await initializerContext.Reply<Response>(response => response.Text = "replied", reply);
             Assert(((Command)initialized.Messages[0].Message).Text == "created" &&
                 initialized.Messages[0].Destination == "orders" && initialized.Messages[0].DueAt == dueAt, "message initializer preserves send options");

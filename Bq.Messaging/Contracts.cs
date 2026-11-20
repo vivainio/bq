@@ -72,6 +72,7 @@ namespace Bq.Messaging
         IPersistenceSession PersistenceSession { get; }
         SynchronizedStorageSession SynchronizedStorageSession { get; }
         Task Send<T>(T message);
+        Task Send<T>(Action<T> initialize);
         Task Send<T>(T message, SendOptions options);
         new Task Send(object message, SendOptions options);
         new Task Send<T>(Action<T> initialize, SendOptions options);
@@ -79,10 +80,12 @@ namespace Bq.Messaging
         Task Send<T>(string destination, T message);
         Task SendLocal<T>(T message);
         Task Publish<T>(T message);
+        Task Publish<T>(Action<T> initialize);
         Task Publish<T>(T message, PublishOptions options);
         new Task Publish(object message, PublishOptions options);
         new Task Publish<T>(Action<T> initialize, PublishOptions options);
         Task Reply<T>(T message);
+        Task Reply<T>(Action<T> initialize);
         Task Reply<T>(T message, ReplyOptions options);
         new Task Reply(object message, ReplyOptions options);
         new Task Reply<T>(Action<T> initialize, ReplyOptions options);

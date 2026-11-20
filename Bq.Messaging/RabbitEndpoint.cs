@@ -1009,6 +1009,7 @@ namespace Bq.Messaging
             public Task Publish<T>(Action<T> initialize, PublishOptions options) =>
                 Publish(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Send<T>(T message) => SendWithHeaders(message, null, null);
+            public Task Send<T>(Action<T> initialize) => Send(MessageOptionsExtensions.Initialize(initialize));
             internal Task SendWithHeaders<T>(T message, string destination, IDictionary<string, object> headers)
             {
                 destination = destination ?? endpoint.RouteFor(message);
@@ -1018,6 +1019,7 @@ namespace Bq.Messaging
             public Task Send<T>(string destination, T message) => SendWithHeaders(message, RequireDestination(destination), null);
             public Task SendLocal<T>(T message) => SendWithHeaders(message, endpoint.configuration.Name, null);
             public Task Publish<T>(T message) => PublishWithHeaders(message, null);
+            public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
             internal Task PublishWithHeaders<T>(T message, IDictionary<string, object> headers) =>
                 PersistenceSession.StoreOutgoing(endpoint.Prepare(message, endpoint.eventsExchange,
                     endpoint.WireName(ContractType(message)), CorrelationId, false, headers));
@@ -1058,6 +1060,7 @@ namespace Bq.Messaging
             public Task Reply<T>(Action<T> initialize, ReplyOptions options) =>
                 Reply(MessageOptionsExtensions.Initialize(initialize), options);
             public Task Reply<T>(T message) => ((IReplyWithOptions)this).ReplyWithOptions(message, null);
+            public Task Reply<T>(Action<T> initialize) => Reply(MessageOptionsExtensions.Initialize(initialize));
 
             Task IReplyWithOptions.ReplyWithOptions<T>(T message, ReplyOptions options)
             {

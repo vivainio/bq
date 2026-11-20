@@ -70,9 +70,11 @@ namespace Bq.Testing
         public Task Publish<T>(Action<T> initialize, PublishOptions options) =>
             Publish(MessageOptionsExtensions.Initialize(initialize), options);
         public Task Send<T>(T message) => UniformSession.Send(message);
+        public Task Send<T>(Action<T> initialize) => Send(MessageOptionsExtensions.Initialize(initialize));
         public Task Send<T>(string destination, T message) => UniformSession.Send(destination, message);
         public Task SendLocal<T>(T message) => UniformSession.SendLocal(message);
         public Task Publish<T>(T message) => UniformSession.Publish(message);
+        public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
         public Task SendAt<T>(T message, DateTimeOffset dueAt) => UniformSession.SendAt(message, dueAt);
         public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => UniformSession.SendAt(destination, message, dueAt);
         public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => UniformSession.SendLocalAt(message, dueAt);
@@ -89,6 +91,7 @@ namespace Bq.Testing
         public Task Reply<T>(Action<T> initialize, ReplyOptions options) =>
             Reply(MessageOptionsExtensions.Initialize(initialize), options);
         public Task Reply<T>(T message) => ((IReplyWithOptions)this).ReplyWithOptions(message, null);
+        public Task Reply<T>(Action<T> initialize) => Reply(MessageOptionsExtensions.Initialize(initialize));
 
         Task IReplyWithOptions.ReplyWithOptions<T>(T message, ReplyOptions options)
         {
