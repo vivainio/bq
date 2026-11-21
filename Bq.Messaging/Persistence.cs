@@ -64,6 +64,45 @@ namespace Bq.Messaging
         Task<bool> DispatchRecovery(string endpoint, Action<RecoveryRecord> publish);
     }
 
+    /// <summary>
+    /// Publishing failed because of this message, for example a mandatory message no queue accepted, and not because the broker
+    /// is unavailable. A provider that records retry state defers the row and lets the rows behind it go first.
+    /// </summary>
+    public sealed class OutgoingMessageRejectedException : InvalidOperationException
+    {
+        public OutgoingMessageRejectedException(string messageId, string message) : base(message) { MessageId = messageId; }
+        public string MessageId { get; }
+    }
+
+    /// <summary>
+    /// Implemented by providers that keep retry state on outgoing rows. After a rejected publish the dispatcher records the
+    /// failure, and <c>NextOutgoing</c> skips that row until its retry time so one bad row cannot hold back the others.
+    /// </summary>
+    public interface IOutgoingFailureTracking
+    {
+        Task RecordOutgoingFailure(string endpoint, string messageId, Exception failure);
+    }
+
+    /// <summary>How long a rejected outgoing row waits before it is tried again: 1 second, doubling, up to 1 minute.</summary>
+    public static class OutgoingRetry
+    {
+        public static readonly TimeSpan MaxDelay = TimeSpan.FromMinutes(1);
+
+        public static TimeSpan Delay(int attempts)
+        {
+            if (attempts < 1) attempts = 1;
+            var seconds = Math.Pow(2, Math.Min(attempts - 1, 10));
+            var delay = TimeSpan.FromSeconds(seconds);
+            return delay > MaxDelay ? MaxDelay : delay;
+        }
+
+        public static string Describe(Exception failure)
+        {
+            var text = failure?.Message ?? "";
+            return text.Length <= 500 ? text : text.Substring(0, 500);
+        }
+    }
+
     public sealed class SagaConcurrencyException : Exception
     {
         public SagaConcurrencyException(string message) : base(message) { }

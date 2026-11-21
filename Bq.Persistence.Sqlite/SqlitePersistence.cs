@@ -7,7 +7,7 @@ using Bq.Messaging;
 namespace Bq.Persistence.Sqlite
 {
     // Accepts an ADO.NET SQLite connection factory; the host selects the driver.
-    public sealed class SqlitePersistence : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence
+    public sealed class SqlitePersistence : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence, IOutgoingFailureTracking
     {
         readonly Func<DbConnection> factory;
         readonly string endpoint;
@@ -29,19 +29,19 @@ namespace Bq.Persistence.Sqlite
             using (var cmd = c.CreateCommand())
             {
                 cmd.CommandText = @"CREATE TABLE IF NOT EXISTS bq_inbox (endpoint TEXT NOT NULL, message_id TEXT NOT NULL, PRIMARY KEY(endpoint,message_id));
-CREATE TABLE IF NOT EXISTS bq_outbox (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, headers BLOB, PRIMARY KEY(endpoint,id));
-CREATE TABLE IF NOT EXISTS bq_saga_timeout (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, due_ticks INTEGER NOT NULL, headers BLOB, PRIMARY KEY(endpoint,id));
+CREATE TABLE IF NOT EXISTS bq_outbox (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, headers BLOB, attempts INTEGER NOT NULL DEFAULT 0, retry_after_ticks INTEGER NOT NULL DEFAULT 0, last_error TEXT, PRIMARY KEY(endpoint,id));
+CREATE TABLE IF NOT EXISTS bq_saga_timeout (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, due_ticks INTEGER NOT NULL, headers BLOB, attempts INTEGER NOT NULL DEFAULT 0, retry_after_ticks INTEGER NOT NULL DEFAULT 0, last_error TEXT, PRIMARY KEY(endpoint,id));
 CREATE INDEX IF NOT EXISTS bq_saga_timeout_due ON bq_saga_timeout(endpoint,due_ticks);
 CREATE TABLE IF NOT EXISTS bq_recovery (endpoint TEXT NOT NULL, recovery_id TEXT NOT NULL, message_id TEXT NOT NULL, cycle INTEGER NOT NULL, is_error INTEGER NOT NULL, error_queue TEXT, exception_type TEXT, exception_message TEXT, exception_detail TEXT, failed_ticks INTEGER NOT NULL, due_ticks INTEGER NOT NULL, payload BLOB NOT NULL, dispatched INTEGER NOT NULL DEFAULT 0, replayed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(endpoint,recovery_id));
 CREATE INDEX IF NOT EXISTS bq_recovery_errors ON bq_recovery(endpoint,is_error,replayed,failed_ticks DESC,recovery_id DESC);
 CREATE INDEX IF NOT EXISTS bq_recovery_due ON bq_recovery(endpoint,dispatched,due_ticks);
 CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT NULL, saga_id TEXT NOT NULL, version INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(endpoint,saga_type,saga_id));";
                 await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
-                EnsureColumn(c, "bq_outbox", "headers");
-                EnsureColumn(c, "bq_saga_timeout", "headers");
+                EnsureColumn(c, "bq_outbox", "headers", "BLOB");
+                EnsureColumn(c, "bq_saga_timeout", "headers", "BLOB");
             }
         }
-        static void EnsureColumn(DbConnection connection, string table, string column)
+        static void EnsureColumn(DbConnection connection, string table, string column, string definition)
         {
             var found = false;
             using (var command = connection.CreateCommand())
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             {
                 using (var command = connection.CreateCommand())
                 {
-                    command.CommandText = "ALTER TABLE " + table + " ADD COLUMN " + column + " BLOB";
+                    command.CommandText = "ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition;
                     command.ExecuteNonQuery();
                 }
             }
@@ -110,15 +110,15 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             if (limit <= 0) throw new ArgumentOutOfRangeException(nameof(limit));
             var result = new System.Collections.Generic.List<PendingDispatch>();
             using (var connection = await Open().ConfigureAwait(false))
-            using (var command = Command(connection, null, @"SELECT id, kind, destination, due_ticks, exchange_name FROM (
-    SELECT id, 'Outbox' AS kind, routing_key AS destination, NULL AS due_ticks, exchange_name FROM bq_outbox WHERE endpoint=@e
+            using (var command = Command(connection, null, @"SELECT id, kind, destination, due_ticks, exchange_name, attempts, last_error, retry_after FROM (
+    SELECT id, 'Outbox' AS kind, routing_key AS destination, NULL AS due_ticks, exchange_name, attempts, last_error, retry_after_ticks AS retry_after FROM bq_outbox WHERE endpoint=@e
     UNION ALL
-    SELECT id, CASE WHEN type=@saga THEN 'SagaTimeout' ELSE 'ScheduledSend' END, routing_key, due_ticks, exchange_name FROM bq_saga_timeout WHERE endpoint=@e
+    SELECT id, CASE WHEN type=@saga THEN 'SagaTimeout' ELSE 'ScheduledSend' END, routing_key, due_ticks, exchange_name, attempts, last_error, retry_after_ticks FROM bq_saga_timeout WHERE endpoint=@e
     UNION ALL
     SELECT message_id, CASE WHEN is_error=1 THEN 'Error' ELSE 'Recovery' END,
-        CASE WHEN is_error=1 THEN error_queue ELSE endpoint END, due_ticks, ''
+        CASE WHEN is_error=1 THEN error_queue ELSE endpoint END, due_ticks, '', 0, NULL, 0
         FROM bq_recovery WHERE endpoint=@e AND dispatched=0
-) WHERE (@kind IS NULL OR kind=@kind) AND (@dueBy IS NULL OR due_ticks IS NULL OR due_ticks<=@dueBy)
+) WHERE (@kind IS NULL OR kind=@kind) AND (@dueBy IS NULL OR ((due_ticks IS NULL OR due_ticks<=@dueBy) AND retry_after<=@dueBy))
 ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
                 "@e", endpoint, "@limit", limit, "@kind", kind?.ToString(), "@dueBy", dueBy, "@saga", typeof(SagaTimeoutMessage).FullName))
             using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
@@ -126,9 +126,12 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
                 while (await reader.ReadAsync().ConfigureAwait(false))
                 {
                     var due = reader.IsDBNull(3) ? (DateTime?)null : new DateTime(reader.GetInt64(3), DateTimeKind.Utc);
+                    var retryTicks = reader.IsDBNull(7) ? 0L : Convert.ToInt64(reader.GetValue(7));
                     result.Add(new PendingDispatch(reader.GetString(0),
                         (DispatchKind)Enum.Parse(typeof(DispatchKind), reader.GetString(1)),
-                        reader.GetString(4), reader.IsDBNull(2) ? null : reader.GetString(2), due));
+                        reader.GetString(4), reader.IsDBNull(2) ? null : reader.GetString(2), due,
+                        reader.IsDBNull(5) ? 0 : Convert.ToInt32(reader.GetValue(5)), reader.IsDBNull(6) ? null : reader.GetString(6),
+                        retryTicks > 0 ? new DateTime(retryTicks, DateTimeKind.Utc) : (DateTime?)null));
                 }
             }
             return result;
@@ -143,10 +146,10 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             const string fields = "id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,headers";
             var sql = "SELECT " + fields + @" FROM (
     SELECT * FROM (SELECT " + fields + @", 1 AS category FROM bq_saga_timeout
-        WHERE endpoint=@e AND due_ticks<=@now ORDER BY due_ticks,id LIMIT 1)
+        WHERE endpoint=@e AND due_ticks<=@now AND retry_after_ticks<=@now ORDER BY due_ticks,id LIMIT 1)
     UNION ALL
     SELECT * FROM (SELECT " + fields + @", 0 AS category FROM bq_outbox
-        WHERE endpoint=@e ORDER BY rowid LIMIT 1)
+        WHERE endpoint=@e AND retry_after_ticks<=@now ORDER BY rowid LIMIT 1)
 ) ORDER BY (category=@preferred) DESC LIMIT 1";
             using (var c = await Open().ConfigureAwait(false))
             using (var cmd = Command(c, null, sql, "@e", endpoint, "@now", DateTime.UtcNow.Ticks,
@@ -162,6 +165,32 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             CheckEndpoint(name);
             using (var c = await Open().ConfigureAwait(false))
             using (var cmd = Command(c, null, "DELETE FROM bq_outbox WHERE endpoint=@e AND id=@id; DELETE FROM bq_saga_timeout WHERE endpoint=@e AND id=@id", "@e", endpoint, "@id", id)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        /// <summary>
+        /// Defers an outgoing row whose publish was rejected. The row stays pending with its attempt count and the reason, and
+        /// <see cref="NextOutgoing"/> skips it until the retry time so the rows behind it are sent first.
+        /// </summary>
+        public async Task RecordOutgoingFailure(string name, string id, Exception failure)
+        {
+            CheckEndpoint(name);
+            using (var c = await Open().ConfigureAwait(false))
+            {
+                foreach (var table in new[] { "bq_outbox", "bq_saga_timeout" })
+                {
+                    int attempts;
+                    using (var read = Command(c, null, "SELECT attempts FROM " + table + " WHERE endpoint=@e AND id=@id", "@e", endpoint, "@id", id))
+                    {
+                        var current = await read.ExecuteScalarAsync().ConfigureAwait(false);
+                        if (current == null || current == DBNull.Value) continue;
+                        attempts = Convert.ToInt32(current) + 1;
+                    }
+                    var retryAfter = DateTime.UtcNow.Add(OutgoingRetry.Delay(attempts)).Ticks;
+                    using (var update = Command(c, null, "UPDATE " + table + " SET attempts=@a, retry_after_ticks=@r, last_error=@m WHERE endpoint=@e AND id=@id",
+                        "@a", attempts, "@r", retryAfter, "@m", OutgoingRetry.Describe(failure), "@e", endpoint, "@id", id))
+                        await update.ExecuteNonQueryAsync().ConfigureAwait(false);
+                    return;
+                }
+            }
         }
         static RecoveryRecord ReadRecovery(DbDataReader r) => new RecoveryRecord
         {

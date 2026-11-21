@@ -17,6 +17,9 @@ CREATE TABLE bq_outbox (
     mandatory NUMBER(1) NOT NULL CHECK (mandatory IN (0, 1)),
     body BLOB NOT NULL,
     headers BLOB NOT NULL,
+    attempts NUMBER(10) DEFAULT 0 NOT NULL,
+    retry_after_ticks NUMBER(19) DEFAULT 0 NOT NULL,
+    last_error VARCHAR2(1000 BYTE),
     CONSTRAINT bq_outbox_pk PRIMARY KEY (endpoint, id)
 );
 
@@ -34,6 +37,9 @@ CREATE TABLE bq_saga_timeout (
     body BLOB NOT NULL,
     headers BLOB NOT NULL,
     due_ticks NUMBER(19) NOT NULL,
+    attempts NUMBER(10) DEFAULT 0 NOT NULL,
+    retry_after_ticks NUMBER(19) DEFAULT 0 NOT NULL,
+    last_error VARCHAR2(1000 BYTE),
     CONSTRAINT bq_saga_timeout_pk PRIMARY KEY (endpoint, id)
 );
 

@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Bq.Messaging.Features;
 using Bq.Messaging.UnitOfWork;
+using Bq.Persistence.Sqlite;
 using RabbitMQ.Client;
 
 namespace Bq.Messaging.Tests
@@ -249,6 +250,29 @@ namespace Bq.Messaging.Tests
                         Mandatory = mandatory, Headers = new Dictionary<string, object>(), Body = format.Serialize(typeof(EdgeUowMessage), new EdgeUowMessage { Text = text })
                     });
                 session.Commit();
+            }
+        }
+
+        // The first stored outbox row as written, whether or not the dispatcher would currently offer it.
+        public static async Task<OutgoingMessage> FirstStored(string path)
+        {
+            using (var connection = Connect(path))
+            {
+                await connection.OpenAsync();
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "SELECT id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,headers FROM bq_outbox ORDER BY rowid LIMIT 1";
+                    using (var r = await command.ExecuteReaderAsync())
+                    {
+                        if (!await r.ReadAsync()) return null;
+                        return new OutgoingMessage
+                        {
+                            Id = r.GetString(0), CorrelationId = r.IsDBNull(1) ? null : r.GetString(1), ReplyTo = r.IsDBNull(2) ? null : r.GetString(2), Type = r.GetString(3),
+                            Exchange = r.GetString(4), RoutingKey = r.GetString(5), Mandatory = Convert.ToInt32(r.GetValue(6)) != 0, Body = (byte[])r.GetValue(7),
+                            Headers = MessageHeaderCodec.Decode(r.IsDBNull(8) ? null : (byte[])r.GetValue(8))
+                        };
+                    }
+                }
             }
         }
 
@@ -949,17 +973,16 @@ namespace Bq.Messaging.Tests
                     That(seen.Values.All(n => n == 1), "and each was handled once");
                 }
             });
-            await Case("an unroutable row at the head of the outbox holds back the rows behind it until it can be routed", async () =>
+            await Case("an unroutable row at the head of the outbox is deferred so the rows behind it are sent", async () =>
             {
-                // The outbox is a queue: a failed publish leaves its row pending, so nothing behind it is sent until it succeeds.
                 var name = "bq.test.edge.outbox.poison." + Guid.NewGuid().ToString("N");
                 var path = EdgeOutbox.NewPath(name);
                 try
                 {
                     var store = await EdgeOutbox.Store(path, name);
                     await EdgeOutbox.Seed(store, name + ".nowhere", new[] { "unroutable" });
-                    var expected = Enumerable.Range(0, 5).Select(i => "behind" + i).ToList();
-                    await EdgeOutbox.Seed(store, name, expected);
+                    var behind = Enumerable.Range(0, 5).Select(i => "behind" + i).ToList();
+                    await EdgeOutbox.Seed(store, name, behind);
                     var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
                     var received = new List<string>();
                     configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { lock (received) received.Add(m.Text); return Task.CompletedTask; }));
@@ -967,16 +990,76 @@ namespace Bq.Messaging.Tests
                     using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                     using (var channel = connection.CreateModel())
                     {
-                        await Task.Delay(2000);
-                        lock (received) That(received.Count == 0, "rows behind the unroutable head are held back, saw " + received.Count);
-                        That(await EdgeOutbox.Count(path, "bq_outbox") == 6, "every row is still pending, nothing was lost");
+                        await Eventually(() => { lock (received) return received.Count == behind.Count; }, "the rows behind the unroutable one to be sent");
+                        lock (received) That(received.SequenceEqual(behind), "they keep their own order");
+                        var pending = (await store.ListPendingDispatches(DispatchKind.Outbox, 10)).Single();
+                        That(pending.RoutingKey == name + ".nowhere" && pending.Attempts >= 1 && pending.LastError.Contains("unroutable") && pending.RetryAfterUtc.HasValue,
+                            "the row stays pending with its attempt count and reason: attempts " + pending.Attempts + ", " + pending.LastError);
+                        // Once the queue exists the deferred row is retried and delivered.
                         channel.QueueDeclare(name + ".nowhere", true, false, false);
-                        await Eventually(() => { lock (received) return received.Count == 5; }, "the held rows to be sent once the head can be routed");
-                        lock (received) That(received.SequenceEqual(expected), "they arrive in stored order");
+                        await Eventually(() => channel.MessageCount(name + ".nowhere") == 1, "the deferred row to be delivered after its retry time");
                         await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");
                     }
                 }
                 finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("a deferred scheduled row does not hold back other scheduled rows", async () =>
+            {
+                var name = "bq.test.edge.outbox.poisontimeout." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    var format = new Bq.Messaging.Serialization.MessagePackSerialization().CreateWireFormat();
+                    using (var session = await store.OpenSession())
+                    {
+                        async Task Timeout(string text, string queue, int minutesAgo) => await session.StoreTimeout(new OutgoingMessage
+                        {
+                            Id = Guid.NewGuid().ToString("N"), Type = EndpointConfiguration.MessageType(typeof(EdgeUowMessage)), Exchange = "", RoutingKey = queue, Mandatory = true,
+                            Headers = new Dictionary<string, object>(), Body = format.Serialize(typeof(EdgeUowMessage), new EdgeUowMessage { Text = text })
+                        }, DateTime.UtcNow.AddMinutes(-minutesAgo));
+                        await Timeout("scheduled-unroutable", name + ".nowhere", 10);
+                        await Timeout("scheduled-after", name, 5);
+                        session.Commit();
+                    }
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
+                    var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, bool>();
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen[m.Text] = true; return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                        await Eventually(() => seen.ContainsKey("scheduled-after"), "the later scheduled row to be sent past the unroutable one");
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("an unroutable row is deferred on Oracle too", async () =>
+            {
+                var connectionString = Environment.GetEnvironmentVariable("BQ_ORACLE_CONNECTION_STRING");
+                if (string.IsNullOrEmpty(connectionString)) { Console.WriteLine("Oracle deferral test skipped: set BQ_ORACLE_*."); return; }
+                var assembly = System.Reflection.Assembly.LoadFrom(Environment.GetEnvironmentVariable("BQ_ORACLE_DRIVER_ASSEMBLY"));
+                var connectionType = assembly.GetType(Environment.GetEnvironmentVariable("BQ_ORACLE_CONNECTION_TYPE"), throwOnError: true);
+                System.Data.Common.DbConnection Connect()
+                {
+                    var connection = (System.Data.Common.DbConnection)Activator.CreateInstance(connectionType);
+                    connection.ConnectionString = connectionString;
+                    return connection;
+                }
+                var name = "bq-oracle-poison-" + Guid.NewGuid().ToString("N");
+                var store = new Bq.Persistence.Oracle.OraclePersistence(Connect, name);
+                await EdgeOutbox.Seed(store, name + ".nowhere", new[] { "unroutable" });
+                var behind = Enumerable.Range(0, 5).Select(i => "behind" + i).ToList();
+                await EdgeOutbox.Seed(store, name, behind);
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
+                configuration.DispatchPollInterval = TimeSpan.FromMilliseconds(50);
+                var received = new List<string>();
+                configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { lock (received) received.Add(m.Text); return Task.CompletedTask; }));
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var channel = connection.CreateModel())
+                {
+                    await Eventually(() => { lock (received) return received.Count == behind.Count; }, "the rows behind the unroutable one to be sent on Oracle");
+                    lock (received) That(received.SequenceEqual(behind), "they keep their own order");
+                    channel.QueueDeclare(name + ".nowhere", true, false, false);
+                    await Eventually(() => channel.MessageCount(name + ".nowhere") == 1, "the deferred row to be delivered after its retry time");
+                }
             });
 
             foreach (var mode in new[] { "immediate", "delayed", "discard", "error" })

@@ -741,7 +741,7 @@ namespace Bq.Messaging
                 returned = false;
                 publisherChannel.BasicPublish(message.Exchange, message.RoutingKey, message.Mandatory, props, message.Body);
                 if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
-                if (returned) throw new InvalidOperationException("Message was unroutable: " + message.RoutingKey);
+                if (returned) throw new OutgoingMessageRejectedException(message.Id, "Message was unroutable: " + message.RoutingKey);
             }
         }
         async Task DispatchPending(bool recoveries, CancellationToken cancellation)
@@ -796,7 +796,14 @@ namespace Bq.Messaging
             {
                 var message = await persistence.NextOutgoing(endpoint).ConfigureAwait(false);
                 if (message == null) return false;
-                PublishPrepared(message);
+                try { PublishPrepared(message); }
+                catch (OutgoingMessageRejectedException rejected) when (persistence is IOutgoingFailureTracking tracking)
+                {
+                    // The failure belongs to this row, not to the broker. Defer the row and carry on with the ones behind it.
+                    System.Diagnostics.Trace.TraceError("Outgoing message {0} was rejected and will be retried later: {1}", message.Id, rejected.Message);
+                    await tracking.RecordOutgoingFailure(endpoint, message.Id, rejected).ConfigureAwait(false);
+                    return true;
+                }
                 await persistence.MarkDispatched(endpoint, message.Id).ConfigureAwait(false);
             }
             return true;

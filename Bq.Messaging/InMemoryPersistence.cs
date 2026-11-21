@@ -18,7 +18,7 @@ namespace Bq.Messaging
             new InMemoryPersistenceProvider(settings.Get<string>(EndpointConfiguration.EndpointNameKey));
     }
 
-    public sealed class InMemoryPersistenceProvider : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence
+    public sealed class InMemoryPersistenceProvider : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence, IOutgoingFailureTracking
     {
         readonly object gate = new object();
         readonly string endpoint;
@@ -29,6 +29,8 @@ namespace Bq.Messaging
         readonly Dictionary<string, RecoveryRecord> recovery = new Dictionary<string, RecoveryRecord>(StringComparer.Ordinal);
         readonly HashSet<string> replayed = new HashSet<string>(StringComparer.Ordinal);
         readonly Dictionary<(string Type, string Id), SagaRecord> sagas = new Dictionary<(string, string), SagaRecord>();
+        // Retry state of outgoing rows whose publish was rejected, by message ID.
+        readonly Dictionary<string, (int Attempts, DateTime RetryAfter, string Error)> rejected = new Dictionary<string, (int, DateTime, string)>(StringComparer.Ordinal);
         int outgoingPoll;
 
         public InMemoryPersistenceProvider(string endpoint)
@@ -52,9 +54,11 @@ namespace Bq.Messaging
             {
                 // Alternate between categories so a stuck head in one cannot starve the other.
                 var preferTimeout = (Interlocked.Increment(ref outgoingPoll) & 1) == 1;
-                var due = timeouts.Where(entry => entry.Due <= DateTime.UtcNow).OrderBy(entry => entry.Due).ThenBy(entry => entry.Message.Id, StringComparer.Ordinal)
+                var now = DateTime.UtcNow;
+                bool Ready(string id) => !rejected.TryGetValue(id, out var state) || state.RetryAfter <= now;
+                var due = timeouts.Where(entry => entry.Due <= now && Ready(entry.Message.Id)).OrderBy(entry => entry.Due).ThenBy(entry => entry.Message.Id, StringComparer.Ordinal)
                     .Select(entry => entry.Message).FirstOrDefault();
-                var queued = outbox.FirstOrDefault();
+                var queued = outbox.FirstOrDefault(message => Ready(message.Id));
                 return Task.FromResult(preferTimeout ? due ?? queued : queued ?? due);
             }
         }
@@ -66,6 +70,20 @@ namespace Bq.Messaging
             {
                 outbox.RemoveAll(message => message.Id == id);
                 timeouts.RemoveAll(entry => entry.Message.Id == id);
+                rejected.Remove(id);
+            }
+            return Task.CompletedTask;
+        }
+
+        /// <summary>Defers a row whose publish was rejected, so <see cref="NextOutgoing"/> offers the rows behind it first.</summary>
+        public Task RecordOutgoingFailure(string name, string messageId, Exception failure)
+        {
+            Check(name);
+            lock (gate)
+            {
+                if (!outbox.Any(message => message.Id == messageId) && !timeouts.Any(entry => entry.Message.Id == messageId)) return Task.CompletedTask;
+                var attempts = (rejected.TryGetValue(messageId, out var state) ? state.Attempts : 0) + 1;
+                rejected[messageId] = (attempts, DateTime.UtcNow.Add(OutgoingRetry.Delay(attempts)), OutgoingRetry.Describe(failure));
             }
             return Task.CompletedTask;
         }

@@ -15,6 +15,7 @@ nav = [
     { "Endpoints and sessions" = "endpoints.md" },
     { "Delivery architecture" = "architecture.md" },
     { "Persistence and outbox" = "persistence.md" },
+    { "Database schema" = "schema.md" },
     { "Sagas and timeouts" = "sagas.md" },
     { "Retries and replay" = "recoverability.md" },
     { "Troubleshooting" = "troubleshooting.md" },

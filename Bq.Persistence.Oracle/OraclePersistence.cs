@@ -8,7 +8,7 @@ using Bq.Messaging;
 
 namespace Bq.Persistence.Oracle
 {
-    public sealed partial class OraclePersistence : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence
+    public sealed partial class OraclePersistence : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence, IOutgoingFailureTracking
     {
         const string Outbox = "bq_outbox";
         const string Scheduled = "bq_saga_timeout";
@@ -141,12 +141,16 @@ namespace Bq.Persistence.Oracle
         async Task<OutgoingMessage> FindOutgoing(DbConnection connection, DbTransaction transaction, string table)
         {
             var scheduled = table == Scheduled;
-            var filter = scheduled ? "endpoint = :endpoint AND due_ticks <= :now" : "endpoint = :endpoint";
+            // A row whose publish was rejected is skipped until its retry time, so it cannot hold back the rows behind it.
+            var filter = scheduled ? "endpoint = :endpoint AND due_ticks <= :now AND retry_after_ticks <= :retry_now"
+                : "endpoint = :endpoint AND retry_after_ticks <= :retry_now";
             var order = scheduled ? "due_ticks, id" : "enqueue_order";
+            var now = DateTime.UtcNow.Ticks;
             var args = new List<(string, object)> { ("endpoint", endpoint) };
-            if (scheduled) args.Add(("now", DateTime.UtcNow.Ticks));
-            var lockFilter = transaction == null ? null : "endpoint = :locked_endpoint";
-            if (lockFilter != null) args.Add(("locked_endpoint", endpoint));
+            if (scheduled) args.Add(("now", now));
+            args.Add(("retry_now", now));
+            var lockFilter = transaction == null ? null : "endpoint = :locked_endpoint AND retry_after_ticks <= :locked_retry_now";
+            if (lockFilter != null) { args.Add(("locked_endpoint", endpoint)); args.Add(("locked_retry_now", now)); }
             var sql = FirstRow(table, OutgoingColumns, filter, order, lockFilter);
             using (var command = Command(connection, transaction, sql, args.ToArray()))
             using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
@@ -193,10 +197,39 @@ namespace Bq.Persistence.Oracle
             {
                 var (message, table) = await SelectOutgoing(connection, transaction).ConfigureAwait(false);
                 if (message == null) return false;
-                publish(message);
+                try { publish(message); }
+                catch (OutgoingMessageRejectedException rejected)
+                {
+                    // The failure belongs to this row. Record it while the row is still locked and report progress, so the
+                    // dispatcher moves on to the rows behind it.
+                    await RecordFailure(connection, transaction, table, message.Id, rejected).ConfigureAwait(false);
+                    transaction.Commit();
+                    return true;
+                }
                 await DeleteOutgoing(connection, transaction, table, message.Id).ConfigureAwait(false);
                 transaction.Commit();
                 return true;
+            }
+        }
+
+        // The delay doubles with each rejection, as OutgoingRetry.Delay does: 2^attempts seconds with the old attempt count, up to a minute.
+        Task<int> RecordFailure(DbConnection connection, DbTransaction transaction, string table, string id, Exception failure) =>
+            Execute(connection, transaction,
+                $"UPDATE {table} SET attempts = attempts + 1, " +
+                "retry_after_ticks = :now + LEAST(:max, POWER(2, LEAST(attempts, 10)) * 10000000), last_error = :error " +
+                "WHERE endpoint = :endpoint AND id = :id",
+                ("now", DateTime.UtcNow.Ticks), ("max", OutgoingRetry.MaxDelay.Ticks), ("error", OutgoingRetry.Describe(failure)),
+                ("endpoint", endpoint), ("id", id));
+
+        public async Task RecordOutgoingFailure(string name, string messageId, Exception failure)
+        {
+            CheckEndpoint(name);
+            using (var connection = await Open().ConfigureAwait(false))
+            using (var transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted))
+            {
+                if (await RecordFailure(connection, transaction, Outbox, messageId, failure).ConfigureAwait(false) == 0)
+                    await RecordFailure(connection, transaction, Scheduled, messageId, failure).ConfigureAwait(false);
+                transaction.Commit();
             }
         }
     }

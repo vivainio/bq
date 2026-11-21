@@ -270,6 +270,7 @@ namespace Bq.Messaging.Tests
             RunPipelineRegistrationCases();
             RunSoftCheckCases();
             await RunSagaApiCases();
+            await RunOutgoingRetryCases();
             RunSagaSpiDetailCases();
             await RunInMemoryCases();
             return cases.ToList();
@@ -1125,6 +1126,74 @@ namespace Bq.Messaging.Tests
                 active.AttachNewEntity(entity);
                 That(active.IsNew && active.Created == tick && active.Modified == clock && active.Instance.Entity == entity && !active.NotFound && active.SagaId == null, "an attached entity marks the instance new");
                 Throws<ArgumentNullException>(() => active.AttachNewEntity(null), "a null entity");
+            });
+        }
+
+        static async Task RunOutgoingRetryCases()
+        {
+            Case("the retry delay doubles up to a minute", () =>
+            {
+                That(OutgoingRetry.Delay(1) == TimeSpan.FromSeconds(1) && OutgoingRetry.Delay(2) == TimeSpan.FromSeconds(2) && OutgoingRetry.Delay(4) == TimeSpan.FromSeconds(8), "doubling");
+                That(OutgoingRetry.Delay(7) == TimeSpan.FromSeconds(60) && OutgoingRetry.Delay(500) == OutgoingRetry.MaxDelay && OutgoingRetry.Delay(0) == TimeSpan.FromSeconds(1), "capped at a minute, and never below one second");
+                That(OutgoingRetry.Describe(new Exception(new string('x', 900))).Length == 500 && OutgoingRetry.Describe(null) == "", "the reason is kept short");
+                var rejected = new OutgoingMessageRejectedException("id-1", "no queue");
+                That(rejected.MessageId == "id-1" && rejected is InvalidOperationException, "the exception names the message");
+            });
+            await CaseAsync("the in-memory provider defers a rejected row and offers the rows behind it first", async () =>
+            {
+                var memory = new InMemoryPersistenceProvider("edge-retry");
+                using (var session = await memory.OpenSession())
+                {
+                    await session.StoreOutgoing(new OutgoingMessage { Id = "head", Body = new byte[0] });
+                    await session.StoreOutgoing(new OutgoingMessage { Id = "second", Body = new byte[0] });
+                    await session.StoreTimeout(new OutgoingMessage { Id = "timeout", Body = new byte[0] }, DateTime.UtcNow.AddMinutes(-1));
+                    session.Commit();
+                }
+                await memory.RecordOutgoingFailure("edge-retry", "head", new Exception("nobody accepts this"));
+                await memory.RecordOutgoingFailure("edge-retry", "timeout", new Exception("nor this"));
+                await memory.RecordOutgoingFailure("edge-retry", "unknown-id", new Exception("ignored"));
+                var offered = new List<string>();
+                for (var i = 0; i < 4; i++)
+                {
+                    var next = await memory.NextOutgoing("edge-retry");
+                    if (next == null) break;
+                    offered.Add(next.Id);
+                    await memory.MarkDispatched("edge-retry", next.Id);
+                }
+                That(offered.SequenceEqual(new[] { "second" }), "only the row that was not rejected is offered: " + string.Join(",", offered));
+                await Task.Delay(1200);
+                var returning = new List<string>();
+                for (var i = 0; i < 4; i++)
+                {
+                    var next = await memory.NextOutgoing("edge-retry");
+                    if (next == null) break;
+                    returning.Add(next.Id);
+                    await memory.MarkDispatched("edge-retry", next.Id);
+                }
+                That(returning.OrderBy(id => id).SequenceEqual(new[] { "head", "timeout" }), "the deferred rows come back after their retry time: " + string.Join(",", returning));
+                await ThrowsAsync<InvalidOperationException>(() => memory.RecordOutgoingFailure("other", "head", new Exception()), "another endpoint name");
+            });
+            await CaseAsync("SQLite records the retry state of a rejected row and shows it as pending but not ready", async () =>
+            {
+                var name = "edge-retry-sqlite-" + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    await EdgeOutbox.Seed(store, "q", new[] { "one" });
+                    var row = await store.NextOutgoing(name);
+                    await store.RecordOutgoingFailure(name, row.Id, new Exception("rejected"));
+                    That(await store.NextOutgoing(name) == null, "the rejected row is deferred");
+                    var pending = (await store.ListPendingDispatches(10)).Single();
+                    That(pending.Attempts == 1 && pending.LastError == "rejected" && pending.RetryAfterUtc > DateTime.UtcNow, "its retry state is recorded");
+                    That((await store.ListReadyDispatches(null, 10)).Count == 0, "a deferred row is pending but not ready");
+                    await store.RecordOutgoingFailure(name, row.Id, new Exception("rejected again"));
+                    That((await store.ListPendingDispatches(10)).Single().Attempts == 2, "each rejection counts");
+                    await store.RecordOutgoingFailure(name, "unknown-id", new Exception("ignored"));
+                    await store.Initialize();
+                    That((await store.ListPendingDispatches(10)).Single().Attempts == 2, "initializing again keeps the retry state");
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
             });
         }
 

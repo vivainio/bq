@@ -490,7 +490,8 @@ namespace Bq.Messaging.Tests
                     await WaitFor(async () => await CountMigrationRows(path, "bq_outbox") == 2,
                         "the broker confirmed both forward records");
 
-                    var pending = await store.NextOutgoing(name);
+                    // An unroutable row is deferred after its failed publish, so read it as stored and not as the dispatcher would offer it.
+                    var pending = await EdgeOutbox.FirstStored(path);
                     Assert(await CountMigrationRows(path, "bq_outbox") == 2 && pending?.RoutingKey == name + ".absent",
                         "only successful attempts committed outbox messages");
                     Assert(pending.Type == "migration.framed" && pending.Body[0] == 0x7e &&
