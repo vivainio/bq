@@ -20,6 +20,10 @@ namespace Bq.Messaging
         internal Func<Type, bool> CommandRule { get; set; }
         internal Func<Type, bool> EventRule { get; set; }
         internal Func<Type, TimeSpan> TimeToBeReceivedRule { get; set; }
+        internal Func<System.Reflection.PropertyInfo, bool> EncryptedPropertyRule { get; set; }
+
+        public bool IsEncryptedProperty(System.Reflection.PropertyInfo property) =>
+            EncryptedPropertyRule?.Invoke(property ?? throw new ArgumentNullException(nameof(property))) ?? false;
 
         public void AddSystemMessagesConventions(Func<Type, bool> definesMessageType) =>
             systemMessageRules.Add(definesMessageType ?? throw new ArgumentNullException(nameof(definesMessageType)));
@@ -68,6 +72,12 @@ namespace Bq.Messaging
         public ConventionsBuilder DefiningCommandsAs(Func<Type, bool> definesCommandType)
         {
             Conventions.CommandRule = definesCommandType ?? throw new ArgumentNullException(nameof(definesCommandType));
+            return this;
+        }
+
+        public ConventionsBuilder DefiningEncryptedPropertiesAs(Func<System.Reflection.PropertyInfo, bool> definesEncryptedProperty)
+        {
+            Conventions.EncryptedPropertyRule = definesEncryptedProperty ?? throw new ArgumentNullException(nameof(definesEncryptedProperty));
             return this;
         }
 

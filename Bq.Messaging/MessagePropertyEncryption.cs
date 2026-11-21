@@ -18,7 +18,8 @@ namespace Bq.Messaging
     {
         public static void EnableMessagePropertyEncryption(this EndpointConfiguration endpointConfiguration,
             IMessagePropertyEncryptionService encryptionService) =>
-            EnableMessagePropertyEncryption(endpointConfiguration, encryptionService, _ => false);
+            EnableMessagePropertyEncryption(endpointConfiguration, encryptionService,
+                property => endpointConfiguration.Conventions().Conventions.IsEncryptedProperty(property));
 
         public static void EnableMessagePropertyEncryption(this EndpointConfiguration endpointConfiguration,
             IMessagePropertyEncryptionService encryptionService, Func<PropertyInfo, bool> encryptedPropertyConvention)

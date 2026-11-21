@@ -1464,6 +1464,13 @@ namespace Bq.Messaging.Tests
                 }
             }
 
+            var conventionConfiguration = new EndpointConfiguration("convention-test", new Uri("amqp://localhost/"));
+            conventionConfiguration.Conventions().DefiningEncryptedPropertiesAs(property => property.Name == "Text");
+            var conventions = conventionConfiguration.Conventions().Conventions;
+            Assert(conventions.IsEncryptedProperty(typeof(Response).GetProperty("Text")), "the encrypted property convention matches properties");
+            Assert(!new EndpointConfiguration("convention-default", new Uri("amqp://localhost/")).Conventions().Conventions
+                .IsEncryptedProperty(typeof(Response).GetProperty("Text")), "no property is encrypted by default");
+
             var featureConfiguration = new EndpointConfiguration("feature-test", new Uri("amqp://localhost/"));
             featureConfiguration.EnableFeature<DependentFeature>();
             featureConfiguration.EnableFeature<BaseFeature>();
