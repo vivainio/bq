@@ -29,6 +29,7 @@ namespace Bq.Messaging
         static readonly MessagePackSerializerOptions SerializerOptions = MessagePackSerializerOptions.Standard
             .WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
         readonly EndpointConfiguration configuration;
+        readonly Func<ConversationIdStrategyContext, ConversationId> conversationIdStrategy;
         readonly Action<TransportMessage> mutateIncoming;
         readonly IMutateIncomingTransportMessages[] incomingTransportMutators;
         readonly Action<TransportMessage> mutateOutgoing;
@@ -63,6 +64,7 @@ namespace Bq.Messaging
         RabbitEndpoint(EndpointConfiguration configuration)
         {
             this.configuration = configuration;
+            conversationIdStrategy = configuration.ConversationIdStrategy;
             propertyEncryption = configuration.PropertyEncryption;
             bodyEncryption = configuration.BodyEncryption;
             durableMessages = configuration.DurableMessages;
@@ -468,7 +470,7 @@ namespace Bq.Messaging
             var scope = uniformScope.Value;
             var contract = ContractType(message);
             var causingContext = scope != null && Volatile.Read(ref scope.Active) != 0 ? scope.Context : null;
-            MessageHeaders.AttachCausation(copiedHeaders, causingContext);
+            MessageHeaders.AttachCausation(copiedHeaders, causingContext, contract, message, conversationIdStrategy);
             object outgoingMessage = message;
             foreach (var mutator in outgoingMessageMutators)
             {

@@ -27,6 +27,15 @@ namespace Bq.Messaging.Tests
             await store.Initialize();
             var config = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
             config.Route<UniformWork>(name);
+            config.CustomConversationIdStrategy(context =>
+            {
+                Assert(context.Message.MessageType == typeof(UniformStart) && context.Message.Instance is UniformStart,
+                    "strategy sees the outgoing contract and runs only when an ID is needed");
+                Assert(!context.Headers.ContainsKey("x-bq-start-conversation"), "strategy sees only outgoing headers");
+                return context.Headers.TryGetValue("workflow-id", out var workflowId)
+                    ? ConversationId.Custom(workflowId)
+                    : ConversationId.Default;
+            });
             var encryption = new TestBodyEncryption();
             config.EnableMessageEncryption(encryption);
             config.Recoverability.DelayedRetries = new TimeSpan[0];
@@ -88,11 +97,16 @@ namespace Bq.Messaging.Tests
                 using (endpoint)
                 {
                     cachedFromOutside = endpoint.CreateUniformSession();
-                    await cachedFromOutside.SendLocalAt(new UniformStart(), DateTimeOffset.UtcNow);
+                    var start = new SendOptions();
+                    start.RouteToThisEndpoint();
+                    start.StartNewConversation();
+                    start.DoNotDeliverBefore(DateTimeOffset.UtcNow);
+                    start.SetHeader("workflow-id", "root-workflow");
+                    await cachedFromOutside.Send(new UniformStart(), start);
                     await Within(processed.Task, "uniform SendLocal delivery");
                     await Within(newConversation.Task, "scheduled delivery in a new conversation");
-                    Assert(Guid.TryParse(parentConversation, out _) && await newConversation.Task == "separate-workflow",
-                        "root sends generate an ID and a new conversation can supply its own");
+                    Assert(parentConversation == "root-workflow" && await newConversation.Task == "separate-workflow",
+                        "the strategy supplies the root ID and an explicit new conversation bypasses it");
                     Assert(await processed.Task == parentCorrelation, "uniform session preserves handler correlation");
                     bool rejected = false;
                     try { await cachedFromHandler.SendLocal(new UniformWork()); }
@@ -100,6 +114,7 @@ namespace Bq.Messaging.Tests
                     Assert(rejected, "handler session rejected after its scope ends");
                     await cachedFromOutside.SendLocal(new UniformStart { Fail = true });
                     await Within(errorAttempted.Task, "failed handler ran");
+                    Assert(Guid.TryParse(parentConversation, out _), "strategy can request a generated ID");
                     for (var i = 0; i < 120 && (await endpoint.ListErrors()).Count == 0; i++) await Task.Delay(100);
                     Assert((await endpoint.ListErrors()).Count == 1, "failed handler recorded");
                     await Task.Delay(1200);

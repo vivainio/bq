@@ -136,6 +136,7 @@ namespace Bq.Messaging
         internal string AuditQueue { get; set; }
         internal MessagePropertyEncryption PropertyEncryption { get; set; }
         internal IMessageBodyEncryptionService BodyEncryption { get; set; }
+        internal Func<ConversationIdStrategyContext, ConversationId> ConversationIdStrategy { get; set; }
         internal string AuditExpiration { get; set; }
         internal bool DurableMessages { get; set; } = true;
         internal bool PurgeInputQueueOnStartup { get; set; }

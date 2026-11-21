@@ -14,7 +14,8 @@ namespace Bq.Messaging
         public const string PreviousConversationId = "Bq.PreviousConversationId";
         public const string RelatedTo = "Bq.RelatedTo";
 
-        internal static void AttachCausation(IDictionary<string, object> headers, IMessageProcessingContext incoming)
+        internal static void AttachCausation(IDictionary<string, object> headers, IMessageProcessingContext incoming,
+            Type messageType, object message, Func<ConversationIdStrategyContext, ConversationId> strategy)
         {
             var startNew = headers.TryGetValue(ConversationRoutingExtensions.NewConversation, out var requestedId);
             headers.Remove(ConversationRoutingExtensions.NewConversation);
@@ -26,11 +27,24 @@ namespace Bq.Messaging
             if (startNew)
             {
                 if (inheritedId != null) headers[PreviousConversationId] = inheritedId;
-                headers[ConversationId] = (string)requestedId ?? Guid.NewGuid().ToString();
+                headers[ConversationId] = (string)requestedId ?? GenerateId();
             }
             else if (!headers.ContainsKey(ConversationId))
             {
-                headers[ConversationId] = inheritedId ?? Guid.NewGuid().ToString();
+                headers[ConversationId] = inheritedId ?? GenerateId();
+            }
+
+            string GenerateId()
+            {
+                if (strategy == null) return Bq.Messaging.ConversationId.Default.Value;
+                var context = new ConversationIdStrategyContext(new OutgoingLogicalMessage(messageType, message), AsText(headers));
+                Bq.Messaging.ConversationId id;
+                try { id = strategy(context); }
+                catch (Exception exception)
+                {
+                    throw new InvalidOperationException("The custom conversation ID strategy failed.", exception);
+                }
+                return id?.Value ?? throw new InvalidOperationException("The custom conversation ID strategy returned null.");
             }
         }
 
