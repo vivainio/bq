@@ -126,9 +126,18 @@ namespace Bq.Messaging
                     errorEvents.Raise(message);
                     if (recovery.DelayedRetryNotification != null) await recovery.DelayedRetryNotification(message).ConfigureAwait(false);
                 });
-            rootContainer = configuration.BuildContainer();
-            rootBuilder = new Bq.Messaging.Container.ContainerBuilder(rootContainer);
-            ownsContainer = configuration.OwnsContainer;
+            if (configuration.ExternalBuilder != null)
+            {
+                rootContainer = null;
+                rootBuilder = configuration.ExternalBuilder;
+                ownsContainer = false;
+            }
+            else
+            {
+                rootContainer = configuration.BuildContainer();
+                rootBuilder = new Bq.Messaging.Container.ContainerBuilder(rootContainer);
+                ownsContainer = configuration.OwnsContainer;
+            }
             incoming = configuration.Incoming.Build(configuration.Pipeline);
             physical = configuration.Incoming.BuildPhysical(configuration.Pipeline);
             outgoingStages = configuration.Incoming.BuildOutgoing(configuration.Pipeline);

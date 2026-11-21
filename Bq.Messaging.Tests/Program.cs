@@ -1313,13 +1313,19 @@ namespace Bq.Messaging.Tests
             var store = new SqlitePersistence(() => Sqlite(path), name);
             await store.Initialize();
             var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+            var retryCalls = 0;
             EndpointConfiguration Instance(string discriminator)
             {
                 var instanceConfig = new EndpointConfiguration(name, uri) { Persistence = new SqlitePersistence(() => Sqlite(path), name) };
                 instanceConfig.MakeInstanceUniquelyAddressable(discriminator);
+                instanceConfig.ImmediateRetries = 0;
+                instanceConfig.Recoverability.DelayedRetries = new[] { TimeSpan.FromMilliseconds(100) };
+                instanceConfig.DispatchPollInterval = TimeSpan.FromMilliseconds(50);
                 instanceConfig.Route(typeof(Command), name);
                 instanceConfig.Handle(() => new Handler<Command>(async (message, context) =>
                 {
+                    if (message.Text == "retry-me" && Interlocked.Increment(ref retryCalls) == 1)
+                        throw new InvalidOperationException("fail the first delivery");
                     seen[message.Text] = discriminator;
                     if (message.Text == "reply-to-this-instance") await context.Reply(new Response { Text = "answer" });
                     if (message.Text == "reply-to-any-instance") await context.Reply(new Response { Text = "answer-any" });
@@ -1359,6 +1365,12 @@ namespace Bq.Messaging.Tests
                 Assert(seen["to-a"] == "a", "RouteToThisInstance delivers to the sending instance");
                 Assert(seen["response:answer"] == "a", "RouteReplyToThisInstance returns the reply to the sending instance");
                 await WaitFor(() => Task.FromResult(seen.ContainsKey("response:answer-any")), "RouteReplyToAnyInstance returns the reply to the shared queue");
+                var failing = new SendOptions();
+                failing.RouteToSpecificInstance("b");
+                await first.Send(new Command { Text = "retry-me" }, failing);
+                await WaitFor(() => Task.FromResult(seen.ContainsKey("retry-me")),
+                    "an instance-routed message that failed is retried through the shared queue");
+                Assert(Volatile.Read(ref retryCalls) == 2, "the failed delivery ran twice: once on the instance queue and once after the delayed retry");
             }
             Console.WriteLine("Instance routing tests passed.");
         }

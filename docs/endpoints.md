@@ -178,3 +178,7 @@ All instances of an endpoint compete on one shared queue. Call `config.MakeInsta
 ## NServiceBus-style transport and serialization configuration
 
 `UseTransport<RabbitMQTransport>()` accepts `ConnectionString` (an `amqp://` URI or the `host=...;username=...` form, optionally from a callback evaluated at start), `TimeToWaitBeforeTriggeringCircuitBreaker` (mapped to `CriticalErrorThreshold`) and `Transactions(TransportTransactionMode.ReceiveOnly)`. Other transaction modes throw `NotSupportedException`, because atomic sends come from the transactional outbox. `UseSerialization<MessagePackSerialization>()` is accepted. `XmlSerializer` and `JsonSerializer` exist so configuration compiles, but selecting them throws `NotSupportedException`, since the wire format is MessagePack.
+
+## Hosts that own the container
+
+`EndpointWithExternallyManagedContainer.Create(configuration, components)` scans, activates features and registers the endpoint's components with your `IConfigureComponents`. Call `Start(builder)` on the result with the builder you created from that container. Scanning also runs `INeedInitialization.Customize` and `IWantToRunBeforeConfigurationIsFinalized.Run` for types with a public parameterless constructor, before handlers are registered.

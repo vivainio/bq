@@ -60,6 +60,24 @@ namespace Bq.Messaging.Tests
         public Task Handle(StartOrder message, IMessageHandlerContext context) => Task.CompletedTask;
     }
 
+    public class ExternalCommand { public string Text { get; set; } }
+    public sealed class ExternalHandler : IHandleMessages<ExternalCommand>
+    {
+        public static readonly TaskCompletionSource<string> Seen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        readonly ScannedDependency dependency;
+        public ExternalHandler(ScannedDependency dependency) { this.dependency = dependency; }
+        public Task Handle(ExternalCommand message, IMessageHandlerContext context)
+        {
+            Seen.TrySetResult(message.Text + ":" + dependency.Value);
+            return Task.CompletedTask;
+        }
+    }
+    public sealed class CountingInitializer : INeedInitialization
+    {
+        public static int Customized;
+        public void Customize(EndpointConfiguration configuration) => Interlocked.Increment(ref Customized);
+    }
+
     public class OrderedMessage { public string Text { get; set; } }
     public sealed class OrderedHandlerA : IHandleMessages<OrderedMessage>
     {
@@ -248,6 +266,30 @@ namespace Bq.Messaging.Tests
                 await WaitFor(() => Task.FromResult(OrderedHandlerA.Order.Count == 2), "both scanned handlers run");
                 Assert(string.Join("", OrderedHandlerA.Order) == "BA", "ExecuteTheseHandlersFirst runs the listed handler first");
             }
+
+            // A host that owns the container: Bq registers into it at Create and uses its builder at Start.
+            var externalName = "bq.test.parity.external." + Guid.NewGuid().ToString("N");
+            var externalPath = Path.Combine(Path.GetTempPath(), externalName + ".db");
+            var externalStore = new SqlitePersistence(() => Sqlite(externalPath), externalName);
+            await externalStore.Initialize();
+            var externalConfig = new EndpointConfiguration(externalName, uri) { Persistence = externalStore };
+            externalConfig.Route(typeof(ExternalCommand), externalName);
+            externalConfig.AssemblyScanner().ExcludeTypes(AllHandlersExcept(typeof(ExternalHandler)));
+            externalConfig.AssemblyScanner().ScanFileSystemAssemblies = false;
+            var hostContainer = new Bq.Messaging.Container.DefaultContainer();
+            var host = new Bq.Messaging.Container.ContainerBuilder(hostContainer);
+            host.RegisterSingleton(new ScannedDependency());
+            var customizedBefore = Volatile.Read(ref CountingInitializer.Customized);
+            var startable = EndpointWithExternallyManagedContainer.Create(externalConfig, host);
+            Assert(Volatile.Read(ref CountingInitializer.Customized) > customizedBefore, "INeedInitialization types run when the endpoint is created");
+            Assert(host.HasComponent<ExternalHandler>(), "the endpoint registers its handlers with the host container");
+            using (var endpoint = await startable.Start(host))
+            {
+                Assert(ReferenceEquals(startable.MessageSession.Value, endpoint), "the lazy message session resolves after start");
+                await endpoint.Send(new ExternalCommand { Text = "external" });
+                Assert(await Within(ExternalHandler.Seen.Task) == "external:injected", "handlers resolve from the host-owned builder");
+            }
+            hostContainer.Dispose();
 
             // Outgoing send and publish stages and physical body updates, observed by the receiving handlers.
             var outName = "bq.test.parity.outgoing." + Guid.NewGuid().ToString("N");
