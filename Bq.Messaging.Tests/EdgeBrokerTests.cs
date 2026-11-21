@@ -14,6 +14,42 @@ namespace Bq.Messaging.Tests
     [TimeToBeReceived("00:00:30")]
     public class EdgeTtlMessage { public string Text { get; set; } }
 
+    public sealed class EdgeReceiveFailure : Behavior<ITransportReceiveContext>
+    {
+        public static int Seen;
+        public override Task Invoke(ITransportReceiveContext context, Func<Task> next)
+        {
+            if (!context.Message.Headers.ContainsKey("edge-receive-fail")) return next();
+            Interlocked.Increment(ref Seen);
+            throw new InvalidOperationException("receive behavior failed");
+        }
+    }
+
+    public sealed class EdgeAlwaysAbort : Behavior<ITransportReceiveContext>
+    {
+        public static int Seen;
+        public override Task Invoke(ITransportReceiveContext context, Func<Task> next)
+        {
+            if (!context.Message.Headers.ContainsKey("edge-always-abort")) return next();
+            Interlocked.Increment(ref Seen);
+            context.AbortReceiveOperation();
+            return Task.CompletedTask;
+        }
+    }
+
+    public sealed class EdgeConcurrencyProbe : Behavior<IInvokeHandlerContext>
+    {
+        public static int Current, Peak, Invoked;
+        public override async Task Invoke(IInvokeHandlerContext context, Func<Task> next)
+        {
+            var now = Interlocked.Increment(ref Current);
+            int peak;
+            while ((peak = Volatile.Read(ref Peak)) < now && Interlocked.CompareExchange(ref Peak, now, peak) != peak) { }
+            Interlocked.Increment(ref Invoked);
+            try { await next(); } finally { Interlocked.Decrement(ref Current); }
+        }
+    }
+
     public sealed class EdgeUnit : IManageUnitsOfWork
     {
         public static readonly List<string> Log = new List<string>();
@@ -63,6 +99,11 @@ namespace Bq.Messaging.Tests
         static async Task Case(string name, Func<Task> body)
         {
             try { await body(); passed++; } catch (Exception ex) { failures.Add(name + ": " + ex.Message); }
+        }
+        static async Task<T> Within<T>(Task<T> task)
+        {
+            if (await Task.WhenAny(task, Task.Delay(15000)) != task) throw new Exception("Timed out waiting for the result.");
+            return await task;
         }
         static async Task Eventually(Func<bool> condition, string what)
         {
@@ -145,6 +186,71 @@ namespace Bq.Messaging.Tests
                         await client.PostAsync(http + "/chaos/clock/advance?ms=30000", null);
                     }
                     await Eventually(() => channel.MessageCount(sink) == 0, "the message to expire after the clock passes its TTL");
+                }
+            });
+
+            await Case("a failure inside a receive behavior goes through recoverability", async () =>
+            {
+                EdgeReceiveFailure.Seen = 0;
+                var name = "bq.test.edge.receivefail." + Guid.NewGuid().ToString("N");
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name), ImmediateRetries = 1 };
+                configuration.Recoverability.DelayedRetries = new TimeSpan[0];
+                configuration.Route(typeof(EdgeUowMessage), name);
+                configuration.Pipeline.Register("edge-receive-fail", new EdgeReceiveFailure(), "Fail in the receive stage");
+                var handled = 0;
+                configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { Interlocked.Increment(ref handled); return Task.CompletedTask; }));
+                var errored = new TaskCompletionSource<FailedMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+                configuration.Notifications.Errors.MessageSentToErrorQueue += (sender, message) => errored.TrySetResult(message);
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                {
+                    var options = new SendOptions();
+                    options.SetHeader("edge-receive-fail", "1");
+                    await endpoint.Send(new EdgeUowMessage { Text = "x" }, options);
+                    var failed = await Within(errored.Task);
+                    That(failed.Exception.Message.Contains("receive behavior failed"), "the failure reaches the error notification: " + failed.Exception.Message);
+                    That(Volatile.Read(ref EdgeReceiveFailure.Seen) == 2 && Volatile.Read(ref handled) == 0, "one attempt plus one immediate retry, and the handler never ran: " + EdgeReceiveFailure.Seen);
+                }
+            });
+            await Case("an abort on every attempt redelivers without counting failures", async () =>
+            {
+                EdgeAlwaysAbort.Seen = 0;
+                var name = "bq.test.edge.alwaysabort." + Guid.NewGuid().ToString("N");
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name), ImmediateRetries = 0 };
+                configuration.Recoverability.DelayedRetries = new TimeSpan[0];
+                configuration.Route(typeof(EdgeUowMessage), name);
+                configuration.Pipeline.Register("edge-always-abort", new EdgeAlwaysAbort(), "Always abort");
+                var handled = 0;
+                configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { Interlocked.Increment(ref handled); return Task.CompletedTask; }));
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var channel = connection.CreateModel())
+                {
+                    var options = new SendOptions();
+                    options.SetHeader("edge-always-abort", "1");
+                    await endpoint.Send(new EdgeUowMessage { Text = "x" }, options);
+                    await Eventually(() => Volatile.Read(ref EdgeAlwaysAbort.Seen) >= 5, "repeated redelivery after each abort");
+                    That(Volatile.Read(ref handled) == 0, "the handler never runs");
+                    That(channel.MessageCount(name + ".error") == 0, "an abort is not a failure");
+                }
+            });
+            await Case("MaxConcurrency above one processes in parallel with pipeline behaviors", async () =>
+            {
+                EdgeConcurrencyProbe.Current = EdgeConcurrencyProbe.Peak = EdgeConcurrencyProbe.Invoked = 0;
+                var name = "bq.test.edge.concurrency." + Guid.NewGuid().ToString("N");
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name), MaxConcurrency = 4 };
+                configuration.Route(typeof(EdgeUowMessage), name);
+                configuration.Pipeline.Register("edge-concurrency", new EdgeConcurrencyProbe(), "Measure concurrency");
+                configuration.RegisterUnitOfWork(() => new EdgeUnit("concurrent"));
+                var handled = 0;
+                configuration.Handle(() => new Handler<EdgeUowMessage>(async (m, c) => { await Task.Delay(150); Interlocked.Increment(ref handled); }));
+                EdgeUnit.Log.Clear();
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                {
+                    for (var i = 0; i < 12; i++) await endpoint.Send(new EdgeUowMessage { Text = i.ToString() });
+                    await Eventually(() => Volatile.Read(ref handled) == 12, "all twelve messages");
+                    That(Volatile.Read(ref EdgeConcurrencyProbe.Peak) > 1 && EdgeConcurrencyProbe.Peak <= 4, "peak concurrency was " + EdgeConcurrencyProbe.Peak);
+                    That(EdgeConcurrencyProbe.Invoked == 12, "each message passed through the behavior once: " + EdgeConcurrencyProbe.Invoked);
+                    lock (EdgeUnit.Log) That(EdgeUnit.Log.Count(l => l == "begin:concurrent") == 12 && EdgeUnit.Log.Count(l => l == "end:concurrent:ok") == 12, "every attempt began and ended its unit of work");
                 }
             });
 
