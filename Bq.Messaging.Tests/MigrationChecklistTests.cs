@@ -132,6 +132,42 @@ namespace Bq.Messaging.Tests
         public Task End(Exception ex = null) { Log.Enqueue(name + ".end" + (ex == null ? "" : ".failed")); return Task.CompletedTask; }
     }
 
+    public sealed class OutgoingReplyPilotBehavior : Behavior<IOutgoingReplyContext>
+    {
+        public override Task Invoke(IOutgoingReplyContext context, Func<Task> next)
+        {
+            context.Headers["outgoing-reply-stage"] = "applied";
+            return next();
+        }
+    }
+
+    public sealed class OutgoingLogicalPilotBehavior : Behavior<IOutgoingLogicalMessageContext>
+    {
+        public override async Task Invoke(IOutgoingLogicalMessageContext context, Func<Task> next)
+        {
+            if (!(context.Message.Instance is Response)) { await next(); return; }
+            if (!context.Headers.ContainsKey("outgoing-reply-stage")) throw new InvalidOperationException("The reply stage must run first.");
+            if (context.RoutingStrategies.Count != 1) throw new InvalidOperationException("Routing is exposed to outgoing behaviors.");
+            context.Headers["outgoing-logical-stage"] = "applied";
+            await next();
+        }
+    }
+
+    public sealed class OutgoingPhysicalPilotBehavior : Behavior<IOutgoingPhysicalMessageContext>
+    {
+        public override Task Invoke(IOutgoingPhysicalMessageContext context, Func<Task> next)
+        {
+            if (context.Headers.ContainsKey("outgoing-logical-stage"))
+            {
+                if (context.Body == null || context.Body.Length == 0) throw new InvalidOperationException("The physical stage sees the serialized body.");
+                if (!context.Headers.ContainsKey("pilot-mutator-outgoing-seen") && context.Headers.ContainsKey("pilot-outgoing-mutator"))
+                    throw new InvalidOperationException("Physical behaviors run before outgoing transport mutators.");
+                context.Headers["outgoing-physical-stage"] = "applied";
+            }
+            return next();
+        }
+    }
+
     public sealed class PhysicalPilotBehavior : Behavior<IIncomingPhysicalMessageContext>
     {
         public static int Skipped;
@@ -579,6 +615,9 @@ namespace Bq.Messaging.Tests
             receiver.Pipeline.Register<OrderedPilotStep>();
             Bq.Messaging.UnitOfWork.UnitOfWorkConfigurationExtensions.RegisterUnitOfWork(receiver, () => new RecordingUnit("a"));
             Bq.Messaging.UnitOfWork.UnitOfWorkConfigurationExtensions.RegisterUnitOfWork(receiver, () => new RecordingUnit("b"));
+            receiver.Pipeline.Register("outgoing-reply", new OutgoingReplyPilotBehavior(), "Mark replies");
+            receiver.Pipeline.Register("outgoing-logical", new OutgoingLogicalPilotBehavior(), "Mark logical replies");
+            receiver.Pipeline.Register("outgoing-physical", new OutgoingPhysicalPilotBehavior(), "Mark physical replies");
             receiver.Pipeline.Register("physical-second", new PhysicalPilotBehavior(false), "Run after the first physical behavior");
             receiver.Pipeline.Register<PhysicalFirstStep>();
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -736,6 +775,9 @@ namespace Bq.Messaging.Tests
                         Assert(behaviorReply.BasicProperties.Type == typeof(Response).FullName &&
                             behaviorReply.BasicProperties.CorrelationId == prefix + ".pilot-event",
                             "logical behavior reply uses the incoming message identity");
+                        foreach (var stageHeader in new[] { "outgoing-reply-stage", "outgoing-logical-stage", "outgoing-physical-stage" })
+                            Assert(System.Text.Encoding.UTF8.GetString((byte[])behaviorReply.BasicProperties.Headers[stageHeader]) == "applied",
+                                "outgoing behaviors for " + stageHeader + " run for replies");
                         Assert(System.Text.Encoding.UTF8.GetString((byte[])behaviorReply.BasicProperties.Headers["pilot-outgoing-mutator"]) == "applied",
                             "outgoing transport mutations survive the reply outbox");
                         var replyBody = MessagePackSerializer.Deserialize<Response>(behaviorReply.Body,

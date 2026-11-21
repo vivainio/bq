@@ -97,6 +97,8 @@ namespace Bq.Messaging
             new Dictionary<string, Func<IncomingMessageContext, Func<Task>, Task>>(StringComparer.Ordinal);
         readonly Dictionary<string, Func<IncomingPhysicalContext, Func<Task>, Task>> physicalSteps =
             new Dictionary<string, Func<IncomingPhysicalContext, Func<Task>, Task>>(StringComparer.Ordinal);
+        readonly Dictionary<OutgoingStage, Dictionary<string, Func<OutgoingContext, Func<Task>, Task>>> outgoingSteps =
+            new Dictionary<OutgoingStage, Dictionary<string, Func<OutgoingContext, Func<Task>, Task>>>();
         readonly Dictionary<string, (string Id, bool Before, bool Optional)[]> ordering =
             new Dictionary<string, (string Id, bool Before, bool Optional)[]>(StringComparer.Ordinal);
 
@@ -107,7 +109,8 @@ namespace Bq.Messaging
         public void Register(RegisterStep registration)
         {
             if (registration == null) throw new ArgumentNullException(nameof(registration));
-            if (steps.ContainsKey(registration.StepId) || physicalSteps.ContainsKey(registration.StepId))
+            if (steps.ContainsKey(registration.StepId) || physicalSteps.ContainsKey(registration.StepId) ||
+                TryFindOutgoing(registration.StepId, out _, out _))
                 throw new InvalidOperationException("A pipeline step already uses ID " + registration.StepId);
             var behavior = registration.Factory == null ? CreateBehavior(registration.BehaviorType) : registration.Factory();
             if (!registration.BehaviorType.IsInstanceOfType(behavior))
@@ -137,6 +140,12 @@ namespace Bq.Messaging
         public void Register<T>(string stepId, T behavior, string description) where T : IBehavior
         {
             ValidateNewStepId(stepId);
+            if (TryAdaptOutgoing(behavior, out var outgoingStage, out var outgoingInvoke))
+            {
+                OutgoingSteps(outgoingStage).Add(stepId, outgoingInvoke);
+                incoming.UseOutgoing(outgoingStage, outgoingInvoke);
+                return;
+            }
             if (IsPhysical(behavior))
             {
                 var physical = AdaptPhysical(behavior);
@@ -160,6 +169,14 @@ namespace Bq.Messaging
 
         public void Replace<T>(string stepId, T newBehavior, string description = null) where T : IBehavior
         {
+            if (TryFindOutgoing(stepId, out var existingStage, out var existingOutgoing))
+            {
+                if (!TryAdaptOutgoing(newBehavior, out var newStage, out var newInvoke) || newStage != existingStage)
+                    throw new InvalidOperationException("Pipeline step " + stepId + " must be replaced by a behavior for the same stage.");
+                incoming.ReplaceOutgoing(existingStage, existingOutgoing, newInvoke);
+                OutgoingSteps(existingStage)[stepId] = newInvoke;
+                return;
+            }
             if (physicalSteps.TryGetValue(stepId ?? string.Empty, out var currentPhysical))
             {
                 if (!IsPhysical(newBehavior))
@@ -169,7 +186,7 @@ namespace Bq.Messaging
                 physicalSteps[stepId] = physicalReplacement;
                 return;
             }
-            if (IsPhysical(newBehavior))
+            if (IsPhysical(newBehavior) || TryAdaptOutgoing(newBehavior, out _, out _))
             {
                 FindStep(stepId);
                 throw new InvalidOperationException("Pipeline step " + stepId + " must be replaced by a behavior for the same stage.");
@@ -182,7 +199,12 @@ namespace Bq.Messaging
 
         public void Remove(string stepId)
         {
-            if (physicalSteps.TryGetValue(stepId ?? string.Empty, out var physical))
+            if (TryFindOutgoing(stepId, out var removeStage, out var removeOutgoing))
+            {
+                incoming.RemoveOutgoing(removeStage, removeOutgoing);
+                OutgoingSteps(removeStage).Remove(stepId);
+            }
+            else if (physicalSteps.TryGetValue(stepId ?? string.Empty, out var physical))
             {
                 incoming.RemovePhysical(physical);
                 physicalSteps.Remove(stepId);
@@ -198,7 +220,7 @@ namespace Bq.Messaging
         void RequireStep(string stepId)
         {
             if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
-            if (!steps.ContainsKey(stepId) && !physicalSteps.ContainsKey(stepId))
+            if (!steps.ContainsKey(stepId) && !physicalSteps.ContainsKey(stepId) && !TryFindOutgoing(stepId, out _, out _))
                 throw new InvalidOperationException("No pipeline step uses ID " + stepId);
         }
 
@@ -264,7 +286,7 @@ namespace Bq.Messaging
         void ValidateNewStepId(string stepId)
         {
             if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
-            if (steps.ContainsKey(stepId) || physicalSteps.ContainsKey(stepId))
+            if (steps.ContainsKey(stepId) || physicalSteps.ContainsKey(stepId) || TryFindOutgoing(stepId, out _, out _))
                 throw new InvalidOperationException("A pipeline step already uses ID " + stepId);
         }
 
@@ -282,6 +304,45 @@ namespace Bq.Messaging
             if (behavior.IsAbstract || !typeof(IBehavior).IsAssignableFrom(behavior))
                 throw new ArgumentException("A concrete pipeline behavior is required.", nameof(behavior));
             return (IBehavior)Activator.CreateInstance(behavior);
+        }
+
+        Dictionary<string, Func<OutgoingContext, Func<Task>, Task>> OutgoingSteps(OutgoingStage stage)
+        {
+            if (!outgoingSteps.TryGetValue(stage, out var stageSteps))
+                outgoingSteps.Add(stage, stageSteps = new Dictionary<string, Func<OutgoingContext, Func<Task>, Task>>(StringComparer.Ordinal));
+            return stageSteps;
+        }
+
+        bool TryFindOutgoing(string stepId, out OutgoingStage stage, out Func<OutgoingContext, Func<Task>, Task> invoke)
+        {
+            foreach (var pair in outgoingSteps)
+                if (stepId != null && pair.Value.TryGetValue(stepId, out invoke)) { stage = pair.Key; return true; }
+            stage = default(OutgoingStage);
+            invoke = null;
+            return false;
+        }
+
+        internal IEnumerable<Func<OutgoingContext, Func<Task>, Task>> OrderOutgoing(OutgoingStage stage,
+            IReadOnlyList<Func<OutgoingContext, Func<Task>, Task>> behaviors) => Order(OutgoingSteps(stage), behaviors);
+
+        static bool TryAdaptOutgoing(IBehavior behavior, out OutgoingStage stage, out Func<OutgoingContext, Func<Task>, Task> invoke)
+        {
+            switch (behavior)
+            {
+                case IBehavior<IOutgoingSendContext, IOutgoingSendContext> send:
+                    stage = OutgoingStage.Send; invoke = (c, next) => send.Invoke(c, x => Continue(c, x, next)); return true;
+                case IBehavior<IOutgoingPublishContext, IOutgoingPublishContext> publish:
+                    stage = OutgoingStage.Publish; invoke = (c, next) => publish.Invoke(c, x => Continue(c, x, next)); return true;
+                case IBehavior<IOutgoingReplyContext, IOutgoingReplyContext> reply:
+                    stage = OutgoingStage.Reply; invoke = (c, next) => reply.Invoke(c, x => Continue(c, x, next)); return true;
+                case IBehavior<IOutgoingLogicalMessageContext, IOutgoingLogicalMessageContext> logical:
+                    stage = OutgoingStage.Logical; invoke = (c, next) => logical.Invoke(c, x => Continue(c, x, next)); return true;
+                case IBehavior<IOutgoingPhysicalMessageContext, IOutgoingPhysicalMessageContext> physical:
+                    stage = OutgoingStage.Physical; invoke = (c, next) => physical.Invoke(c, x => Continue(c, x, next)); return true;
+            }
+            stage = default(OutgoingStage);
+            invoke = null;
+            return false;
         }
 
         static bool IsPhysical(IBehavior behavior) =>

@@ -38,6 +38,7 @@ namespace Bq.Messaging
         readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
         readonly Func<IncomingPhysicalContext, Func<Task>, Task> physical;
         readonly bool hasPhysicalBehaviors;
+        readonly Dictionary<OutgoingStage, Func<OutgoingContext, Func<Task>, Task>> outgoingStages;
         readonly Bq.Messaging.ObjectBuilder.Common.IContainer rootContainer;
         readonly Bq.Messaging.ObjectBuilder.IBuilder rootBuilder;
         readonly bool ownsContainer;
@@ -97,6 +98,7 @@ namespace Bq.Messaging
             ownsContainer = configuration.OwnsContainer;
             incoming = configuration.Incoming.Build(configuration.Pipeline);
             physical = configuration.Incoming.BuildPhysical(configuration.Pipeline);
+            outgoingStages = configuration.Incoming.BuildOutgoing(configuration.Pipeline);
             hasPhysicalBehaviors = configuration.Incoming.HasPhysicalBehaviors;
             var owners = new Dictionary<string, Type>();
             var types = configuration.ContractNames.Keys.Concat(configuration.Handlers.Values.Select(handler => handler.Type))
@@ -459,9 +461,10 @@ namespace Bq.Messaging
         public Task SendLocal<T>(T message) => SendCore(message, null, localAddress);
         public Task Publish<T>(T message) => PublishCore(message, null);
         public Task Publish<T>(Action<T> initialize) => Publish(MessageOptionsExtensions.Initialize(initialize));
-        internal Task SendCore<T>(T message, string correlationId, string destination, IDictionary<string, object> headers = null)
+        internal Task SendCore<T>(T message, string correlationId, string destination, IDictionary<string, object> headers = null,
+            OutgoingStage kind = OutgoingStage.Send)
         {
-            return Dispatch(message, "", destination ?? RouteFor(message), correlationId, true, headers);
+            return Dispatch(message, "", destination ?? RouteFor(message), correlationId, true, headers, kind);
         }
         static Type ContractType<T>(T message) => typeof(T) == typeof(object)
             ? InterfaceMessage.ContractFor((message ?? throw new ArgumentNullException(nameof(message))).GetType())
@@ -480,9 +483,10 @@ namespace Bq.Messaging
         internal Task PublishCore<T>(T message, string correlationId, IDictionary<string, object> headers = null) =>
             Dispatch(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers);
         async Task<OutgoingMessage> Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
-            IDictionary<string, object> headers = null, bool deferred = false)
+            IDictionary<string, object> headers = null, bool deferred = false, OutgoingStage kind = OutgoingStage.Send)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
+            if (kind == OutgoingStage.Send && exchange == eventsExchange && !mandatory) kind = OutgoingStage.Publish;
             var copiedHeaders = new Dictionary<string, object>(configuration.OutgoingHeaders);
             if (headers != null)
                 foreach (var header in headers) copiedHeaders[header.Key] = header.Value;
@@ -496,7 +500,32 @@ namespace Bq.Messaging
             var contract = ContractType(message);
             var causingContext = scope != null && Volatile.Read(ref scope.Active) != 0 ? scope.Context : null;
             MessageHeaders.AttachCausation(copiedHeaders, causingContext, contract, message, conversationIdStrategy);
-            object outgoingMessage = message;
+            var id = Guid.NewGuid().ToString("N");
+            var lastSynced = MessageHeaders.AsText(copiedHeaders);
+            var stageHeaders = MessageHeaders.ToTextDictionary(copiedHeaders);
+            var routing = new Routing.RoutingStrategy[]
+            {
+                kind == OutgoingStage.Publish ? (Routing.RoutingStrategy)new Routing.MulticastRoutingStrategy(contract) : new Routing.UnicastRoutingStrategy(routingKey)
+            };
+            var stage = new OutgoingContext(this, () => causingContext is HandlerContext handler ? handler.Builder : rootBuilder, id, contract,
+                message, stageHeaders, causingContext?.Extensions ?? new ContextBag(), routing);
+            // Behaviors edit text headers; fold their edits into the typed header set at each stage boundary.
+            void SyncFromStage()
+            {
+                RecoveryWire.ApplyTextHeaderEdits(copiedHeaders, lastSynced, stageHeaders);
+                lastSynced = MessageHeaders.AsText(copiedHeaders);
+            }
+            void RefreshStage()
+            {
+                lastSynced = MessageHeaders.AsText(copiedHeaders);
+                stageHeaders.Clear();
+                foreach (var header in lastSynced) stageHeaders[header.Key] = header.Value;
+            }
+            OutgoingMessage result = null;
+            await outgoingStages[kind](stage, () => outgoingStages[OutgoingStage.Logical](stage, async () =>
+            {
+            SyncFromStage();
+            object outgoingMessage = stage.Instance;
             foreach (var mutator in outgoingMessageMutators)
             {
                 var original = MessageHeaders.AsText(copiedHeaders);
@@ -519,7 +548,12 @@ namespace Bq.Messaging
                 propertyEncryption.Transform(copy, encryptedProperties, encrypt: true);
                 serialized = MessagePackSerializer.Serialize(serializationType, copy, SerializerOptions);
             }
-            var transport = new TransportMessage(WireName(contract), serialized, copiedHeaders,
+            stage.CurrentBody = serialized;
+            RefreshStage();
+            await outgoingStages[OutgoingStage.Physical](stage, async () =>
+            {
+            SyncFromStage();
+            var transport = new TransportMessage(WireName(contract), stage.CurrentBody, copiedHeaders,
                 causingContext);
             mutateOutgoing?.Invoke(transport);
             foreach (var mutator in outgoingTransportMutators)
@@ -546,20 +580,22 @@ namespace Bq.Messaging
             foreach (var header in copiedHeaders.Keys)
                 if (string.IsNullOrWhiteSpace(header)) throw new ArgumentException("Message header names cannot be empty.", nameof(headers));
             RecoveryWire.EncodeHeaders(copiedHeaders); // Validate the AMQP field types before storing or publishing.
-            var id = Guid.NewGuid().ToString("N");
-            return new OutgoingMessage { Id = id, CorrelationId = correlationId ?? (string)customId ?? id,
+            result = new OutgoingMessage { Id = id, CorrelationId = correlationId ?? (string)customId ?? id,
                 ReplyTo = (string)replyAddress ?? configuration.PublicReturnAddress ?? (sendOnly ? null : localAddress),
                 Type = transport.TypeName, Exchange = exchange, RoutingKey = routingKey,
                 Mandatory = mandatory, Headers = copiedHeaders, Body = transport.Body };
+            }).ConfigureAwait(false);
+            })).ConfigureAwait(false);
+            return result ?? throw new InvalidOperationException("An outgoing behavior did not continue the pipeline.");
         }
         static TimeSpan AttributeLifetime(Type contract) =>
             ((TimeToBeReceivedAttribute)Attribute.GetCustomAttribute(contract, typeof(TimeToBeReceivedAttribute)))?.TimeToBeReceived
             ?? TimeSpan.MaxValue;
 
         async Task Dispatch<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
-            IDictionary<string, object> headers = null)
+            IDictionary<string, object> headers = null, OutgoingStage kind = OutgoingStage.Send)
         {
-            PublishPrepared(await Prepare(message, exchange, routingKey, correlationId, mandatory, headers).ConfigureAwait(false));
+            PublishPrepared(await Prepare(message, exchange, routingKey, correlationId, mandatory, headers, kind: kind).ConfigureAwait(false));
         }
         void PublishPrepared(OutgoingMessage message)
         {
@@ -1284,10 +1320,10 @@ namespace Bq.Messaging
                 var correlationId = options?.CorrelationId ?? CorrelationId;
                 var headers = options?.ApplyEnvelope(options.Headers);
                 if (PersistenceSession == null || options?.ImmediateDispatch == true)
-                    await endpoint.SendCore(message, correlationId, destination, headers).ConfigureAwait(false);
+                    await endpoint.SendCore(message, correlationId, destination, headers, OutgoingStage.Reply).ConfigureAwait(false);
                 else
                     await PersistenceSession.StoreOutgoing(
-                        await endpoint.Prepare(message, "", destination, correlationId, true, headers).ConfigureAwait(false)).ConfigureAwait(false);
+                        await endpoint.Prepare(message, "", destination, correlationId, true, headers, kind: OutgoingStage.Reply).ConfigureAwait(false)).ConfigureAwait(false);
             }
         }
     }

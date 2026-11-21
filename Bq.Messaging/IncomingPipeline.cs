@@ -47,7 +47,7 @@ namespace Bq.Messaging
         public IDictionary<string, object> Items { get; } = new Dictionary<string, object>();
     }
 
-    public sealed class IncomingPhysicalContext : IIncomingPhysicalMessageContext
+    public sealed class IncomingPhysicalContext : IIncomingPhysicalMessageContext, IFailureTracking
     {
         internal IncomingPhysicalContext(RabbitEndpoint.HandlerContext handlerContext, IncomingMessage message)
         {
@@ -63,7 +63,7 @@ namespace Bq.Messaging
         public IReadOnlyDictionary<string, string> MessageHeaders => Message.Headers;
         public ContextBag Extensions => HandlerContext.Extensions;
         public Bq.Messaging.ObjectBuilder.IBuilder Builder => HandlerContext.Builder;
-        internal ExceptionDispatchInfo DownstreamFailure { get; set; }
+        public ExceptionDispatchInfo DownstreamFailure { get; set; }
         public Task Send(object message, SendOptions options) => HandlerContext.Send(message, options);
         public Task Send<T>(Action<T> initialize, SendOptions options) => HandlerContext.Send(initialize, options);
         public Task Publish(object message, PublishOptions options) => HandlerContext.Publish(message, options);
@@ -93,13 +93,40 @@ namespace Bq.Messaging
 
         internal bool HasPhysicalBehaviors => physicalBehaviors.Count != 0;
 
-        internal Func<IncomingPhysicalContext, Func<Task>, Task> BuildPhysical(PipelineSettings settings)
+        internal Func<IncomingPhysicalContext, Func<Task>, Task> BuildPhysical(PipelineSettings settings) =>
+            BuildChain(settings.OrderPhysical(physicalBehaviors));
+
+        readonly Dictionary<OutgoingStage, List<Func<OutgoingContext, Func<Task>, Task>>> outgoingBehaviors =
+            new Dictionary<OutgoingStage, List<Func<OutgoingContext, Func<Task>, Task>>>();
+
+        List<Func<OutgoingContext, Func<Task>, Task>> OutgoingList(OutgoingStage stage)
         {
-            var ordered = settings.OrderPhysical(physicalBehaviors).ToArray();
-            Func<IncomingPhysicalContext, Func<Task>, Task> pipeline = (context, terminal) => terminal();
-            for (var index = ordered.Length - 1; index >= 0; index--)
+            if (!outgoingBehaviors.TryGetValue(stage, out var list)) outgoingBehaviors.Add(stage, list = new List<Func<OutgoingContext, Func<Task>, Task>>());
+            return list;
+        }
+
+        internal void UseOutgoing(OutgoingStage stage, Func<OutgoingContext, Func<Task>, Task> behavior) => OutgoingList(stage).Add(behavior);
+
+        internal void ReplaceOutgoing(OutgoingStage stage, Func<OutgoingContext, Func<Task>, Task> current,
+            Func<OutgoingContext, Func<Task>, Task> replacement)
+        {
+            var list = OutgoingList(stage);
+            list[list.IndexOf(current)] = replacement;
+        }
+
+        internal void RemoveOutgoing(OutgoingStage stage, Func<OutgoingContext, Func<Task>, Task> behavior) => OutgoingList(stage).Remove(behavior);
+
+        internal Dictionary<OutgoingStage, Func<OutgoingContext, Func<Task>, Task>> BuildOutgoing(PipelineSettings settings) =>
+            Enum.GetValues(typeof(OutgoingStage)).Cast<OutgoingStage>().ToDictionary(stage => stage,
+                stage => BuildChain(settings.OrderOutgoing(stage, OutgoingList(stage))));
+
+        static Func<TContext, Func<Task>, Task> BuildChain<TContext>(IEnumerable<Func<TContext, Func<Task>, Task>> ordered) where TContext : IFailureTracking
+        {
+            var behaviors = ordered.ToArray();
+            Func<TContext, Func<Task>, Task> pipeline = (context, terminal) => terminal();
+            for (var index = behaviors.Length - 1; index >= 0; index--)
             {
-                var behavior = ordered[index];
+                var behavior = behaviors[index];
                 var next = pipeline;
                 pipeline = (context, terminal) =>
                 {
@@ -109,7 +136,7 @@ namespace Bq.Messaging
                         try
                         {
                             if (Interlocked.Exchange(ref invoked, 1) != 0)
-                                throw new InvalidOperationException("An incoming behavior can invoke next only once per attempt.");
+                                throw new InvalidOperationException("A behavior can invoke next only once per attempt.");
                             await next(context, terminal).ConfigureAwait(false);
                         }
                         catch (Exception failure)
