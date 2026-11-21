@@ -1322,6 +1322,27 @@ namespace Bq.Messaging.Tests
             Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(configuration).Set("probe", other);
             Assert(Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(configuration).Get<ContainerBuilder_Probe>("probe") == other, "settings round-trip");
             container.Dispose();
+
+            using (var windsor = new WindsorContainer())
+            {
+                var windsorConfiguration = new EndpointConfiguration("windsor-container-test", new Uri("amqp://localhost/"));
+                windsorConfiguration.UseContainer<WindsorBuilder>(customizations => customizations.ExistingContainer(windsor));
+                windsorConfiguration.RegisterComponents(components =>
+                {
+                    components.ConfigureComponent<ContainerDependency>(DependencyLifecycle.InstancePerUnitOfWork);
+                    components.ConfigureComponent<ContainerConsumer>(DependencyLifecycle.InstancePerCall);
+                });
+                var windsorRoot = new Bq.Messaging.Container.ContainerBuilder(windsorConfiguration.BuildContainer());
+                Assert(windsor.Kernel.HasComponent(typeof(ContainerConsumer)), "UseContainer<WindsorBuilder> registers into the existing container");
+                var disposedBefore = ContainerDependency.Disposed;
+                using (var child = windsorRoot.CreateChildBuilder())
+                {
+                    var consumer = child.Build<ContainerConsumer>();
+                    Assert(consumer.Dependency == child.Build<IContainerDependency>(), "Windsor scopes per-unit-of-work components to the child builder");
+                    Assert(consumer.Builder != null, "Windsor supplies IBuilder");
+                }
+                Assert(ContainerDependency.Disposed == disposedBefore + 1, "ending the child builder ends the Windsor scope");
+            }
         }
         sealed class ContainerBuilder_Probe { }
 

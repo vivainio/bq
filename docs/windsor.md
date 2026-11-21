@@ -50,3 +50,5 @@ Register an incoming logical behavior as a Windsor component, then call `messagi
 Call `messaging.ReplaceBehavior<TBehavior>(configuration, stepId)` before startup to resolve a replacement through Windsor at the registered step's existing position.
 
 `WindsorMessaging` registers a shared `MessageMapper` as both `IMessageMapper` and `IMessageCreator`. If the container already has a registration for either interface, the application controls those registrations.
+
+To plug Windsor into `UseContainer`, call `configuration.UseContainer<WindsorBuilder>(c => c.ExistingContainer(container))`. `RegisterComponents` registrations and scanned handlers then go into that container, and each message attempt runs in its own Windsor scope.

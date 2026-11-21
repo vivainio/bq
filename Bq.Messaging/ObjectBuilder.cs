@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Bq.Messaging.Configuration.AdvancedExtensibility;
+using Bq.Messaging.Container;
 using Bq.Messaging.ObjectBuilder;
 using Bq.Messaging.ObjectBuilder.Common;
 using Bq.Messaging.Settings;
@@ -297,7 +298,10 @@ namespace Bq.Messaging.Container
         public void RegisterSingleton(Type lookupType, object instance) => container.RegisterSingleton(lookupType, instance);
         public void RegisterSingleton<T>(T instance) => container.RegisterSingleton(typeof(T), instance);
     }
+}
 
+namespace Bq.Messaging
+{
     public static class UseContainerExtensions
     {
         public static void UseContainer<T>(this EndpointConfiguration configuration, Action<ContainerCustomizations> customization = null)
