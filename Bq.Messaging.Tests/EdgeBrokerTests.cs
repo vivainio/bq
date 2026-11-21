@@ -102,6 +102,39 @@ namespace Bq.Messaging.Tests
         }
     }
 
+    // Delegates to a SQLite provider but holds outgoing dispatch until the gate opens.
+    public sealed class EdgeHeldPersistence : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence
+    {
+        readonly Bq.Persistence.Sqlite.SqlitePersistence inner;
+        readonly Task gate;
+        public EdgeHeldPersistence(Bq.Persistence.Sqlite.SqlitePersistence inner, Task gate) { this.inner = inner; this.gate = gate; }
+        public Task<IPersistenceSession> OpenSession() => inner.OpenSession();
+        Task<OutgoingMessage> IPersistenceProvider.NextOutgoing(string endpoint) => throw new InvalidOperationException("Expected provider-controlled dispatch.");
+        Task IPersistenceProvider.MarkDispatched(string endpoint, string id) => throw new InvalidOperationException("Expected provider-controlled dispatch.");
+        Task<RecoveryRecord> IRecoveryPersistence.NextRecovery(string endpoint) => throw new InvalidOperationException("Expected provider-controlled dispatch.");
+        Task IRecoveryPersistence.MarkRecoveryDispatched(string endpoint, string id) => throw new InvalidOperationException("Expected provider-controlled dispatch.");
+        public async Task<bool> DispatchOutgoing(string endpoint, Action<OutgoingMessage> publish)
+        {
+            await gate;
+            var message = await inner.NextOutgoing(endpoint);
+            if (message == null) return false;
+            publish(message);
+            await inner.MarkDispatched(endpoint, message.Id);
+            return true;
+        }
+        public async Task<bool> DispatchRecovery(string endpoint, Action<RecoveryRecord> publish)
+        {
+            var record = await inner.NextRecovery(endpoint);
+            if (record == null) return false;
+            publish(record);
+            await inner.MarkRecoveryDispatched(endpoint, record.RecoveryId);
+            return true;
+        }
+        public Task<RecoveryRecord> GetError(string endpoint, string id) => inner.GetError(endpoint, id);
+        public Task<IReadOnlyList<RecoveryRecord>> ListErrors(string endpoint, int limit) => inner.ListErrors(endpoint, limit);
+        public Task<bool> ReplayError(string endpoint, string id, RecoveryRecord record) => inner.ReplayError(endpoint, id, record);
+    }
+
     public sealed class EdgeUnit : IManageUnitsOfWork
     {
         public static readonly List<string> Log = new List<string>();
@@ -391,6 +424,80 @@ namespace Bq.Messaging.Tests
                     using (var session = await memory.OpenSession())
                         await Eventually(() => session.LoadSaga(typeof(OrderWorkflow).FullName, "json-1").GetAwaiter().GetResult() == null, "the completed saga to be deleted");
                     lock (wire) That(wire.Count >= 3 && wire.All(w => w.StartsWith("{")), "every message, the timeout included, is JSON on the wire: " + string.Join(" | ", wire));
+                }
+            });
+
+            await Case("an outbox row keeps its wire format when the endpoint changes format", async () =>
+            {
+                var name = "bq.test.edge.formatchange." + Guid.NewGuid().ToString("N");
+                var sink = name + ".sink";
+                var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), name + ".db");
+                System.Data.Common.DbConnection Connect()
+                {
+                    var type = Type.GetType("Mono.Data.Sqlite.SqliteConnection, Mono.Data.Sqlite, Version=4.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756", true);
+                    var connection = (System.Data.Common.DbConnection)Activator.CreateInstance(type);
+                    connection.ConnectionString = "Data Source=" + path + ";Default Timeout=5";
+                    return connection;
+                }
+                try
+                {
+                    using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    using (var channel = connection.CreateModel())
+                    {
+                        channel.QueueDeclare(sink, true, false, false);
+                        var holdStore = new Bq.Persistence.Sqlite.SqlitePersistence(Connect, name);
+                        await holdStore.Initialize();
+                        var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                        var json = new EndpointConfiguration(name, uri) { Persistence = new EdgeHeldPersistence(holdStore, gate.Task) };
+                        json.UseSerialization<Bq.Messaging.Serialization.JsonSerializer>();
+                        json.Route(typeof(EdgeUowMessage), sink);
+                        using (var first = RabbitEndpoint.Start(json))
+                        {
+                            await first.ExecuteTransaction(session => session.Send(new EdgeUowMessage { Text = "stored-as-json" }));
+                            That(channel.MessageCount(sink) == 0, "the held dispatcher has not published the row");
+                        }
+                        gate.TrySetResult(true);
+                        var store = new Bq.Persistence.Sqlite.SqlitePersistence(Connect, name);
+                        await store.Initialize();
+                        var messagePack = new EndpointConfiguration(name, uri) { Persistence = store };
+                        messagePack.Route(typeof(EdgeUowMessage), sink);
+                        using (var second = RabbitEndpoint.Start(messagePack))
+                        {
+                            BasicGetResult delivered = null;
+                            await Eventually(() => (delivered = channel.BasicGet(sink, true)) != null, "the stored row to be published after the restart");
+                            var body = System.Text.Encoding.UTF8.GetString(delivered.Body.ToArray());
+                            That(body.StartsWith("{") && body.Contains("stored-as-json"), "the body is still JSON: " + body);
+                            That(delivered.BasicProperties.ContentType == "application/json", "the content type describes the stored body: " + delivered.BasicProperties.ContentType);
+                        }
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+
+            await Case("a forwarded message keeps the format it arrived in", async () =>
+            {
+                var name = "bq.test.edge.forwardformat." + Guid.NewGuid().ToString("N");
+                var forward = name + ".forward";
+                var receiver = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name), ForwardReceivedMessagesAddress = forward };
+                receiver.AddDeserializer<Bq.Messaging.Serialization.JsonSerializer>();
+                receiver.Handle(() => new Handler<EdgeUowMessage>((m, c) => Task.CompletedTask));
+                var senderName = name + ".sender";
+                var sender = new EndpointConfiguration(senderName, uri) { Persistence = new InMemoryPersistenceProvider(senderName) };
+                sender.UseSerialization<Bq.Messaging.Serialization.JsonSerializer>();
+                sender.Route(typeof(EdgeUowMessage), name);
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var channel = connection.CreateModel())
+                {
+                    channel.QueueDeclare(forward, true, false, false);
+                    using (var receiving = RabbitEndpoint.Start(receiver))
+                    using (var sending = RabbitEndpoint.Start(sender))
+                    {
+                        await sending.Send(new EdgeUowMessage { Text = "forwarded-json" });
+                        BasicGetResult copy = null;
+                        await Eventually(() => (copy = channel.BasicGet(forward, true)) != null, "the forwarded copy");
+                        That(System.Text.Encoding.UTF8.GetString(copy.Body.ToArray()).StartsWith("{"), "the forwarded body is JSON");
+                        That(copy.BasicProperties.ContentType == "application/json", "the forwarded copy says so: " + copy.BasicProperties.ContentType);
+                    }
                 }
             });
 

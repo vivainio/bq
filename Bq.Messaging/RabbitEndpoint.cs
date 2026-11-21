@@ -26,6 +26,8 @@ namespace Bq.Messaging
         readonly string auditQueue;
         readonly string auditExpiration;
         const string OutboxExpirationHeader = "x-bq-outbox-audit-expiration";
+        // The stored body keeps the wire format it was written in, so the content type travels with the outbox row.
+        const string OutboxContentTypeHeader = "x-bq-outbox-content-type";
         readonly string eventsExchange;
         readonly string errorExchange;
         const string ContentType = "application/x-msgpack";
@@ -683,6 +685,7 @@ namespace Bq.Messaging
             if (lifetime < TimeSpan.Zero) throw new InvalidOperationException("Message time to be received cannot be negative.");
             if (lifetime != TimeSpan.MaxValue)
                 transport.Headers[OutboxExpirationHeader] = TimeToBeReceivedAttribute.ToExpiration(lifetime);
+            transport.Headers[OutboxContentTypeHeader] = wireFormat.ContentType;
             if (customId != null) transport.Headers[MessageOptions.WireIdHeader] = customId;
             if (string.IsNullOrWhiteSpace(transport.TypeName) || transport.Body == null)
                 throw new InvalidOperationException("An outgoing transport message requires a type name and body.");
@@ -729,6 +732,10 @@ namespace Bq.Messaging
                     if (headers.TryGetValue(OutboxExpirationHeader, out var expiration) && expiration is string ttl)
                         props.Expiration = ttl;
                     headers.Remove(OutboxExpirationHeader);
+                    // Rows stored before this header existed fall back to the endpoint's current format.
+                    if (headers.TryGetValue(OutboxContentTypeHeader, out var storedContentType) && storedContentType is string contentType)
+                        props.ContentType = contentType;
+                    headers.Remove(OutboxContentTypeHeader);
                     props.Headers = headers;
                 }
                 returned = false;
@@ -1432,6 +1439,8 @@ namespace Bq.Messaging
                 if (!newMessageId) headers[MessageOptions.WireIdHeader] = MessageId;
                 headers.Remove(OutboxExpirationHeader);
                 if (expiration != null) headers[OutboxExpirationHeader] = expiration;
+                headers.Remove(OutboxContentTypeHeader);
+                if (wireProperties.ContentType != null) headers[OutboxContentTypeHeader] = wireProperties.ContentType;
                 return PersistenceSession.StoreOutgoing(new OutgoingMessage
                 {
                     Id = Guid.NewGuid().ToString("N"), CorrelationId = wireProperties.CorrelationId, ReplyTo = replyTo,
