@@ -238,6 +238,7 @@ namespace Bq.Messaging.Tests
             await TestingSupportTests();
             await PersistenceTests();
             await OraclePersistenceTests();
+            await EdgeCaseTests.Run();
             var uri = Environment.GetEnvironmentVariable("BQ_RABBITMQ_URI");
             if (string.IsNullOrEmpty(uri)) { Console.WriteLine("RabbitMQ tests skipped: set BQ_RABBITMQ_URI."); return; }
             await BrokerTests(new Uri(uri));
@@ -253,6 +254,7 @@ namespace Bq.Messaging.Tests
             await OrderWorkflowEndToEndTest(new Uri(uri));
             await LifecycleTests.Run(new Uri(uri));
             await UniformSessionTests.Run(new Uri(uri), Sqlite);
+            await EdgeBrokerTests.Run(new Uri(uri));
             var outageDirectory = Environment.GetEnvironmentVariable("BQ_BROKER_OUTAGE_DIR");
             if (!string.IsNullOrEmpty(outageDirectory)) await BrokerOutageTest(new Uri(uri), outageDirectory);
         }
