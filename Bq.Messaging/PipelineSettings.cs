@@ -72,7 +72,15 @@ namespace Bq.Messaging
             new List<(string Id, bool Before, bool Optional)>();
 
         protected RegisterStep(string stepId, Type behavior, string description)
-            : this(stepId, behavior, description, null) { }
+            : this(stepId, behavior, description, (Func<IBehavior>)null) { }
+
+        protected RegisterStep(string stepId, Type behavior, string description, Func<Bq.Messaging.ObjectBuilder.IBuilder, IBehavior> factoryMethod)
+            : this(stepId, behavior, description, (Func<IBehavior>)null)
+        {
+            BuilderFactory = factoryMethod ?? throw new ArgumentNullException(nameof(factoryMethod));
+        }
+
+        internal Func<Bq.Messaging.ObjectBuilder.IBuilder, IBehavior> BuilderFactory { get; }
 
         protected RegisterStep(string stepId, Type behavior, string description, Func<IBehavior> factoryMethod)
         {
@@ -125,8 +133,10 @@ namespace Bq.Messaging
             if (steps.ContainsKey(registration.StepId) || physicalSteps.ContainsKey(registration.StepId) ||
                 TryFindOutgoing(registration.StepId, out _, out _))
                 throw new InvalidOperationException("A pipeline step already uses ID " + registration.StepId);
-            var behavior = registration.Factory == null ? CreateBehavior(registration.BehaviorType) : registration.Factory();
-            if (!registration.BehaviorType.IsInstanceOfType(behavior))
+            var behavior = registration.BuilderFactory != null
+                ? LazyBehaviors.For(registration.BehaviorType, builder => registration.BuilderFactory(builder))
+                : registration.Factory == null ? CreateBehavior(registration.BehaviorType) : registration.Factory();
+            if (registration.BuilderFactory == null && !registration.BehaviorType.IsInstanceOfType(behavior))
                 throw new InvalidOperationException("The factory must return a behavior assignable to " + registration.BehaviorType.FullName + ".");
             Register(registration.StepId, behavior, registration.Description);
             ordering.Add(registration.StepId, registration.Dependencies.ToArray());
@@ -140,6 +150,23 @@ namespace Bq.Messaging
 
         public void Register<T>(T behavior, string description) where T : IBehavior =>
             Register(TypeName(behavior?.GetType()), behavior, description);
+
+        public void Register<T>(Func<Bq.Messaging.ObjectBuilder.IBuilder, T> factoryMethod, string description) where T : IBehavior =>
+            Register(TypeName(typeof(T)), factoryMethod, description);
+
+        public void Register<T>(string stepId, Func<Bq.Messaging.ObjectBuilder.IBuilder, T> factoryMethod, string description) where T : IBehavior
+        {
+            if (factoryMethod == null) throw new ArgumentNullException(nameof(factoryMethod));
+            ValidateNewStepId(stepId);
+            Register(stepId, LazyBehaviors.For(typeof(T), builder => factoryMethod(builder)), description);
+        }
+
+        public void Replace<T>(string stepId, Func<Bq.Messaging.ObjectBuilder.IBuilder, T> factoryMethod, string description = null) where T : IBehavior
+        {
+            if (factoryMethod == null) throw new ArgumentNullException(nameof(factoryMethod));
+            RequireStep(stepId);
+            Replace(stepId, LazyBehaviors.For(typeof(T), builder => factoryMethod(builder)), description);
+        }
 
         public void Register<T>(Func<T> factoryMethod, string description) where T : IBehavior =>
             Register(TypeName(typeof(T)), factoryMethod, description);

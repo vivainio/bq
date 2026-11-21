@@ -8,14 +8,16 @@ namespace Bq.Messaging.Sagas
 {
     public class SagaCorrelationProperty
     {
-        public SagaCorrelationProperty(string name, Type type)
+        public static readonly SagaCorrelationProperty None = null;
+
+        public SagaCorrelationProperty(string name, object value)
         {
             Name = name ?? throw new ArgumentNullException(nameof(name));
-            Type = type ?? throw new ArgumentNullException(nameof(type));
+            Value = value ?? throw new ArgumentNullException(nameof(value));
         }
 
         public string Name { get; }
-        public Type Type { get; }
+        public object Value { get; }
     }
 
     public class CorrelationPropertyMetadata
@@ -34,33 +36,36 @@ namespace Bq.Messaging.Sagas
     {
         public SagaMessage(Type messageType, bool isAllowedToStartSaga)
         {
-            MessageType = messageType?.FullName ?? throw new ArgumentNullException(nameof(messageType));
+            MessageType = messageType ?? throw new ArgumentNullException(nameof(messageType));
+            MessageTypeName = messageType.FullName;
             IsAllowedToStartSaga = isAllowedToStartSaga;
         }
 
-        public string MessageType { get; }
+        public string MessageTypeName { get; }
+        public Type MessageType { get; }
         public bool IsAllowedToStartSaga { get; }
     }
 
     public class SagaFinderDefinition
     {
-        public SagaFinderDefinition(Type type, Type messageType, IDictionary<string, object> properties)
+        public SagaFinderDefinition(Type type, Type messageType, Dictionary<string, object> properties)
         {
             Type = type;
-            this.messageType = messageType;
+            MessageType = messageType;
+            MessageTypeName = messageType?.FullName;
             Properties = properties ?? new Dictionary<string, object>();
         }
 
         public Type Type { get; }
-        public string MessageType => messageType.FullName;
-        public IDictionary<string, object> Properties { get; }
-        readonly Type messageType;
+        public Type MessageType { get; }
+        public string MessageTypeName { get; }
+        public Dictionary<string, object> Properties { get; }
     }
 
     /// <summary>Marker for custom saga finders. Bq finds sagas by their single correlation key, so it does not call finders.</summary>
     public interface IFinder { }
 
-    public interface IFindSagas<TSagaData> where TSagaData : class, IContainSagaData
+    public class IFindSagas<TSagaData> where TSagaData : class, IContainSagaData
     {
         public interface Using<TMessage> : IFinder
         {
@@ -70,18 +75,16 @@ namespace Bq.Messaging.Sagas
 
     public class SagaIdGeneratorContext
     {
-        public SagaIdGeneratorContext(string correlationPropertyName, object correlationPropertyValue, SagaMetadata sagaMetadata, ContextBag context)
+        public SagaIdGeneratorContext(SagaCorrelationProperty correlationProperty, SagaMetadata sagaMetadata, ContextBag context)
         {
-            CorrelationProperty = new SagaCorrelationProperty(correlationPropertyName ?? "", correlationPropertyValue?.GetType() ?? typeof(object));
-            CorrelationPropertyValue = correlationPropertyValue;
+            CorrelationProperty = correlationProperty;
             SagaMetadata = sagaMetadata;
-            Context = context;
+            Extensions = context;
         }
 
         public SagaCorrelationProperty CorrelationProperty { get; }
-        public object CorrelationPropertyValue { get; }
         public SagaMetadata SagaMetadata { get; }
-        public ContextBag Context { get; }
+        public ContextBag Extensions { get; }
     }
 
     public interface ISagaIdGenerator
@@ -101,30 +104,45 @@ namespace Bq.Messaging.Sagas
 
     public class SagaMetadata
     {
-        SagaMetadata(string name, Type sagaType, string entityName, Type sagaEntityType, CorrelationPropertyMetadata correlation,
-            IReadOnlyList<SagaMessage> messages, IReadOnlyList<SagaFinderDefinition> finders)
+        public SagaMetadata(string name, Type sagaType, string entityName, Type sagaEntityType, CorrelationPropertyMetadata correlationProperty,
+            IReadOnlyCollection<SagaMessage> messages, IReadOnlyCollection<SagaFinderDefinition> finders)
         {
             Name = name;
             SagaType = sagaType;
             EntityName = entityName;
             SagaEntityType = sagaEntityType;
-            CorrelationProperty = correlation;
+            this.correlationProperty = correlationProperty;
             AssociatedMessages = messages;
             Finders = finders;
         }
+
+        readonly CorrelationPropertyMetadata correlationProperty;
 
         public string Name { get; }
         public string EntityName { get; }
         public Type SagaEntityType { get; }
         public Type SagaType { get; }
-        public CorrelationPropertyMetadata CorrelationProperty { get; }
-        public IReadOnlyList<SagaMessage> AssociatedMessages { get; }
-        public IReadOnlyList<SagaFinderDefinition> Finders { get; }
+        public IReadOnlyCollection<SagaMessage> AssociatedMessages { get; }
+        public IReadOnlyCollection<SagaFinderDefinition> Finders { get; }
 
-        public bool IsMessageAllowedToStartTheSaga(string messageType) =>
-            AssociatedMessages.Any(message => message.MessageType == messageType && message.IsAllowedToStartSaga);
+        public bool TryGetCorrelationProperty(out CorrelationPropertyMetadata property)
+        {
+            property = correlationProperty;
+            return property != null;
+        }
+
+        public bool TryGetFinder(string messageTypeName, out SagaFinderDefinition finder)
+        {
+            finder = Finders.FirstOrDefault(definition => definition.MessageTypeName == messageTypeName);
+            return finder != null;
+        }
+
+        public bool IsMessageAllowedToStartTheSaga(string messageTypeName) =>
+            AssociatedMessages.Any(message => message.MessageTypeName == messageTypeName && message.IsAllowedToStartSaga);
 
         public static bool IsSagaType(Type type) => SagaDataOf(type) != null && !type.IsAbstract;
+
+        public static SagaMetadata Create(Type sagaType, IEnumerable<Type> availableTypes, Conventions conventions) => Create(sagaType);
 
         public static SagaMetadata Create(Type sagaType)
         {
@@ -137,7 +155,7 @@ namespace Bq.Messaging.Sagas
                 var definition = contract.GetGenericTypeDefinition();
                 var message = contract.GetGenericArguments()[0];
                 if (definition == typeof(IAmStartedByMessages<>)) messages.Add(new SagaMessage(message, true));
-                else if (definition == typeof(IHandleMessages<>) && !messages.Any(m => m.MessageType == message.FullName))
+                else if (definition == typeof(IHandleMessages<>) && !messages.Any(m => m.MessageTypeName == message.FullName))
                     messages.Add(new SagaMessage(message, false));
                 else if (definition == typeof(IHandleTimeouts<>)) messages.Add(new SagaMessage(message, false));
             }
@@ -167,21 +185,48 @@ namespace Bq.Messaging.Sagas
     {
         readonly List<SagaMetadata> metadata = new List<SagaMetadata>();
 
-        public SagaMetadataCollection() { }
+        public void Initialize(IEnumerable<Type> availableTypes) => Initialize(availableTypes, null);
 
-        public SagaMetadataCollection(IEnumerable<Type> sagaTypes) => Initialize(sagaTypes);
-
-        public void Initialize(IEnumerable<Type> availableTypes) =>
+        public void Initialize(IEnumerable<Type> availableTypes, Conventions conventions) =>
             metadata.AddRange((availableTypes ?? throw new ArgumentNullException(nameof(availableTypes))).Where(SagaMetadata.IsSagaType).Select(SagaMetadata.Create));
 
         public SagaMetadata Find(Type sagaType) => metadata.FirstOrDefault(m => m.SagaType == sagaType) ??
             throw new KeyNotFoundException("The saga is not registered: " + sagaType?.FullName);
 
-        public SagaMetadata FindByEntity(string entityName) => metadata.FirstOrDefault(m => m.EntityName == entityName) ??
-            throw new KeyNotFoundException("No saga uses the entity " + entityName);
+        public SagaMetadata FindByEntity(Type sagaEntityType) => metadata.FirstOrDefault(m => m.SagaEntityType == sagaEntityType) ??
+            throw new KeyNotFoundException("No saga uses the entity " + sagaEntityType?.FullName);
 
-        public System.Collections.Generic.IEnumerator<SagaMetadata> GetEnumerator() => metadata.GetEnumerator();
+        public IEnumerator<SagaMetadata> GetEnumerator() => metadata.GetEnumerator();
         System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    public class ActiveSagaInstance
+    {
+        readonly Func<DateTime> currentTime;
+
+        public ActiveSagaInstance(Saga saga, SagaMetadata metadata, Func<DateTime> currentTime)
+        {
+            Instance = saga;
+            Metadata = metadata;
+            this.currentTime = currentTime ?? throw new ArgumentNullException(nameof(currentTime));
+            Created = currentTime();
+            Modified = Created;
+        }
+
+        public Saga Instance { get; }
+        internal SagaMetadata Metadata { get; }
+        public bool IsNew { get; internal set; }
+        public bool NotFound { get; internal set; }
+        public string SagaId { get; internal set; }
+        public DateTime Created { get; }
+        public DateTime Modified { get; internal set; }
+
+        public void AttachNewEntity(IContainSagaData sagaData)
+        {
+            Instance.Entity = sagaData ?? throw new ArgumentNullException(nameof(sagaData));
+            IsNew = true;
+            Modified = currentTime();
+        }
     }
 
     /// <summary>Gives <see cref="ISagaPersister"/> callers access to Bq's saga store, keyed by saga type and correlation value.</summary>

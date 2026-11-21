@@ -1504,12 +1504,15 @@ namespace Bq.Messaging.Tests
             Bq.Messaging.Logging.LogManager.Use<Bq.Messaging.Logging.DefaultFactory>();
 
             var orderMetadata = Bq.Messaging.Sagas.SagaMetadata.Create(typeof(OrderWorkflow));
-            Assert(orderMetadata.SagaEntityType == typeof(OrderState) && orderMetadata.CorrelationProperty.Name == "OrderId" &&
+            Assert(orderMetadata.SagaEntityType == typeof(OrderState) && orderMetadata.TryGetCorrelationProperty(out var orderCorrelation) && orderCorrelation.Name == "OrderId" &&
                 orderMetadata.IsMessageAllowedToStartTheSaga(typeof(StartOrder).FullName) &&
                 !orderMetadata.IsMessageAllowedToStartTheSaga(typeof(ChangeOrder).FullName) &&
-                orderMetadata.AssociatedMessages.Any(message => message.MessageType == typeof(OrderTimeout).FullName),
+                orderMetadata.AssociatedMessages.Any(message => message.MessageTypeName == typeof(OrderTimeout).FullName),
                 "saga metadata reflects mappings and starting messages");
-            Assert(new Bq.Messaging.Sagas.SagaMetadataCollection(typeof(Program).Assembly.GetTypes()).Count() >= 2, "saga metadata collections find sagas in a type list");
+            var sagaCollection = new Bq.Messaging.Sagas.SagaMetadataCollection();
+            sagaCollection.Initialize(typeof(Program).Assembly.GetTypes());
+            Assert(sagaCollection.Count() >= 2 && sagaCollection.FindByEntity(typeof(OrderState)).SagaType == typeof(OrderWorkflow),
+                "saga metadata collections find sagas in a type list");
             var storageProbePath = Path.Combine(Path.GetTempPath(), "bq-storage-" + Guid.NewGuid().ToString("N") + ".db");
             var storageProvider = new SqlitePersistence(() => Sqlite(storageProbePath), "storage-probe");
             storageProvider.Initialize().GetAwaiter().GetResult();

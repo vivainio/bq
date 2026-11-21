@@ -195,7 +195,7 @@ namespace Bq.Messaging.Tests
             var outConfig = new EndpointConfiguration(outName, uri) { Persistence = outStore };
             outConfig.Route(typeof(SendProbe), outName);
             outConfig.Pipeline.Register("stage-send", new OutgoingSendMarker(), "Mark sends");
-            outConfig.Pipeline.Register("stage-publish", new OutgoingPublishMarker(), "Mark publishes");
+            outConfig.Pipeline.Register("stage-publish", builder => new OutgoingPublishMarker(), "Mark publishes");
             outConfig.Pipeline.Register("stage-physical", new OutgoingBodyRewriter(), "Rewrite bodies");
             var sendSeen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var publishSeen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);

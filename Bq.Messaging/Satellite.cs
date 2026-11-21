@@ -11,7 +11,7 @@ namespace Bq.Messaging.Transport
 {
     public class PushRuntimeSettings
     {
-        public static readonly PushRuntimeSettings Default = new PushRuntimeSettings();
+        public static PushRuntimeSettings Default { get; } = new PushRuntimeSettings();
 
         public PushRuntimeSettings() : this(1) { }
 
