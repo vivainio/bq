@@ -137,6 +137,22 @@ namespace Bq.Messaging.Tests
         public WireEncryptedString Secret { get; set; }
     }
 
+    public enum JsonKind { First, Second }
+
+    public class JsonLine { public string Sku { get; set; } public int Quantity { get; set; } }
+
+    public class JsonProbe
+    {
+        public string Text { get; set; }
+        public int Count { get; set; }
+        public Guid Id { get; set; }
+        public DateTimeOffset At { get; set; }
+        public JsonKind Kind { get; set; }
+        public byte[] Blob { get; set; }
+        public System.Collections.Generic.List<JsonLine> Lines { get; set; }
+        public WireEncryptedString Secret { get; set; }
+    }
+
     public class OrderedMessage { public string Text { get; set; } }
     public sealed class OrderedHandlerA : IHandleMessages<OrderedMessage>
     {
@@ -557,6 +573,84 @@ namespace Bq.Messaging.Tests
                 await endpoint.Send(new SecretMessage { Label = "s", Secret = new WireEncryptedString { Value = "launch codes" } });
                 Assert(await Within(secretSeen.Task) == "launch codes:k1", "the handler reads the decrypted value");
                 Assert(!wireText.Contains("launch codes") && wireText.Contains("EncryptedBase64Value"), "only the encrypted value goes on the wire");
+            }
+
+            // JSON on the wire, read by an endpoint that also accepts it next to its own MessagePack.
+            var jsonKey = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
+            var jsonReceiverName = "bq.test.parity.json.receiver." + Guid.NewGuid().ToString("N");
+            var jsonSenderName = "bq.test.parity.json.sender." + Guid.NewGuid().ToString("N");
+            var jsonPlainName = "bq.test.parity.json.plain." + Guid.NewGuid().ToString("N");
+            SqlitePersistence JsonStore(string endpointName)
+            {
+                var jsonPath = Path.Combine(Path.GetTempPath(), endpointName + ".db");
+                var store = new SqlitePersistence(() => Sqlite(jsonPath), endpointName);
+                store.Initialize().GetAwaiter().GetResult();
+                return store;
+            }
+            var jsonReceiver = new EndpointConfiguration(jsonReceiverName, uri) { Persistence = JsonStore(jsonReceiverName) };
+            jsonReceiver.AddDeserializer<Bq.Messaging.Serialization.JsonSerializer>();
+            jsonReceiver.RijndaelEncryptionService("k1", jsonKey);
+            var jsonSeen = new System.Collections.Concurrent.ConcurrentQueue<JsonProbe>();
+            var jsonTwo = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            jsonReceiver.Handle(() => new Handler<JsonProbe>((message, context) =>
+            {
+                jsonSeen.Enqueue(message);
+                if (jsonSeen.Count == 2) jsonTwo.TrySetResult(true);
+                return Task.CompletedTask;
+            }));
+            var jsonSender = new EndpointConfiguration(jsonSenderName, uri) { Persistence = JsonStore(jsonSenderName) };
+            jsonSender.UseSerialization<Bq.Messaging.Serialization.JsonSerializer>();
+            jsonSender.RijndaelEncryptionService("k1", jsonKey);
+            jsonSender.Route(typeof(JsonProbe), jsonReceiverName);
+            var jsonWire = string.Empty;
+            jsonSender.MutateOutgoing = transport => { if (transport.TypeName == typeof(JsonProbe).FullName) jsonWire = System.Text.Encoding.UTF8.GetString(transport.Body); };
+            var jsonPlainSender = new EndpointConfiguration(jsonSenderName + ".plain", uri) { Persistence = JsonStore(jsonSenderName + ".plain") };
+            jsonPlainSender.RijndaelEncryptionService("k1", jsonKey);
+            jsonPlainSender.Route(typeof(JsonProbe), jsonReceiverName);
+            var jsonId = Guid.NewGuid();
+            var jsonAt = new DateTimeOffset(2026, 11, 21, 12, 30, 0, TimeSpan.FromHours(2));
+            JsonProbe MakeProbe(string text) => new JsonProbe
+            {
+                Text = text, Count = 7, Id = jsonId, At = jsonAt, Kind = JsonKind.Second, Blob = new byte[] { 1, 2, 3 },
+                Lines = new System.Collections.Generic.List<JsonLine> { new JsonLine { Sku = "A-1", Quantity = 2 } },
+                Secret = new WireEncryptedString { Value = "json secret" }
+            };
+            using (var receiver = RabbitEndpoint.Start(jsonReceiver))
+            using (var sender = RabbitEndpoint.Start(jsonSender))
+            using (var plainSender = RabbitEndpoint.Start(jsonPlainSender))
+            {
+                await sender.Send(MakeProbe("json"));
+                await plainSender.Send(MakeProbe("msgpack"));
+                await Within(jsonTwo.Task);
+                Assert(jsonWire.StartsWith("{") && jsonWire.Contains("\"Text\":\"json\"") && !jsonWire.Contains("json secret"),
+                    "the sender writes readable JSON and still hides encrypted strings");
+                foreach (var probe in jsonSeen)
+                    Assert(probe.Count == 7 && probe.Id == jsonId && probe.At == jsonAt && probe.Kind == JsonKind.Second && probe.Blob.SequenceEqual(new byte[] { 1, 2, 3 }) &&
+                        probe.Lines.Single().Sku == "A-1" && probe.Lines.Single().Quantity == 2 && probe.Secret.Value == "json secret",
+                        "a message round trips through " + probe.Text + " with every property type");
+            }
+
+            // An endpoint that does not accept JSON rejects it without retrying.
+            var plainReceiver = new EndpointConfiguration(jsonPlainName, uri) { Persistence = JsonStore(jsonPlainName) };
+            plainReceiver.Handle(() => new Handler<JsonProbe>((message, context) => Task.CompletedTask));
+            var plainJsonSender = new EndpointConfiguration(jsonPlainName + ".sender", uri) { Persistence = JsonStore(jsonPlainName + ".sender") };
+            plainJsonSender.UseSerialization<Bq.Messaging.Serialization.JsonSerializer>();
+            plainJsonSender.Route(typeof(JsonProbe), jsonPlainName);
+            using (var receiver = RabbitEndpoint.Start(plainReceiver))
+            using (var sender = RabbitEndpoint.Start(plainJsonSender))
+            using (var adminConnection = new RabbitMQ.Client.ConnectionFactory { Uri = uri }.CreateConnection())
+            using (var adminChannel = adminConnection.CreateModel())
+            {
+                var rejectedProbe = MakeProbe("rejected");
+                rejectedProbe.Secret = null;
+                await sender.Send(rejectedProbe);
+                RabbitMQ.Client.BasicGetResult rejectedCopy = null;
+                await WaitFor(() =>
+                {
+                    rejectedCopy = adminChannel.BasicGet(jsonPlainName + ".error", true);
+                    return Task.FromResult(rejectedCopy != null);
+                }, "a message in a format the endpoint does not read moves to the error queue");
+                Assert(rejectedCopy.BasicProperties.ContentType == "application/json", "the rejected message keeps its content type for replay");
             }
 
             // Large values travel through the file share data bus, and only their keys go on the wire.

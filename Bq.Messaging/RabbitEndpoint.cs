@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Bq.Messaging.DataBus;
+using Bq.Messaging.Serialization;
 using Bq.Messaging.DeliveryConstraints;
 using System.Threading;
 using System.Security.Cryptography;
@@ -50,6 +51,8 @@ namespace Bq.Messaging
         readonly Bq.Messaging.ObjectBuilder.Common.IContainer rootContainer;
         readonly Bq.Messaging.ObjectBuilder.IBuilder rootBuilder;
         readonly bool ownsContainer;
+        readonly IWireFormat wireFormat;
+        readonly Dictionary<string, IWireFormat> readableFormats;
         readonly IDataBus dataBus;
         readonly IDataBusSerializer dataBusSerializer;
         readonly IEncryptionService encryptionService;
@@ -111,6 +114,8 @@ namespace Bq.Messaging
             mutateOutgoing = configuration.MutateOutgoing;
             outgoingMessageMutators = configuration.OutgoingMessageMutators.ToArray();
             outgoingTransportMutators = configuration.OutgoingTransportMutators.ToArray();
+            wireFormat = configuration.WireFormat;
+            readableFormats = configuration.ReadableFormats();
             var errorEvents = configuration.Notifications.Errors;
             var recovery = configuration.Recoverability;
             errorQueueNotification = recovery.ErrorQueueNotification == null && !errorEvents.HasErrorQueueHandlers ? null
@@ -645,13 +650,13 @@ namespace Bq.Messaging
             SyncFromStage();
             var serializationType = InterfaceMessage.SerializationType(contract);
             var value = InterfaceMessage.SerializationValue(contract, serializationType, outgoingMessage);
-            var serialized = MessagePackSerializer.Serialize(serializationType, value, SerializerOptions);
+            var serialized = wireFormat.Serialize(serializationType, value);
             var encryptedProperties = MessagePropertyEncryption.Properties(contract, propertyEncryption);
             if (encryptedProperties.Length > 0)
             {
-                var copy = MessagePackSerializer.Deserialize(serializationType, serialized, SerializerOptions);
+                var copy = wireFormat.Deserialize(serializationType, serialized);
                 propertyEncryption.Transform(copy, encryptedProperties, encrypt: true);
-                serialized = MessagePackSerializer.Serialize(serializationType, copy, SerializerOptions);
+                serialized = wireFormat.Serialize(serializationType, copy);
             }
             stage.CurrentBody = serialized;
             RefreshStage();
@@ -713,7 +718,7 @@ namespace Bq.Messaging
                 props.CorrelationId = message.CorrelationId;
                 props.ReplyTo = message.ReplyTo;
                 props.Type = message.Type;
-                props.ContentType = ContentType;
+                props.ContentType = wireFormat.ContentType;
                 if (message.Headers != null && message.Headers.Count > 0)
                 {
                     var headers = new Dictionary<string, object>(message.Headers);
@@ -879,9 +884,9 @@ namespace Bq.Messaging
             catch (Exception) { throw new InvalidOperationException("Message body decryption failed."); }
         }
 
-        object DeserializeMessage(Type contract, ReadOnlyMemory<byte> body)
+        object DeserializeMessage(Type contract, ReadOnlyMemory<byte> body, IWireFormat format)
         {
-            var message = MessagePackSerializer.Deserialize(InterfaceMessage.SerializationType(contract), body, SerializerOptions);
+            var message = format.Deserialize(InterfaceMessage.SerializationType(contract), body);
             if (propertyEncryption != null && message != null)
                 propertyEncryption.Transform(message, MessagePropertyEncryption.Properties(contract, propertyEncryption), encrypt: false);
             return message;
@@ -962,11 +967,12 @@ namespace Bq.Messaging
                                             attemptBody = transport.Body ?? throw new InvalidOperationException("An incoming transport message requires a body.");
                                             attemptContext.ReplaceHeaders(headers);
                                         }
-                                        if (props.ContentType != ContentType || attemptTypeName == null ||
+                                        IWireFormat incomingFormat = null;
+                                        if (props.ContentType == null || !readableFormats.TryGetValue(props.ContentType, out incomingFormat) || attemptTypeName == null ||
                                             !receivers.TryGetValue(attemptTypeName, out var registration))
                                         { unrecoverable = true; throw new InvalidOperationException("Unknown message type or content type."); }
                                         object message;
-                                        try { message = DeserializeMessage(registration.Type, attemptBody); }
+                                        try { message = DeserializeMessage(registration.Type, attemptBody, incomingFormat); }
                                         catch (Exception ex) { unrecoverable = true; throw new MessageDeserializationException("Message deserialization failed.", ex); }
                                         // Fetching can fail for transient storage reasons, so a failure here goes through recoverability.
                                         await FetchDataBusProperties(message, registration.Type).ConfigureAwait(false);

@@ -26,6 +26,7 @@ namespace Bq.Messaging
     public class WireEncryptedString
     {
         [IgnoreMember]
+        [System.Text.Json.Serialization.JsonIgnore]
         public string Value { get; set; }
 
         public EncryptedValue EncryptedValue { get; set; }

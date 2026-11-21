@@ -38,6 +38,7 @@ namespace Bq.Messaging
 
         /// <summary>Never serialized into the message: the data bus carries it.</summary>
         [IgnoreMember]
+        [System.Text.Json.Serialization.JsonIgnore]
         public T Value { get; private set; }
 
         public object GetValue() => Value;
