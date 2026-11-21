@@ -270,6 +270,7 @@ namespace Bq.Messaging.Tests
             RunPipelineRegistrationCases();
             RunSoftCheckCases();
             await RunSagaApiCases();
+            RunSagaSpiDetailCases();
             await RunInMemoryCases();
             return cases.ToList();
         }
@@ -1094,6 +1095,36 @@ namespace Bq.Messaging.Tests
                     mappings => mappings.Timeout<EdgeUowMessage>()), "a timeout the saga does not handle");
                 Throws<ArgumentNullException>(() => configuration.RegisterSaga<EdgeSaga, EdgeSagaWithOriginator>(() => new EdgeSaga(),
                     mappings => mappings.Start<EdgeSagaStart>(null)), "a missing correlation function");
+            });
+        }
+
+        static void RunSagaSpiDetailCases()
+        {
+            Case("saga SPI value types expose what they were built with", () =>
+            {
+                var property = new Bq.Messaging.Sagas.SagaCorrelationProperty("OrderId", 7);
+                That(property.Name == "OrderId" && (int)property.Value == 7 && Bq.Messaging.Sagas.SagaCorrelationProperty.None == null, "correlation property");
+                var metadataProperty = new Bq.Messaging.Sagas.CorrelationPropertyMetadata("OrderId", typeof(int));
+                That(metadataProperty.Name == "OrderId" && metadataProperty.Type == typeof(int), "correlation property metadata");
+                var message = new Bq.Messaging.Sagas.SagaMessage(typeof(EdgeSagaStart), true);
+                That(message.MessageType == typeof(EdgeSagaStart) && message.MessageTypeName == typeof(EdgeSagaStart).FullName && message.IsAllowedToStartSaga, "saga message");
+                var finder = new Bq.Messaging.Sagas.SagaFinderDefinition(typeof(EdgeSaga), typeof(EdgeSagaStart), new Dictionary<string, object> { ["p"] = 1 });
+                That(finder.Type == typeof(EdgeSaga) && finder.MessageType == typeof(EdgeSagaStart) && finder.MessageTypeName == typeof(EdgeSagaStart).FullName && finder.Properties["p"].Equals(1), "finder definition");
+                var metadata = new Bq.Messaging.Sagas.SagaMetadata("name", typeof(EdgeSaga), "entity", typeof(EdgeSagaWithOriginator), null,
+                    new[] { message }, new[] { finder });
+                That(metadata.Name == "name" && metadata.EntityName == "entity" && metadata.Finders.Count == 1 && !metadata.TryGetCorrelationProperty(out _), "metadata without a correlation property");
+                That(metadata.TryGetFinder(typeof(EdgeSagaStart).FullName, out var found) && found == finder, "a registered finder is found by message name");
+                That(Bq.Messaging.Sagas.SagaMetadata.Create(typeof(EdgeSaga), new[] { typeof(EdgeSaga) }, null).SagaType == typeof(EdgeSaga), "creating metadata with a type list");
+                var generatorContext = new Bq.Messaging.Sagas.SagaIdGeneratorContext(property, metadata, new ContextBag());
+                That(generatorContext.CorrelationProperty == property && generatorContext.SagaMetadata == metadata && generatorContext.Extensions != null, "id generator context");
+                var tick = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                var clock = tick;
+                var active = new Bq.Messaging.Sagas.ActiveSagaInstance(new EdgeSaga(), metadata, () => clock);
+                clock = tick.AddMinutes(5);
+                var entity = new EdgeSagaWithOriginator();
+                active.AttachNewEntity(entity);
+                That(active.IsNew && active.Created == tick && active.Modified == clock && active.Instance.Entity == entity && !active.NotFound && active.SagaId == null, "an attached entity marks the instance new");
+                Throws<ArgumentNullException>(() => active.AttachNewEntity(null), "a null entity");
             });
         }
 
