@@ -22,6 +22,7 @@ namespace Bq.Messaging.Tests
 
     public class LocalMessage { public string Text { get; set; } }
     public class Response { public string Text { get; set; } }
+    public struct ValueMessage { public int Number { get; set; } }
     public class Failed { public string Text { get; set; } }
     public class RecoverCommand { public string Text { get; set; } }
     public class FatalFailureException : Exception { public FatalFailureException(string text) : base(text) { } }
@@ -218,6 +219,9 @@ namespace Bq.Messaging.Tests
             Assert(invalidEncryptionRejected, "endpoint startup validates known encryption selections before connecting");
 
             IMessageCreator creator = new MessageCreator();
+            Assert(creator.CreateInstance<ValueMessage>().Number == 0 &&
+                creator.CreateInstance(typeof(ValueMessage)) is ValueMessage,
+                "message creator constructs default value-type messages");
             using (var creatorContainer = new WindsorContainer())
             {
                 _ = new WindsorMessaging(creatorContainer);
@@ -340,6 +344,9 @@ namespace Bq.Messaging.Tests
                 "pipeline send shortcuts preserve destination and initializer");
             await IPipelineContextExtensions.Publish<IPilotEvent>(pipeline);
             Assert(pipelineRecorder.Messages[2].Message is IPilotEvent, "parameterless publish constructs an interface event");
+            await pipeline.Publish<ValueMessage>();
+            Assert(pipelineRecorder.Messages[3].Message is ValueMessage value && value.Number == 0,
+                "parameterless publish constructs a default struct event");
             IMessageHandlerContext initializerContext = initialized;
             await initializerContext.Send<Command>(command => command.Text = "created", send);
             Action<IPilotEvent> publishMessage = message => message.Text = "published";

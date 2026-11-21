@@ -203,7 +203,8 @@ namespace Bq.Messaging
             session.Send(messageConstructor, new SendOptions());
 
         public static Task Publish<T>(this IMessageSession session) =>
-            session.Publish<T>(_ => { }, new PublishOptions());
+            typeof(T).IsValueType ? session.Publish(MessageCreator.Default.CreateInstance(typeof(T)), new PublishOptions())
+                : session.Publish<T>(_ => { }, new PublishOptions());
 
         public static Task Publish<T>(this IMessageSession session, Action<T> messageConstructor) =>
             session.Publish(messageConstructor, new PublishOptions());
@@ -244,7 +245,8 @@ namespace Bq.Messaging
             context.Publish(message, new PublishOptions());
 
         public static Task Publish<T>(this IPipelineContext context) =>
-            context.Publish<T>(_ => { }, new PublishOptions());
+            typeof(T).IsValueType ? context.Publish(MessageCreator.Default.CreateInstance(typeof(T)), new PublishOptions())
+                : context.Publish<T>(_ => { }, new PublishOptions());
 
         public static Task Send<T>(this IPipelineContext context, Action<T> initialize) =>
             context.Send(initialize, new SendOptions());

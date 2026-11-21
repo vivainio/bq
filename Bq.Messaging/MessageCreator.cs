@@ -66,6 +66,8 @@ namespace Bq.Messaging
         public T CreateInstance<T>(Action<T> action)
         {
             if (action == null) throw new ArgumentNullException(nameof(action));
+            if (typeof(T).IsValueType)
+                throw new ArgumentException("Use a constructed value for a value-type message. An Action would receive a copy.", nameof(action));
             var message = CreateInstance<T>();
             action(message);
             return message;

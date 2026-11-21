@@ -25,8 +25,10 @@ namespace Bq.Messaging
         public static object Create(Type contract)
         {
             var type = SerializationType(contract);
+            if (type.IsValueType && Nullable.GetUnderlyingType(type) == null)
+                return Activator.CreateInstance(type);
             if (!type.IsClass || type.IsAbstract || type.GetConstructor(Type.EmptyTypes) == null)
-                throw new ArgumentException("Message initializers require an interface or a class with a public parameterless constructor.", nameof(contract));
+                throw new ArgumentException("Message creation requires a supported interface, a non-nullable value type, or a class with a public parameterless constructor.", nameof(contract));
             return Activator.CreateInstance(type);
         }
 
