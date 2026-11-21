@@ -19,11 +19,11 @@ The messaging CI job installs the [published rabbit-sim wheel](https://pypi.org/
 ```sh
 python3 -m venv .venv-rabbit-sim
 source .venv-rabbit-sim/bin/activate
-python -m pip install rabbit-sim==0.1.0
+python -m pip install rabbit-sim==0.2.0
 bash scripts/test-rabbit-sim.sh
 ```
 
-The runner uses `--data` to persist broker state to a temporary SQLite file. It stops the simulator, waits for the endpoint to observe the outage, and restarts it with that same file before running the Windsor sample.
+The runner starts the simulator with `--rabbitmq 4` when it supports it, so a test that RabbitMQ 4 would reject, such as declaring a transient queue that is not exclusive, fails here too. The runner uses `--data` to persist broker state to a temporary SQLite file. It stops the simulator, waits for the endpoint to observe the outage, and restarts it with that same file before running the Windsor sample.
 
 ## TUnit runner
 

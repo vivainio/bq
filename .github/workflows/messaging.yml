@@ -40,7 +40,7 @@ permissions:
 jobs:
   simulator:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
@@ -53,11 +53,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y mono-devel libmono-sqlite4.0-cil
-      # The tests use the simulator's clock endpoint and an ack redelivery fix that the 0.1.0 wheel does not have yet.
+      # 0.2.0 adds the clock endpoint, an ack redelivery fix and --rabbitmq 4, which the tests use.
       - name: Install rabbit-sim
         run: |
-          cargo install --git https://github.com/vivainio/rabbit-sim --rev 8c35b3d --locked
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          python -m pip install --only-binary=:all: rabbit-sim==0.2.0
       - name: Run messaging integration tests
         run: bash scripts/test-rabbit-sim.sh
 
