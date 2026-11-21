@@ -175,6 +175,7 @@ namespace Bq.Messaging.Tests
             RunSerializationCases();
             await RunSagaSpiCases();
             await RunSpiTypeCases();
+            RunConfigurationCases();
             await RunInMemoryCases();
             Console.WriteLine("Edge case tests: " + passed + " passed, " + failures.Count + " failed.");
             if (failures.Count > 0) throw new Exception("Failed edge cases:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
@@ -694,6 +695,67 @@ namespace Bq.Messaging.Tests
                 That(recorded.Count == 15, "recorded " + recorded.Count);
                 That(recorded[0].Destination == "d" && recorded[2].Operation == Bq.Testing.MessageOperation.SendLocal && recorded[6].Operation == Bq.Testing.MessageOperation.Publish, "operations are recorded");
                 That(recorded[9].Operation == Bq.Testing.MessageOperation.Reply && recorded[9].Destination == "back", "replies go to the reply address");
+            });
+        }
+
+        static EndpointConfiguration Configured(string unicast, string audit = null, string logging = null)
+        {
+            var sections = new Dictionary<string, string> { ["UnicastBusConfig"] = unicast };
+            if (audit != null) sections["AuditConfig"] = audit;
+            if (logging != null) sections["Logging"] = logging;
+            var configuration = Configuration("edge-config-" + Guid.NewGuid().ToString("N"));
+            configuration.CustomConfigurationSource(new XmlConfigurationSource(sections));
+            configuration.ApplyConfigurationSections();
+            return configuration;
+        }
+
+        static void RunConfigurationCases()
+        {
+            Case("message endpoint mappings by Assembly and Namespace", () =>
+            {
+                var byNamespace = Configured(@"<UnicastBusConfig><MessageEndpointMappings><add Assembly=""Bq.Messaging.Tests"" Namespace=""Bq.Messaging.Tests"" Endpoint=""ns.endpoint"" /></MessageEndpointMappings></UnicastBusConfig>");
+                That(byNamespace.Routes[typeof(SendProbe)] == "ns.endpoint", "a namespace mapping routes message types in it");
+                var otherNamespace = Configured(@"<UnicastBusConfig><MessageEndpointMappings><add Assembly=""Bq.Messaging.Tests"" Namespace=""Some.Other.Namespace"" Endpoint=""x"" /></MessageEndpointMappings></UnicastBusConfig>");
+                That(otherNamespace.Routes.Count == 0, "a different namespace routes nothing");
+                var byType = Configured(@"<UnicastBusConfig><MessageEndpointMappings><add Assembly=""Bq.Messaging.Tests"" Type=""Bq.Messaging.Tests.SendProbe"" Endpoint=""type.endpoint"" /></MessageEndpointMappings></UnicastBusConfig>");
+                That(byType.Routes[typeof(SendProbe)] == "type.endpoint" && byType.Routes.Count == 1, "an Assembly and Type pair routes one type");
+                var specificWins = Configured(@"<UnicastBusConfig><MessageEndpointMappings>
+<add Messages=""Bq.Messaging.Tests"" Endpoint=""assembly.endpoint"" />
+<add Messages=""Bq.Messaging.Tests.SendProbe, Bq.Messaging.Tests"" Endpoint=""specific.endpoint"" /></MessageEndpointMappings></UnicastBusConfig>");
+                That(specificWins.Routes[typeof(SendProbe)] == "specific.endpoint", "a type mapping beats an assembly mapping");
+            });
+            Case("invalid message endpoint mappings fail at configuration", () =>
+            {
+                Throws<System.Configuration.ConfigurationErrorsException>(() => Configured(@"<UnicastBusConfig><MessageEndpointMappings><add Messages=""Bq.Messaging.Tests"" Namespace=""x"" Endpoint=""e"" /></MessageEndpointMappings></UnicastBusConfig>"), "Messages with Namespace");
+                Throws<System.Configuration.ConfigurationErrorsException>(() => Configured(@"<UnicastBusConfig><MessageEndpointMappings><add Messages=""Bq.Messaging.Tests"" /></MessageEndpointMappings></UnicastBusConfig>"), "a missing endpoint");
+                Throws<System.Configuration.ConfigurationErrorsException>(() => Configured(@"<UnicastBusConfig><MessageEndpointMappings><add Type=""No.Such.Type"" Endpoint=""e"" /></MessageEndpointMappings></UnicastBusConfig>"), "an unknown type");
+                Throws<System.Configuration.ConfigurationErrorsException>(() => Configured(@"<UnicastBusConfig><MessageEndpointMappings><add Assembly=""No.Such.Assembly"" Endpoint=""e"" /></MessageEndpointMappings></UnicastBusConfig>"), "an unknown assembly");
+                Throws<System.Configuration.ConfigurationErrorsException>(() => Configured(@"<UnicastBusConfig><MessageEndpointMappings><add Namespace=""x"" Endpoint=""e"" /></MessageEndpointMappings></UnicastBusConfig>"), "a mapping naming nothing");
+            });
+            Case("the Logging section sets the default level and AuditConfig sets an expiry", () =>
+            {
+                try
+                {
+                    var configuration = Configured(@"<UnicastBusConfig />", @"<AuditConfig QueueName=""audit"" OverrideTimeToBeReceived=""00:05:00"" />", @"<Logging Threshold=""Error"" />");
+                    That(Bq.Messaging.Logging.LogManager.GetLogger("probe").IsErrorEnabled && !Bq.Messaging.Logging.LogManager.GetLogger("probe").IsWarnEnabled, "the threshold applies");
+                    That(configuration.AuditQueue == "audit" && configuration.AuditExpiration == "300000", "the audit expiry is in milliseconds: " + configuration.AuditExpiration);
+                    var noExpiry = Configured(@"<UnicastBusConfig />", @"<AuditConfig QueueName=""audit"" />");
+                    That(noExpiry.AuditQueue == "audit" && noExpiry.AuditExpiration == null, "no override means no expiry");
+                    var badLevel = Configured(@"<UnicastBusConfig />", null, @"<Logging Threshold=""Nonsense"" />");
+                    That(badLevel != null, "an unknown threshold is ignored");
+                }
+                finally { Bq.Messaging.Logging.LogManager.Use<Bq.Messaging.Logging.DefaultFactory>(); }
+            });
+            Case("ForwardReceivedMessagesTo applies unless code set it", () =>
+            {
+                var fromFile = Configured(@"<UnicastBusConfig ForwardReceivedMessagesTo=""fwd"" />");
+                That(fromFile.ForwardReceivedMessagesAddress == "fwd", "the file value applies");
+                var coded = Configuration("edge-fwd");
+                coded.ForwardReceivedMessagesAddress = "coded";
+                coded.CustomConfigurationSource(new XmlConfigurationSource(new Dictionary<string, string> { ["UnicastBusConfig"] = @"<UnicastBusConfig ForwardReceivedMessagesTo=""fwd"" />" }));
+                coded.ApplyConfigurationSections();
+                That(coded.ForwardReceivedMessagesAddress == "coded", "code wins");
+                Throws<ArgumentNullException>(() => Configuration("edge-null").CustomConfigurationSource(null), "a null source");
             });
         }
 
