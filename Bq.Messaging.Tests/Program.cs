@@ -1308,6 +1308,15 @@ namespace Bq.Messaging.Tests
         }
         static async Task InstanceRoutingTests(Uri uri)
         {
+            // Bq reports delivery failures through Trace, which has no listener by default. Show them if this test misbehaves.
+            var traceListener = new System.Diagnostics.TextWriterTraceListener(Console.Out);
+            System.Diagnostics.Trace.Listeners.Add(traceListener);
+            try { await InstanceRoutingTestsCore(uri); }
+            finally { System.Diagnostics.Trace.Listeners.Remove(traceListener); }
+        }
+
+        static async Task InstanceRoutingTestsCore(Uri uri)
+        {
             var name = "bq.test.instances." + Guid.NewGuid().ToString("N");
             var path = Path.Combine(Path.GetTempPath(), name + ".db");
             var store = new SqlitePersistence(() => Sqlite(path), name);
@@ -1368,8 +1377,24 @@ namespace Bq.Messaging.Tests
                 var failing = new SendOptions();
                 failing.RouteToSpecificInstance("b");
                 await first.Send(new Command { Text = "retry-me" }, failing);
-                await WaitFor(() => Task.FromResult(seen.ContainsKey("retry-me")),
-                    "an instance-routed message that failed is retried through the shared queue; calls=" + Volatile.Read(ref retryCalls));
+                try
+                {
+                    await WaitFor(() => Task.FromResult(seen.ContainsKey("retry-me")),
+                        "an instance-routed message that failed is retried through the shared queue");
+                }
+                catch (Exception)
+                {
+                    string queues;
+                    using (var probeConnection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    using (var probeChannel = probeConnection.CreateModel())
+                    {
+                        var shared = probeChannel.QueueDeclarePassive(name);
+                        var instance = probeChannel.QueueDeclarePassive(name + "-b");
+                        queues = "shared messages=" + shared.MessageCount + " consumers=" + shared.ConsumerCount +
+                            "; instance-b messages=" + instance.MessageCount + " consumers=" + instance.ConsumerCount;
+                    }
+                    throw new Exception("retry-me was not handled; calls=" + Volatile.Read(ref retryCalls) + "; " + queues);
+                }
                 Assert(Volatile.Read(ref retryCalls) == 2, "the failed delivery ran twice: once on the instance queue and once after the delayed retry");
             }
             Console.WriteLine("Instance routing tests passed.");
