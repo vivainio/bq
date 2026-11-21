@@ -145,13 +145,9 @@ namespace Bq.Messaging.Tests
 
     static class EdgeBrokerTests
     {
-        static readonly List<string> failures = new List<string>();
-        static int passed;
+        static readonly List<(string Name, Func<Task> Body)> cases = new List<(string, Func<Task>)>();
         static void That(bool v, string m) { if (!v) throw new Exception(m); }
-        static async Task Case(string name, Func<Task> body)
-        {
-            try { await body(); passed++; } catch (Exception ex) { failures.Add(name + ": " + ex.Message); }
-        }
+        static Task Case(string name, Func<Task> body) { cases.Add((name, body)); return Task.CompletedTask; }
         static async Task<T> Within<T>(Task<T> task)
         {
             if (await Task.WhenAny(task, Task.Delay(15000)) != task) throw new Exception("Timed out waiting for the result.");
@@ -169,8 +165,9 @@ namespace Bq.Messaging.Tests
             return r;
         }
 
-        public static async Task Run(Uri uri)
+        public static async Task<IReadOnlyList<(string Name, Func<Task> Body)>> Collect(Uri uri)
         {
+            cases.Clear();
             await Case("units of work end in reverse order and see the failure", async () =>
             {
                 EdgeUnit.Log.Clear(); EdgeUnit.FailEnd = false;
@@ -435,7 +432,25 @@ namespace Bq.Messaging.Tests
                 });
             }
 
-            Console.WriteLine("Edge broker tests: " + passed + " passed, " + failures.Count + " failed.");
+            return cases.ToList();
+        }
+
+        public static async Task RunOne(Uri uri, string name)
+        {
+            var found = (await Collect(uri)).Single(c => c.Name == name);
+            await found.Body();
+        }
+
+        public static async Task Run(Uri uri)
+        {
+            var failures = new List<string>();
+            var all = await Collect(uri);
+            foreach (var (name, body) in all)
+            {
+                try { await body(); }
+                catch (Exception ex) { failures.Add(name + ": " + ex.Message); }
+            }
+            Console.WriteLine("Edge broker tests: " + (all.Count - failures.Count) + " passed, " + failures.Count + " failed.");
             if (failures.Count > 0) throw new Exception("Failed edge broker cases:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
         }
     }

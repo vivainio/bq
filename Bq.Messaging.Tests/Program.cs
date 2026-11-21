@@ -226,6 +226,7 @@ namespace Bq.Messaging.Tests
     }
     partial class Program
     {
+#if !TUNIT
         static async Task Main()
         {
             var options = MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
@@ -258,6 +259,7 @@ namespace Bq.Messaging.Tests
             var outageDirectory = Environment.GetEnvironmentVariable("BQ_BROKER_OUTAGE_DIR");
             if (!string.IsNullOrEmpty(outageDirectory)) await BrokerOutageTest(new Uri(uri), outageDirectory);
         }
+#endif
         static async Task TestingSupportTests()
         {
             var mutatorHeaders = new System.Collections.Generic.Dictionary<string, string>();

@@ -15,7 +15,7 @@ namespace Bq.Messaging.Tests
             var connectionString = Environment.GetEnvironmentVariable("BQ_ORACLE_CONNECTION_STRING");
             if (string.IsNullOrEmpty(connectionString)) return;
 
-            var assembly = Assembly.LoadFrom(Environment.GetEnvironmentVariable("BQ_ORACLE_DRIVER_ASSEMBLY"));
+            var assembly = System.Reflection.Assembly.LoadFrom(Environment.GetEnvironmentVariable("BQ_ORACLE_DRIVER_ASSEMBLY"));
             var connectionType = assembly.GetType(Environment.GetEnvironmentVariable("BQ_ORACLE_CONNECTION_TYPE"), throwOnError: true);
             DbConnection Connect()
             {

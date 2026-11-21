@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- TUnit runner for the tests in Bq.Messaging.Tests. It compiles the same sources, so each registered case reports on its own. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Bq.Messaging.Tests</RootNamespace>
+    <AssemblyName>Bq.Messaging.Tests</AssemblyName>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <DefineConstants>$(DefineConstants);TUNIT</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Bq.Messaging.Tests/*.cs" Exclude="../Bq.Messaging.Tests/obj/**" LinkBase="Shared" />
+    <ProjectReference Include="../Bq.Messaging/Bq.Messaging.csproj" />
+    <ProjectReference Include="../Bq.Testing/Bq.Testing.csproj" />
+    <ProjectReference Include="../Bq.Extensions.CastleWindsor/Bq.Extensions.CastleWindsor.csproj" />
+    <ProjectReference Include="../Bq.Persistence.Oracle/Bq.Persistence.Oracle.csproj" />
+    <ProjectReference Include="../Bq.Persistence.Sqlite/Bq.Persistence.Sqlite.csproj" />
+    <Reference Include="System.Transactions" />
+    <Reference Include="System.Net.Http" />
+    <PackageReference Include="TUnit" Version="*" />
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 dotnet build Bq.Messaging.Tests/Bq.Messaging.Tests.csproj
 dotnet build Bq.Reference.Windsor/Bq.Reference.Windsor.csproj
+dotnet build Bq.Messaging.Tests.TUnit/Bq.Messaging.Tests.TUnit.csproj
 
 test_dir=$(mktemp -d)
 broker_pid=""
@@ -88,5 +89,7 @@ touch "$test_dir/restarted"
 
 wait "$test_pid"
 test_pid=""
+# The TUnit runner reports each registered case on its own. It reuses the running broker.
+TESTINGPLATFORM_TELEMETRY_OPTOUT=1 mono Bq.Messaging.Tests.TUnit/bin/Debug/net472/Bq.Messaging.Tests.exe
 BQ_SAMPLE_DB="$test_dir/windsor.db" \
     mono Bq.Reference.Windsor/bin/Debug/net472/Bq.Reference.Windsor.exe

@@ -166,20 +166,11 @@ namespace Bq.Messaging.Tests
 
     static class EdgeCaseTests
     {
-        static readonly List<string> failures = new List<string>();
-        static int passed;
+        static readonly List<(string Name, Func<Task> Body)> cases = new List<(string, Func<Task>)>();
 
-        static void Case(string name, Action body)
-        {
-            try { body(); passed++; }
-            catch (Exception ex) { failures.Add(name + ": " + ex.Message); }
-        }
+        static void Case(string name, Action body) => cases.Add((name, () => { body(); return Task.CompletedTask; }));
 
-        static async Task CaseAsync(string name, Func<Task> body)
-        {
-            try { await body(); passed++; }
-            catch (Exception ex) { failures.Add(name + ": " + ex.Message); }
-        }
+        static Task CaseAsync(string name, Func<Task> body) { cases.Add((name, body)); return Task.CompletedTask; }
 
         static void That(bool value, string message) { if (!value) throw new Exception(message); }
 
@@ -196,8 +187,9 @@ namespace Bq.Messaging.Tests
         static Bq.Messaging.Settings.SettingsHolder SettingsOf(EndpointConfiguration configuration) =>
             Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(configuration);
 
-        public static async Task Run()
+        public static async Task<IReadOnlyList<(string Name, Func<Task> Body)>> Collect()
         {
+            cases.Clear();
             RunFeatureCases();
             RunPipelineCases();
             RunLoggingCases();
@@ -208,7 +200,25 @@ namespace Bq.Messaging.Tests
             RunConfigurationCases();
             await RunContainerAndPersistenceCases();
             await RunInMemoryCases();
-            Console.WriteLine("Edge case tests: " + passed + " passed, " + failures.Count + " failed.");
+            return cases.ToList();
+        }
+
+        public static async Task RunOne(string name)
+        {
+            var found = (await Collect()).Single(c => c.Name == name);
+            await found.Body();
+        }
+
+        public static async Task Run()
+        {
+            var failures = new List<string>();
+            var all = await Collect();
+            foreach (var (name, body) in all)
+            {
+                try { await body(); }
+                catch (Exception ex) { failures.Add(name + ": " + ex.Message); }
+            }
+            Console.WriteLine("Edge case tests: " + (all.Count - failures.Count) + " passed, " + failures.Count + " failed.");
             if (failures.Count > 0) throw new Exception("Failed edge cases:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
         }
 
