@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using Bq.Persistence.Sqlite;
 using Bq.Messaging;
+using Bq.Messaging.Features;
 using Bq.Testing;
 using MessagePack;
 using MessagePack.Resolvers;
@@ -93,6 +94,45 @@ namespace Bq.Messaging.Tests
     }
     public class ScannedCommand { public string Text { get; set; } }
     public sealed class ScannedDependency { public string Value => "injected"; }
+    public sealed class ScannedFeature : Feature
+    {
+        public static readonly TaskCompletionSource<bool> Started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        public static readonly TaskCompletionSource<bool> Stopped = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ScannedFeature() { EnableByDefault(); }
+        protected override void Setup(FeatureConfigurationContext context)
+        {
+            context.Container.ConfigureComponent<ScannedDependency>(DependencyLifecycle.SingleInstance);
+            context.RegisterStartupTask(() => new ScannedStartup());
+        }
+    }
+    public sealed class ScannedStartup : FeatureStartupTask
+    {
+        protected override Task OnStart(IMessageSession session) { ScannedFeature.Started.TrySetResult(true); return Task.CompletedTask; }
+        protected override Task OnStop(IMessageSession session) { ScannedFeature.Stopped.TrySetResult(true); return Task.CompletedTask; }
+    }
+    public sealed class DependentFeature : Feature
+    {
+        public static int Order;
+        public static int SetupOrder;
+        public DependentFeature() { DependsOn<BaseFeature>(); }
+        protected override void Setup(FeatureConfigurationContext context) { SetupOrder = ++Order; }
+    }
+    public sealed class BaseFeature : Feature
+    {
+        public static int SetupOrder;
+        public BaseFeature() { Defaults(settings => settings.SetDefault("base-default", "yes")); }
+        protected override void Setup(FeatureConfigurationContext context) { SetupOrder = ++DependentFeature.Order; }
+    }
+    public sealed class OrphanFeature : Feature
+    {
+        public static bool SetupRan;
+        public OrphanFeature() { DependsOn<DisabledFeature>(); }
+        protected override void Setup(FeatureConfigurationContext context) { SetupRan = true; }
+    }
+    public sealed class DisabledFeature : Feature
+    {
+        protected override void Setup(FeatureConfigurationContext context) { }
+    }
     public sealed class ScannedHandler : IHandleMessages<ScannedCommand>
     {
         public static readonly TaskCompletionSource<string> Seen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1261,7 +1301,6 @@ namespace Bq.Messaging.Tests
             await store.Initialize();
             var config = new EndpointConfiguration(name, uri) { Persistence = store };
             config.Route(typeof(ScannedCommand), name);
-            config.RegisterComponents(components => components.ConfigureComponent<ScannedDependency>(DependencyLifecycle.SingleInstance));
             // The test assembly holds many unrelated handlers and sagas; scan only the one under test.
             config.AssemblyScanner().ExcludeTypes(typeof(Program).Assembly.GetTypes()
                 .Where(type => type != typeof(ScannedHandler) && !type.IsAbstract &&
@@ -1271,9 +1310,12 @@ namespace Bq.Messaging.Tests
             config.AssemblyScanner().ScanFileSystemAssemblies = false;
             using (var endpoint = await Endpoint.Start(config))
             {
+                Assert(await Within(ScannedFeature.Started.Task), "feature startup tasks run when the endpoint starts");
                 await endpoint.Send(new ScannedCommand { Text = "scanned" });
                 Assert(await Within(ScannedHandler.Seen.Task) == "scanned:injected",
                     "scanned handlers are resolved from the container with their dependencies");
+                await endpoint.Stop();
+                Assert(await Within(ScannedFeature.Stopped.Task), "feature startup tasks stop with the endpoint");
             }
             Console.WriteLine("Assembly scanning tests passed.");
         }
@@ -1322,6 +1364,17 @@ namespace Bq.Messaging.Tests
             Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(configuration).Set("probe", other);
             Assert(Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(configuration).Get<ContainerBuilder_Probe>("probe") == other, "settings round-trip");
             container.Dispose();
+
+            var featureConfiguration = new EndpointConfiguration("feature-test", new Uri("amqp://localhost/"));
+            featureConfiguration.EnableFeature<DependentFeature>();
+            featureConfiguration.EnableFeature<BaseFeature>();
+            featureConfiguration.EnableFeature<OrphanFeature>();
+            featureConfiguration.DisableFeature<DisabledFeature>();
+            featureConfiguration.ActivateFeatures();
+            var featureSettings = Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(featureConfiguration);
+            Assert(BaseFeature.SetupOrder > 0 && BaseFeature.SetupOrder < DependentFeature.SetupOrder, "features set up after their dependencies");
+            Assert(!OrphanFeature.SetupRan && !featureSettings.IsFeatureActive<OrphanFeature>(), "features with disabled dependencies are deactivated");
+            Assert(featureSettings.IsFeatureActive<BaseFeature>() && featureSettings.Get<string>("base-default") == "yes", "feature defaults apply");
 
             using (var windsor = new WindsorContainer())
             {

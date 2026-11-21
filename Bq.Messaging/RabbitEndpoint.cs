@@ -190,6 +190,7 @@ namespace Bq.Messaging
         public static RabbitEndpoint Start(EndpointConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            configuration.ActivateFeatures();
             if (string.IsNullOrWhiteSpace(configuration.EventsExchange) ||
                 string.IsNullOrWhiteSpace(configuration.ErrorExchange) ||
                 configuration.EventsExchange == configuration.ErrorExchange)
@@ -217,7 +218,14 @@ namespace Bq.Messaging
                 throw new ArgumentOutOfRangeException(nameof(configuration.CriticalErrorThreshold));
             if (configuration.MaxConcurrency == 0) throw new ArgumentOutOfRangeException(nameof(configuration.MaxConcurrency));
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));
-            return new RabbitEndpoint(configuration);
+            var endpoint = new RabbitEndpoint(configuration);
+            try { configuration.StartFeatureTasks(endpoint.rootBuilder, endpoint).GetAwaiter().GetResult(); }
+            catch
+            {
+                endpoint.Dispose();
+                throw;
+            }
+            return endpoint;
         }
         // Create inside each DI/request/handler scope rather than caching the result.
         public IUniformSession CreateUniformSession()
@@ -1032,6 +1040,7 @@ namespace Bq.Messaging
                 await WaitFor(drained.Task, cancellationToken).ConfigureAwait(false);
                 stopping.Cancel();
                 if (dispatcher != null) await WaitFor(dispatcher, cancellationToken).ConfigureAwait(false);
+                await configuration.StopFeatureTasks(this).ConfigureAwait(false);
                 Close(false);
             }
             catch

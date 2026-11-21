@@ -110,7 +110,7 @@ namespace Bq.Messaging
 
         Bq.Messaging.ObjectBuilder.Common.IContainer container;
         Type containerDefinition;
-        readonly List<Action<Bq.Messaging.ObjectBuilder.IConfigureComponents>> componentRegistrations =
+        internal readonly List<Action<Bq.Messaging.ObjectBuilder.IConfigureComponents>> componentRegistrations =
             new List<Action<Bq.Messaging.ObjectBuilder.IConfigureComponents>>();
 
         public void UseContainer(Bq.Messaging.ObjectBuilder.Common.IContainer existingContainer)

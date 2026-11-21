@@ -57,6 +57,11 @@ namespace Bq.Messaging
             var componentRegistrations = new List<Type>();
             foreach (var type in types)
             {
+                if (typeof(Bq.Messaging.Features.Feature).IsAssignableFrom(type))
+                {
+                    if (type.GetConstructor(Type.EmptyTypes) != null) RegisterFeatureType(type);
+                    continue;
+                }
                 var sagaData = SagaDataType(type);
                 if (sagaData != null)
                 {
