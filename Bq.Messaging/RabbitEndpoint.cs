@@ -254,6 +254,7 @@ namespace Bq.Messaging
         public static RabbitEndpoint Start(EndpointConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            configuration.ApplyConfigurationSections();
             configuration.ApplyTransportSettings();
             configuration.ApplyPersistenceSettings();
             configuration.RegisterScheduledTaskHandler();

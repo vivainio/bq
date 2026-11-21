@@ -173,6 +173,10 @@ namespace Bq.Messaging.Features
 
         public static string InstanceSpecificQueue(this ReadOnlySettings settings) => settings.GetOrDefault<string>("Bq.InstanceSpecificQueue");
 
+        /// <summary>A configuration section from a scanned provider, the custom configuration source or the application configuration file.</summary>
+        public static T GetConfigSection<T>(this ReadOnlySettings settings) where T : class, new() =>
+            settings.GetOrDefault<Func<Type, object>>("Bq.ConfigSections")?.Invoke(typeof(T)) as T;
+
         /// <summary>The types found by assembly scanning, available to features once scanning has run.</summary>
         public static IList<Type> GetAvailableTypes(this ReadOnlySettings settings) =>
             settings.GetOrDefault<IList<Type>>("Bq.AvailableTypes") ?? new List<Type>();

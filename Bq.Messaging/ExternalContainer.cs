@@ -33,6 +33,7 @@ namespace Bq.Messaging
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
             if (externalConfiguration == null) throw new ArgumentNullException(nameof(externalConfiguration));
             if (!configuration.IsSendOnly) configuration.ApplyAssemblyScanning();
+            configuration.ApplyConfigurationSections();
             configuration.ApplyTransportSettings();
             configuration.ApplyPersistenceSettings();
             configuration.ActivateFeatures();

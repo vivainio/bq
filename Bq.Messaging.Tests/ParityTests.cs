@@ -11,6 +11,7 @@ using Bq.Extensions.CastleWindsor;
 using Bq.Persistence.Sqlite;
 using Castle.Windsor;
 using Castle.MicroKernel.Registration;
+using RabbitMQ.Client;
 
 namespace Bq.Messaging.Tests
 {
@@ -76,6 +77,31 @@ namespace Bq.Messaging.Tests
     {
         public static int Customized;
         public void Customize(EndpointConfiguration configuration) => Interlocked.Increment(ref Customized);
+    }
+
+    sealed class XmlConfigurationSource : Bq.Messaging.Config.ConfigurationSource.IConfigurationSource
+    {
+        readonly System.Collections.Generic.Dictionary<string, string> sections;
+        public XmlConfigurationSource(System.Collections.Generic.Dictionary<string, string> sections) { this.sections = sections; }
+
+        public T GetConfiguration<T>() where T : class, new()
+        {
+            if (!sections.TryGetValue(typeof(T).Name, out var xml)) return null;
+            var section = new T();
+            using (var reader = System.Xml.XmlReader.Create(new StringReader(xml)))
+            {
+                reader.MoveToContent();
+                typeof(System.Configuration.ConfigurationSection).GetMethod("DeserializeSection",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(section, new object[] { reader });
+            }
+            return section;
+        }
+    }
+
+    sealed class ErrorQueueProvider : Bq.Messaging.Config.ConfigurationSource.IProvideConfiguration<Bq.Messaging.Config.MessageForwardingInCaseOfFaultConfig>
+    {
+        public Bq.Messaging.Config.MessageForwardingInCaseOfFaultConfig GetConfiguration() =>
+            new Bq.Messaging.Config.MessageForwardingInCaseOfFaultConfig { ErrorQueue = "from.provider" };
     }
 
     public class OrderedMessage { public string Text { get; set; } }
@@ -205,6 +231,41 @@ namespace Bq.Messaging.Tests
             using (var retry = memory.OpenSession().GetAwaiter().GetResult())
                 Assert(retry.TryClaimMessage("memory-probe", "m2").GetAwaiter().GetResult(), "an uncommitted session releases its claims");
             Assert(Bq.Messaging.Faults.FaultsHeaderKeys.FailedQ == "x-bq-failed-endpoint", "fault header keys exist");
+            var sections = new System.Collections.Generic.Dictionary<string, string>
+            {
+                ["UnicastBusConfig"] = @"<UnicastBusConfig ForwardReceivedMessagesTo=""forward.queue"">
+  <MessageEndpointMappings>
+    <add Messages=""Bq.Messaging.Tests"" Endpoint=""by.assembly"" />
+    <add Messages=""Bq.Messaging.Tests.WindsorCommand, Bq.Messaging.Tests"" Endpoint=""by.type"" />
+  </MessageEndpointMappings>
+</UnicastBusConfig>",
+                ["MessageForwardingInCaseOfFaultConfig"] = @"<MessageForwardingInCaseOfFaultConfig ErrorQueue=""from.file"" />",
+                ["AuditConfig"] = @"<AuditConfig QueueName=""audit.queue"" OverrideTimeToBeReceived=""00:10:00"" />"
+            };
+            var fromFile = new EndpointConfiguration("config-file", new Uri("amqp://localhost/"));
+            fromFile.CustomConfigurationSource(new XmlConfigurationSource(sections));
+            fromFile.ApplyConfigurationSections();
+            Assert(fromFile.Routes[typeof(WindsorCommand)] == "by.type" && fromFile.Routes[typeof(SendProbe)] == "by.assembly",
+                "UnicastBusConfig mappings route a named type and every message type of an assembly");
+            Assert(!fromFile.Routes.ContainsKey(typeof(OrderedMessage)), "assembly mappings route only message types, by convention");
+            Assert(fromFile.ForwardReceivedMessagesAddress == "forward.queue" && fromFile.Recoverability.ErrorQueue == "from.file" &&
+                fromFile.AuditQueue == "audit.queue" && fromFile.AuditExpiration != null, "forwarding, error queue and audit sections apply");
+            var coded = new EndpointConfiguration("config-coded", new Uri("amqp://localhost/"));
+            coded.Route(typeof(SendProbe), "by.code");
+            coded.Recoverability.ErrorQueue = "by.code.error";
+            coded.CustomConfigurationSource(new XmlConfigurationSource(sections));
+            coded.AddConfigurationProvider(typeof(Bq.Messaging.Config.MessageForwardingInCaseOfFaultConfig), new ErrorQueueProvider());
+            coded.ApplyConfigurationSections();
+            Assert(coded.Routes[typeof(SendProbe)] == "by.code" && coded.Recoverability.ErrorQueue == "by.code.error", "code configuration beats the file");
+            var provided = new EndpointConfiguration("config-provided", new Uri("amqp://localhost/"));
+            provided.CustomConfigurationSource(new XmlConfigurationSource(sections));
+            provided.AddConfigurationProvider(typeof(Bq.Messaging.Config.MessageForwardingInCaseOfFaultConfig), new ErrorQueueProvider());
+            provided.ApplyConfigurationSections();
+            Assert(provided.Recoverability.ErrorQueue == "from.provider", "a configuration provider beats the configuration source");
+            Assert(Bq.Messaging.Features.SettingsExtensions.GetConfigSection<Bq.Messaging.Config.AuditConfig>(
+                Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(fromFile)).QueueName == "audit.queue",
+                "features read sections through the settings");
+
             var outgoing = new Bq.Messaging.Transport.OutgoingMessage("id", new System.Collections.Generic.Dictionary<string, string>(), new byte[0]);
             Assert(outgoing.MessageId == "id", "the transport outgoing message type constructs");
 
@@ -214,8 +275,8 @@ namespace Bq.Messaging.Tests
             try { conventions.DefiningDataBusPropertiesAs(property => true); } catch (NotSupportedException) { refused = true; }
             Assert(refused, "DataBus conventions fail at configuration time");
             refused = false;
-            try { new EndpointConfiguration("conv-source", new Uri("amqp://localhost/")).CustomConfigurationSource(null); } catch (NotSupportedException) { refused = true; }
-            Assert(refused, "configuration sources fail at configuration time");
+            try { new EndpointConfiguration("conv-source", new Uri("amqp://localhost/")).CustomConfigurationSource(null); } catch (ArgumentNullException) { refused = true; }
+            Assert(refused, "a missing configuration source is rejected");
 
             // Scanner options: assembly exclusion, and nested directory scanning of a copy of an assembly.
             var excludedScan = new EndpointConfiguration("scan-exclude", new Uri("amqp://localhost/"));
@@ -412,6 +473,53 @@ namespace Bq.Messaging.Tests
             {
                 await endpoint.Send(new SendProbe { Text = "in-memory" });
                 Assert(await Within(memoryHandled.Task) == "in-memory", "an endpoint runs end to end on in-memory persistence");
+            }
+
+            // Pre-provisioned topology: Bq declares nothing and checks that the host created every exchange and queue.
+            var provisionedName = "bq.test.parity.provisioned." + Guid.NewGuid().ToString("N");
+            var provisionedPath = Path.Combine(Path.GetTempPath(), provisionedName + ".db");
+            var provisionedStore = new SqlitePersistence(() => Sqlite(provisionedPath), provisionedName);
+            await provisionedStore.Initialize();
+            EndpointConfiguration Provisioned()
+            {
+                var configuration = new EndpointConfiguration(provisionedName, uri) { Persistence = provisionedStore };
+                configuration.UsePreProvisionedTopology = true;
+                configuration.MakeInstanceUniquelyAddressable("p1");
+                configuration.Route(typeof(SendProbe), provisionedName);
+                return configuration;
+            }
+            var provisionedConfig = Provisioned();
+            var provisionedHandled = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            provisionedConfig.Handle(() => new Handler<SendProbe>((message, context) =>
+            {
+                provisionedHandled.TrySetResult(message.Text);
+                return Task.CompletedTask;
+            }));
+            var missing = false;
+            try { RabbitEndpoint.Start(Provisioned()).Dispose(); }
+            catch (Exception) { missing = true; }
+            Assert(missing, "starting against a broker that lacks the pre-provisioned topology fails");
+            using (var admin = new RabbitMQ.Client.ConnectionFactory { Uri = uri }.CreateConnection())
+            using (var adminChannel = admin.CreateModel())
+            {
+                adminChannel.ExchangeDeclare(provisionedConfig.EventsExchange, RabbitMQ.Client.ExchangeType.Topic, true);
+                adminChannel.ExchangeDeclare(provisionedConfig.ErrorExchange, RabbitMQ.Client.ExchangeType.Direct, true);
+                adminChannel.QueueDeclare(provisionedName + ".error", true, false, false);
+                adminChannel.QueueBind(provisionedName + ".error", provisionedConfig.ErrorExchange, provisionedName);
+                var queueArguments = new System.Collections.Generic.Dictionary<string, object>
+                {
+                    ["x-dead-letter-exchange"] = provisionedConfig.ErrorExchange,
+                    ["x-dead-letter-routing-key"] = provisionedName
+                };
+                adminChannel.QueueDeclare(provisionedName, true, false, false, queueArguments);
+                adminChannel.QueueDeclare(provisionedName + "-p1", true, false, false, queueArguments);
+            }
+            using (var endpoint = RabbitEndpoint.Start(provisionedConfig))
+            {
+                var toInstance = new SendOptions();
+                toInstance.RouteToThisInstance();
+                await endpoint.Send(new SendProbe { Text = "provisioned" }, toInstance);
+                Assert(await Within(provisionedHandled.Task) == "provisioned", "an endpoint runs on a pre-provisioned topology, including its instance queue");
             }
 
             // Aborting the receive operation rolls back and redelivers the message without a failure.

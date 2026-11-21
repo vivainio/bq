@@ -182,3 +182,9 @@ All instances of an endpoint compete on one shared queue. Call `config.MakeInsta
 ## Hosts that own the container
 
 `EndpointWithExternallyManagedContainer.Create(configuration, components)` scans, activates features and registers the endpoint's components with your `IConfigureComponents`. Call `Start(builder)` on the result with the builder you created from that container. Scanning also runs `INeedInitialization.Customize` and `IWantToRunBeforeConfigurationIsFinalized.Run` for types with a public parameterless constructor, before handlers are registered.
+
+## Configuration sections
+
+Bq reads the NServiceBus 6 style configuration sections from the application configuration file, so a host that still carries them keeps working. `UnicastBusConfig` maps messages to endpoints in `MessageEndpointMappings` (an `Messages` assembly name, a `Messages` type name with its assembly, or `Assembly`, `Type` and `Namespace` attributes) and sets `ForwardReceivedMessagesTo`. `MessageForwardingInCaseOfFaultConfig` sets the error queue, `AuditConfig` sets `QueueName` and `OverrideTimeToBeReceived`, and `Logging` sets the `DefaultFactory` threshold. Assembly mappings route only types that the message conventions accept. Settings made in code win over the file, and the sections apply when the endpoint starts.
+
+Use `config.CustomConfigurationSource(source)` to read sections from somewhere else, and scanned `IProvideConfiguration<T>` classes to supply one section in code. A provider wins over the source for its section. Features read sections with `settings.GetConfigSection<T>()`. `UnicastBusConfig.TimeoutManagerAddress`, `TimeToBeReceivedOnForwardedMessages` and the Rijndael and MSMQ sections are not used, because Bq has no timeout manager, applies no expiry to forwarded copies, and has no equivalent of the other two.

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using Bq.Messaging.Config.ConfigurationSource;
 using Bq.Messaging.ObjectBuilder;
 
 namespace Bq.Messaging
@@ -68,6 +69,9 @@ namespace Bq.Messaging
                     if (typeof(IWantToRunBeforeConfigurationIsFinalized).IsAssignableFrom(type))
                         ((IWantToRunBeforeConfigurationIsFinalized)Activator.CreateInstance(type)).Run(Settings);
                 }
+                if (type.GetConstructor(Type.EmptyTypes) != null)
+                    foreach (var contract in type.GetInterfaces().Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IProvideConfiguration<>)))
+                        AddConfigurationProvider(contract.GetGenericArguments()[0], Activator.CreateInstance(type));
                 if (typeof(Bq.Messaging.Features.Feature).IsAssignableFrom(type))
                 {
                     if (type.GetConstructor(Type.EmptyTypes) != null) RegisterFeatureType(type);

@@ -1369,7 +1369,7 @@ namespace Bq.Messaging.Tests
                 failing.RouteToSpecificInstance("b");
                 await first.Send(new Command { Text = "retry-me" }, failing);
                 await WaitFor(() => Task.FromResult(seen.ContainsKey("retry-me")),
-                    "an instance-routed message that failed is retried through the shared queue");
+                    "an instance-routed message that failed is retried through the shared queue; calls=" + Volatile.Read(ref retryCalls));
                 Assert(Volatile.Read(ref retryCalls) == 2, "the failed delivery ran twice: once on the instance queue and once after the delayed retry");
             }
             Console.WriteLine("Instance routing tests passed.");
