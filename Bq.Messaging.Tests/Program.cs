@@ -91,6 +91,21 @@ namespace Bq.Messaging.Tests
             return Task.CompletedTask;
         }
     }
+    public class ScannedCommand { public string Text { get; set; } }
+    public sealed class ScannedDependency { public string Value => "injected"; }
+    public sealed class ScannedHandler : IHandleMessages<ScannedCommand>
+    {
+        public static readonly TaskCompletionSource<string> Seen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        readonly ScannedDependency dependency;
+        public ScannedHandler(ScannedDependency dependency) { this.dependency = dependency; }
+        public Task Handle(ScannedCommand message, IMessageHandlerContext context)
+        {
+            Seen.TrySetResult(message.Text + ":" + dependency.Value);
+            return Task.CompletedTask;
+        }
+    }
+    
+    
     class Handler<T> : IHandleMessages<T>
     {
         readonly Func<T, IMessageHandlerContext, Task> action;
@@ -180,6 +195,7 @@ namespace Bq.Messaging.Tests
             await StalledDispatcherTest(new Uri(uri));
             await MigrationPipelineTests(new Uri(uri));
             await PhasedMigrationTests(new Uri(uri));
+            await ScannerTests(new Uri(uri));
             await OrderWorkflowEndToEndTest(new Uri(uri));
             await LifecycleTests.Run(new Uri(uri));
             await UniformSessionTests.Run(new Uri(uri), Sqlite);
@@ -1237,6 +1253,31 @@ namespace Bq.Messaging.Tests
             if (await Task.WhenAny(task, Task.Delay(10000)) != task) throw new Exception("Timed out waiting for delivery.");
             return await task;
         }
+        static async Task ScannerTests(Uri uri)
+        {
+            var name = "bq.test.scanner." + Guid.NewGuid().ToString("N");
+            var path = Path.Combine(Path.GetTempPath(), name + ".db");
+            var store = new SqlitePersistence(() => Sqlite(path), name);
+            await store.Initialize();
+            var config = new EndpointConfiguration(name, uri) { Persistence = store };
+            config.Route(typeof(ScannedCommand), name);
+            config.RegisterComponents(components => components.ConfigureComponent<ScannedDependency>(DependencyLifecycle.SingleInstance));
+            // The test assembly holds many unrelated handlers and sagas; scan only the one under test.
+            config.AssemblyScanner().ExcludeTypes(typeof(Program).Assembly.GetTypes()
+                .Where(type => type != typeof(ScannedHandler) && !type.IsAbstract &&
+                    (typeof(Saga).IsAssignableFrom(type) || type.GetInterfaces().Any(i =>
+                        i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IHandleMessages<>))))
+                .ToArray());
+            config.AssemblyScanner().ScanFileSystemAssemblies = false;
+            using (var endpoint = await Endpoint.Start(config))
+            {
+                await endpoint.Send(new ScannedCommand { Text = "scanned" });
+                Assert(await Within(ScannedHandler.Seen.Task) == "scanned:injected",
+                    "scanned handlers are resolved from the container with their dependencies");
+            }
+            Console.WriteLine("Assembly scanning tests passed.");
+        }
+
         public interface IContainerDependency { }
         public sealed class ContainerDependency : IContainerDependency, IDisposable
         {

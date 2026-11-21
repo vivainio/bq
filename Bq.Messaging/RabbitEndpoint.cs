@@ -55,6 +55,13 @@ namespace Bq.Messaging
         readonly object lifecycleLock = new object();
         readonly AsyncLocal<TransactionalSession> externalTransaction = new AsyncLocal<TransactionalSession>();
         readonly AsyncLocal<UniformScope> uniformScope = new AsyncLocal<UniformScope>();
+        static readonly AsyncLocal<HandlerContext> currentHandler = new AsyncLocal<HandlerContext>();
+
+        internal static Bq.Messaging.ObjectBuilder.IBuilder BuilderFor(IMessageHandlerContext context) =>
+            (context as HandlerContext ?? throw new InvalidOperationException("A Bq message handler context is required.")).Builder;
+
+        internal static Bq.Messaging.ObjectBuilder.IBuilder CurrentBuilder() =>
+            (currentHandler.Value ?? throw new InvalidOperationException("No message is being processed.")).Builder;
         readonly CancellationTokenSource forceStop = new CancellationTokenSource();
         readonly TaskCompletionSource<bool> drained = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         string consumerTag;
@@ -767,6 +774,8 @@ namespace Bq.Messaging
                                 var previous = uniformScope.Value;
                                 var scope = new UniformScope(context);
                                 uniformScope.Value = scope;
+                                var previousHandler = currentHandler.Value;
+                                currentHandler.Value = context;
                                 try
                                 {
                                     var attemptContext = context;
@@ -828,7 +837,7 @@ namespace Bq.Messaging
                                         ? physical(new IncomingPhysicalContext(attemptContext, physicalMessage), terminal)
                                         : terminal()).ConfigureAwait(false);
                                 }
-                                finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; context.DisposeBuilder(); }
+                                finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; currentHandler.Value = previousHandler; context.DisposeBuilder(); }
                             }
                             forceStop.Token.ThrowIfCancellationRequested();
                             session.Commit();

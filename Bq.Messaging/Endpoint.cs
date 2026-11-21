@@ -71,8 +71,13 @@ namespace Bq.Messaging
         public static Task<IStartableEndpoint> Create(EndpointConfiguration configuration) =>
             Task.FromResult<IStartableEndpoint>(new Startable(configuration ?? throw new ArgumentNullException(nameof(configuration))));
 
-        public static Task<IEndpointInstance> Start(EndpointConfiguration configuration) =>
-            Task.FromResult<IEndpointInstance>(RabbitEndpoint.Start(configuration));
+        public static Task<IEndpointInstance> Start(EndpointConfiguration configuration)
+        {
+            if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            // Like NServiceBus, the endpoint entry points discover handlers and sagas. RabbitEndpoint.Start stays explicit.
+            if (!configuration.IsSendOnly) configuration.ApplyAssemblyScanning();
+            return Task.FromResult<IEndpointInstance>(RabbitEndpoint.Start(configuration));
+        }
 
         sealed class Startable : IStartableEndpoint
         {

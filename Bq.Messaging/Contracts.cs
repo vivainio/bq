@@ -99,7 +99,7 @@ namespace Bq.Messaging
         Task PublishAt<T>(T message, DateTimeOffset dueAt);
     }
 
-    public sealed class EndpointConfiguration : Bq.Messaging.Configuration.AdvancedExtensibility.ExposeSettings
+    public sealed partial class EndpointConfiguration : Bq.Messaging.Configuration.AdvancedExtensibility.ExposeSettings
     {
         internal readonly Dictionary<Type, string> Routes = new Dictionary<Type, string>();
         internal readonly Dictionary<string, Registration> Handlers = new Dictionary<string, Registration>();
