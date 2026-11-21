@@ -22,8 +22,11 @@ namespace Bq.Testing
             var copy = new Dictionary<string, object>(headers);
             if (copy.TryGetValue(MessageOptions.WireIdHeader, out var id)) MessageId = (string)id;
             if (copy.TryGetValue(MessageOptions.ReplyAddressHeader, out var address)) ReplyToAddress = (string)address;
+            StartsNewConversation = copy.TryGetValue(ConversationRoutingExtensions.NewConversation, out var conversationId);
+            RequestedConversationId = (string)conversationId;
             copy.Remove(MessageOptions.WireIdHeader);
             copy.Remove(MessageOptions.ReplyAddressHeader);
+            copy.Remove(ConversationRoutingExtensions.NewConversation);
             Headers = new ReadOnlyDictionary<string, object>(copy);
         }
 
@@ -36,6 +39,8 @@ namespace Bq.Testing
         public string CorrelationId { get; internal set; }
         public string MessageId { get; }
         public string ReplyToAddress { get; }
+        public bool StartsNewConversation { get; }
+        public string RequestedConversationId { get; }
     }
 
     public sealed class TestableMessageHandlerContext : IMessageHandlerContext, IReplyWithOptions

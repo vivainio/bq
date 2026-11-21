@@ -26,6 +26,8 @@ namespace Bq.Messaging
             var copy = new Dictionary<string, object>(headers);
             if (MessageId != null) copy[WireIdHeader] = MessageId;
             if (ReplyAddress != null) copy[ReplyAddressHeader] = ReplyAddress;
+            if (this is SendOptions send && send.Extensions.TryGet<string>(ConversationRoutingExtensions.NewConversation, out var conversationId))
+                copy[ConversationRoutingExtensions.NewConversation] = conversationId;
             return copy;
         }
 
@@ -47,9 +49,11 @@ namespace Bq.Messaging
         internal IUniformSession Apply(IUniformSession session)
         {
             foreach (var header in Headers) session = session.WithHeader(header.Key, header.Value);
-            if (MessageId == null && ReplyAddress == null) return session;
+            if (MessageId == null && ReplyAddress == null &&
+                !(this is SendOptions send && send.Extensions.TryGet<string>(ConversationRoutingExtensions.NewConversation, out _)))
+                return session;
             if (session is IEnvelopeSession envelope) return envelope.WithEnvelope(this);
-            throw new NotSupportedException("This session does not support setting a message ID or reply address.");
+            throw new NotSupportedException("This session does not support custom message envelope options.");
         }
     }
 
@@ -102,6 +106,18 @@ namespace Bq.Messaging
     }
 
     public sealed class PublishOptions : MessageOptions { }
+
+    public static class ConversationRoutingExtensions
+    {
+        internal const string NewConversation = "x-bq-start-conversation";
+
+        public static void StartNewConversation(this SendOptions sendOptions, string conversationId = null)
+        {
+            if (sendOptions == null) throw new ArgumentNullException(nameof(sendOptions));
+            sendOptions.Extensions.Set(NewConversation, conversationId);
+        }
+    }
+
     public sealed class ReplyOptions : MessageOptions
     {
         internal string CorrelationId { get; set; }

@@ -468,6 +468,7 @@ namespace Bq.Messaging
             var scope = uniformScope.Value;
             var contract = ContractType(message);
             var causingContext = scope != null && Volatile.Read(ref scope.Active) != 0 ? scope.Context : null;
+            MessageHeaders.AttachCausation(copiedHeaders, causingContext);
             object outgoingMessage = message;
             foreach (var mutator in outgoingMessageMutators)
             {

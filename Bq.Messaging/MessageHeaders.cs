@@ -10,6 +10,29 @@ namespace Bq.Messaging
     {
         public const string TimeSent = "x-bq-time-sent";
         public const string Deferred = "x-bq-deferred";
+        public const string ConversationId = "Bq.ConversationId";
+        public const string PreviousConversationId = "Bq.PreviousConversationId";
+        public const string RelatedTo = "Bq.RelatedTo";
+
+        internal static void AttachCausation(IDictionary<string, object> headers, IMessageProcessingContext incoming)
+        {
+            var startNew = headers.TryGetValue(ConversationRoutingExtensions.NewConversation, out var requestedId);
+            headers.Remove(ConversationRoutingExtensions.NewConversation);
+            var inheritedId = incoming?.FindHeader(ConversationId);
+            if (incoming?.MessageId != null) headers[RelatedTo] = incoming.MessageId;
+            if ((startNew || inheritedId != null) && headers.ContainsKey(ConversationId))
+                throw new InvalidOperationException("Use StartNewConversation to set a new conversation ID without a conversation header override.");
+
+            if (startNew)
+            {
+                if (inheritedId != null) headers[PreviousConversationId] = inheritedId;
+                headers[ConversationId] = (string)requestedId ?? Guid.NewGuid().ToString();
+            }
+            else if (!headers.ContainsKey(ConversationId))
+            {
+                headers[ConversationId] = inheritedId ?? Guid.NewGuid().ToString();
+            }
+        }
 
         internal static IReadOnlyDictionary<string, string> AsText(IEnumerable<KeyValuePair<string, object>> headers) =>
             new ReadOnlyDictionary<string, string>(ToTextDictionary(headers));

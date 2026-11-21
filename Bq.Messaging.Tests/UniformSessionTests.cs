@@ -31,9 +31,12 @@ namespace Bq.Messaging.Tests
             config.EnableMessageEncryption(encryption);
             config.Recoverability.DelayedRetries = new TimeSpan[0];
             var processed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var newConversation = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var errorAttempted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             int received = 0;
             string parentCorrelation = null;
+            string parentConversation = null;
+            string parentMessageId = null;
             IUniformSession cachedFromHandler = null;
             IUniformSession cachedFromOutside = null;
             RabbitEndpoint endpoint = null;
@@ -44,6 +47,8 @@ namespace Bq.Messaging.Tests
                 return new Handler<UniformStart>(async (message, context) =>
                 {
                     parentCorrelation = context.CorrelationId;
+                    parentConversation = context.GetHeader(MessageHeaders.ConversationId);
+                    parentMessageId = context.MessageId;
                     cachedFromHandler = session;
                     bool rejected = false;
                     try { await cachedFromOutside.SendLocal(new UniformWork { Text = "leak" }); }
@@ -52,14 +57,29 @@ namespace Bq.Messaging.Tests
                     await Task.Yield();
                     Action<UniformWork> initialize = work => work.Text = "committed";
                     await session.Send(initialize);
+                    var options = new SendOptions();
+                    options.StartNewConversation("separate-workflow");
+                    options.DelayDeliveryWith(TimeSpan.Zero);
+                    await session.Send(new UniformWork { Text = "separate" }, options);
                     if (message.Fail) { errorAttempted.TrySetResult(true); throw new Exception("rollback"); }
                 });
             });
             config.Handle(() => new Handler<UniformWork>((message, context) =>
             {
-                Assert(message.Text == "committed", "session initializes the message before sending");
+                Assert(context.GetHeader(MessageHeaders.RelatedTo) == parentMessageId, "child records its causing message");
+                Assert(!context.Headers.ContainsKey("x-bq-start-conversation"), "send option stays off the wire");
                 Interlocked.Increment(ref received);
-                processed.TrySetResult(context.CorrelationId);
+                if (message.Text == "separate")
+                {
+                    Assert(context.GetHeader(MessageHeaders.PreviousConversationId) == parentConversation, "scheduled send records the previous conversation");
+                    newConversation.TrySetResult(context.GetHeader(MessageHeaders.ConversationId));
+                }
+                else
+                {
+                    Assert(message.Text == "committed", "session initializes the message before sending");
+                    Assert(context.GetHeader(MessageHeaders.ConversationId) == parentConversation, "child inherits the conversation");
+                    processed.TrySetResult(context.CorrelationId);
+                }
                 return Task.CompletedTask;
             }));
             try
@@ -70,6 +90,9 @@ namespace Bq.Messaging.Tests
                     cachedFromOutside = endpoint.CreateUniformSession();
                     await cachedFromOutside.SendLocalAt(new UniformStart(), DateTimeOffset.UtcNow);
                     await Within(processed.Task, "uniform SendLocal delivery");
+                    await Within(newConversation.Task, "scheduled delivery in a new conversation");
+                    Assert(Guid.TryParse(parentConversation, out _) && await newConversation.Task == "separate-workflow",
+                        "root sends generate an ID and a new conversation can supply its own");
                     Assert(await processed.Task == parentCorrelation, "uniform session preserves handler correlation");
                     bool rejected = false;
                     try { await cachedFromHandler.SendLocal(new UniformWork()); }
@@ -80,7 +103,7 @@ namespace Bq.Messaging.Tests
                     for (var i = 0; i < 120 && (await endpoint.ListErrors()).Count == 0; i++) await Task.Delay(100);
                     Assert((await endpoint.ListErrors()).Count == 1, "failed handler recorded");
                     await Task.Delay(1200);
-                    Assert(received == 1, "failed handler did not dispatch its local message");
+                    Assert(received == 2, "failed handler did not dispatch its local or scheduled messages");
                     Assert(encryption.Decrypted >= 3, "direct and transactional messages pass through body decryption");
                     using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
                     using (var channel = connection.CreateModel())

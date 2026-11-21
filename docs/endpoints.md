@@ -133,6 +133,8 @@ The object-based `IMessageSession` overloads resolve the contract from the concr
 
 Bq provides the string-valued `MessageHeaders` view and `ReplyToAddress`. Use `Headers` for raw AMQP values and `PersistenceSession` for the shared transaction. Use the typed `Extensions` bag to share state between an incoming behavior, handler, and before-commit callbacks. Each retry gets a fresh bag. `ForwardCurrentMessageTo` queues the original wire body, contract, headers, and message ID in the outbox for another queue.
 
+Messages sent from a handler inherit the incoming `MessageHeaders.ConversationId` and carry the incoming message ID in `MessageHeaders.RelatedTo`. Root messages get a generated conversation ID by default. Call `sendOptions.StartNewConversation()` to generate a new ID or pass an explicit ID. When a handler starts a new conversation, the outgoing message carries the inherited ID in `MessageHeaders.PreviousConversationId`.
+
 Use `ForwardReceivedMessagesTo` to forward successfully handled messages through the same outbox. Provision the destination queue for outbox delivery. `AuditProcessedMessagesTo(queue, timeToBeReceived)` writes a separate copy through the outbox. The optional TTL starts when RabbitMQ receives the copy. Both features skip internal saga timeouts. Bq’s `SynchronizedStorageSession` exposes the same connection and transaction as `PersistenceSession`. Use those ADO.NET objects for transaction-scoped application work.
 
 ## Message property encryption
