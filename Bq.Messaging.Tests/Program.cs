@@ -249,6 +249,7 @@ namespace Bq.Messaging.Tests
             await ScannerTests(new Uri(uri));
             await InstanceRoutingTests(new Uri(uri));
             await ParityIntegrationTests(new Uri(uri));
+            await OracleEndpointTests(new Uri(uri));
             await OrderWorkflowEndToEndTest(new Uri(uri));
             await LifecycleTests.Run(new Uri(uri));
             await UniformSessionTests.Run(new Uri(uri), Sqlite);

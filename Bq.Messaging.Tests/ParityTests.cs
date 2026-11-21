@@ -375,6 +375,56 @@ namespace Bq.Messaging.Tests
             Directory.Delete(scanRoot, true);
         }
 
+        // Runs a whole endpoint on a real Oracle database. It needs the same environment variables as the provider checks.
+        static async Task OracleEndpointTests(Uri uri)
+        {
+            var connectionString = Environment.GetEnvironmentVariable("BQ_ORACLE_CONNECTION_STRING");
+            if (string.IsNullOrEmpty(connectionString)) return;
+            var assembly = System.Reflection.Assembly.LoadFrom(Environment.GetEnvironmentVariable("BQ_ORACLE_DRIVER_ASSEMBLY"));
+            var connectionType = assembly.GetType(Environment.GetEnvironmentVariable("BQ_ORACLE_CONNECTION_TYPE"), throwOnError: true);
+            System.Data.Common.DbConnection Connect()
+            {
+                var connection = (System.Data.Common.DbConnection)Activator.CreateInstance(connectionType);
+                connection.ConnectionString = connectionString;
+                return connection;
+            }
+
+            var name = "bq-oracle-endpoint-" + Guid.NewGuid().ToString("N");
+            var configuration = new EndpointConfiguration(name, uri) { Persistence = new Bq.Persistence.Oracle.OraclePersistence(Connect, name), ImmediateRetries = 0 };
+            configuration.Recoverability.DelayedRetries = new[] { TimeSpan.FromMilliseconds(100) };
+            configuration.DispatchPollInterval = TimeSpan.FromMilliseconds(100);
+            configuration.Route(typeof(SendProbe), name);
+            configuration.Route(typeof(StartOrder), name);
+            configuration.Route(typeof(ChangeOrder), name);
+            var okSeen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var retriedSeen = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var attempts = 0;
+            configuration.Handle(() => new Handler<SendProbe>((message, context) =>
+            {
+                if (message.Text == "ok") okSeen.TrySetResult(true);
+                if (message.Text == "retry")
+                {
+                    var attempt = Interlocked.Increment(ref attempts);
+                    if (attempt == 1) throw new InvalidOperationException("fail the first delivery on Oracle");
+                    retriedSeen.TrySetResult(attempt);
+                }
+                return Task.CompletedTask;
+            }));
+            configuration.RegisterSaga<OrderWorkflow, OrderState>();
+            OrderWorkflow.TimeoutCalls = 0;
+            using (var endpoint = RabbitEndpoint.Start(configuration))
+            {
+                await endpoint.Send(new SendProbe { Text = "ok" });
+                Assert(await Within(okSeen.Task), "an endpoint handles a message on Oracle persistence");
+                await endpoint.Send(new SendProbe { Text = "retry" });
+                Assert(await Within(retriedSeen.Task) == 2, "a failed message recovers through the Oracle recovery table");
+                await endpoint.Send(new StartOrder { OrderId = "oracle-order", DelayMs = 300 });
+                await WaitFor(() => Task.FromResult(Volatile.Read(ref OrderWorkflow.TimeoutCalls) == 1), "a saga timeout fires from the Oracle timeout table");
+                await endpoint.Send(new ChangeOrder { OrderId = "oracle-order", Complete = true });
+            }
+            Console.WriteLine("Oracle endpoint tests passed.");
+        }
+
         static async Task ParityIntegrationTests(Uri uri)
         {
             ParityUnitTests();
