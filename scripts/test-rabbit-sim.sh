@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 dotnet build Bq.Messaging.Tests/Bq.Messaging.Tests.csproj
 dotnet build Bq.Reference.Windsor/Bq.Reference.Windsor.csproj
 dotnet build Bq.Messaging.Tests.TUnit/Bq.Messaging.Tests.TUnit.csproj
+dotnet build Bq.Reference.Net10/Bq.Reference.Net10.csproj
 
 test_dir=$(mktemp -d)
 broker_pid=""
@@ -93,3 +94,5 @@ test_pid=""
 TESTINGPLATFORM_TELEMETRY_OPTOUT=1 mono Bq.Messaging.Tests.TUnit/bin/Debug/net472/Bq.Messaging.Tests.exe
 BQ_SAMPLE_DB="$test_dir/windsor.db" \
     mono Bq.Reference.Windsor/bin/Debug/net472/Bq.Reference.Windsor.exe
+BQ_SAMPLE_DB="$test_dir/net10.db" \
+    dotnet Bq.Reference.Net10/bin/Debug/net10.0/Bq.Reference.Net10.dll

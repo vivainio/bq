@@ -75,10 +75,14 @@ namespace Bq.Reference.Windsor
     {
         static DbConnection Connection(string path)
         {
-            // Default to the Mono ADO.NET provider; another compatible SQLite ADO.NET
-            // connection type can be supplied without changing Bq's persistence provider.
-            var provider = Environment.GetEnvironmentVariable("BQ_SQLITE_CONNECTION_TYPE") ??
-                "Mono.Data.Sqlite.SqliteConnection, Mono.Data.Sqlite, Version=4.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756";
+            // .NET Framework builds default to the Mono ADO.NET provider and .NET builds to Microsoft.Data.Sqlite.
+            // Another compatible SQLite ADO.NET connection type can be supplied without changing Bq's persistence provider.
+#if NETFRAMEWORK
+            const string defaultProvider = "Mono.Data.Sqlite.SqliteConnection, Mono.Data.Sqlite, Version=4.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756";
+#else
+            const string defaultProvider = "Microsoft.Data.Sqlite.SqliteConnection, Microsoft.Data.Sqlite";
+#endif
+            var provider = Environment.GetEnvironmentVariable("BQ_SQLITE_CONNECTION_TYPE") ?? defaultProvider;
             var connection = (DbConnection)Activator.CreateInstance(Type.GetType(provider, true));
             connection.ConnectionString = "Data Source=" + path + ";Default Timeout=5";
             return connection;

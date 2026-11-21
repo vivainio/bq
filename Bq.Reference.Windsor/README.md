@@ -15,3 +15,7 @@ The broker defaults to `amqp://guest:guest@127.0.0.1:5672/`; set `BQ_RABBITMQ_UR
 The default SQLite ADO.NET connection is `Mono.Data.Sqlite.SqliteConnection`, resolved from Mono at runtime. For a different compatible provider, set `BQ_SQLITE_CONNECTION_TYPE` to its assembly-qualified connection type; its assembly and native dependencies must already be available. The sample connection string uses `Data Source` and `Default Timeout`; adjust `Connection` if a provider needs different options. SQLite is appropriate here as a local reference, not as a distributed database deployment.
 
 This adapter is sample application code, not automatic integration between Bq and Windsor. The application owns the container, registrations and endpoint lifetime. Bq's API and message format are independently implemented and are not binary or wire-compatible with NServiceBus.
+
+## Modern .NET
+
+`Bq.Reference.Net10` compiles the same `Program.cs` for net10.0, with `Microsoft.Data.Sqlite` as the default SQLite provider. Run it with `dotnet run --project Bq.Reference.Net10` and the same `BQ_RABBITMQ_URI` and `BQ_SAMPLE_DB` variables. `scripts/test-rabbit-sim.sh` runs both samples. Bq's libraries target .NET Standard 2.0, so one build serves both runtimes.

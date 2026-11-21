@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The Castle Windsor reference application on modern .NET. It compiles the net472 sample's source. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Bq.Reference.Windsor</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../Bq.Reference.Windsor/Program.cs" Link="Program.cs" />
+    <ProjectReference Include="../Bq.Messaging/Bq.Messaging.csproj" />
+    <ProjectReference Include="../Bq.Persistence.Sqlite/Bq.Persistence.Sqlite.csproj" />
+    <ProjectReference Include="../Bq.Extensions.CastleWindsor/Bq.Extensions.CastleWindsor.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+  </ItemGroup>
+</Project>
