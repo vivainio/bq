@@ -123,6 +123,7 @@ namespace Bq.Messaging.Tests
     }
 
     public sealed class EdgeCaseLogProbe { }
+    public sealed class EdgeFeatureHolder { }
 
     static class EdgeCaseTests
     {
@@ -161,6 +162,7 @@ namespace Bq.Messaging.Tests
             RunFeatureCases();
             RunPipelineCases();
             RunLoggingCases();
+            await RunSettingsAndTestingCases();
             await RunInMemoryCases();
             Console.WriteLine("Edge case tests: " + passed + " passed, " + failures.Count + " failed.");
             if (failures.Count > 0) throw new Exception("Failed edge cases:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
@@ -361,6 +363,119 @@ namespace Bq.Messaging.Tests
                     Bq.Messaging.Logging.LogManager.Use<Bq.Messaging.Logging.DefaultFactory>();
                     if (System.IO.Directory.Exists(directory)) System.IO.Directory.Delete(directory, true);
                 }
+            });
+        }
+
+        static async Task RunSettingsAndTestingCases()
+        {
+            Case("settings holder get, default, override and clear semantics", () =>
+            {
+                var settings = new Bq.Messaging.Settings.SettingsHolder();
+                Throws<ArgumentException>(() => settings.Set("", 1), "an empty key");
+                Throws<System.Collections.Generic.KeyNotFoundException>(() => settings.Get("missing"), "a missing key");
+                settings.SetDefault("k", "default");
+                That(settings.Get<string>("k") == "default" && !settings.HasExplicitValue("k") && settings.HasSetting("k"), "a default is visible but not explicit");
+                settings.Set("k", "override");
+                That(settings.Get<string>("k") == "override" && settings.HasExplicitValue("k"), "an override wins");
+                That(settings.TryGet<string>("k", out var text) && text == "override", "TryGet finds a typed value");
+                That(!settings.TryGet<int>("k", out var number) && number == 0, "TryGet fails for the wrong type");
+                That(!settings.TryGet<string>("none", out _), "TryGet fails for a missing key");
+                That(settings.GetOrDefault<string>("none") == null && settings.GetOrDefault<string>("k") == "override", "GetOrDefault");
+                settings.Set<EdgeCaseLogProbe>(new EdgeCaseLogProbe());
+                That(settings.HasSetting<EdgeCaseLogProbe>() && settings.HasExplicitValue<EdgeCaseLogProbe>() && settings.Get<EdgeCaseLogProbe>() != null, "typed keys");
+                That(settings.TryGet<EdgeCaseLogProbe>(out _) && settings.GetOrDefault<EdgeCaseLogProbe>() != null, "typed TryGet and GetOrDefault");
+                settings.SetDefault<EdgeUowMessage>(new EdgeUowMessage { Text = "d" });
+                That(settings.GetOrCreate<EdgeUowMessage>().Text == "d", "GetOrCreate returns an existing default");
+                That(settings.GetOrCreate<EdgeFeatureHolder>() == settings.GetOrCreate<EdgeFeatureHolder>(), "GetOrCreate creates once");
+                settings.Clear();
+                That(!settings.HasSetting("k"), "Clear removes everything");
+            });
+            await CaseAsync("testable handler context records every send, publish, reply and forward", async () =>
+            {
+                var context = new Bq.Testing.TestableMessageHandlerContext { MessageId = "in-1", ReplyToAddress = "reply.queue", CorrelationId = "corr" };
+                var message = new EdgeUowMessage { Text = "m" };
+                await context.Send(message);
+                await context.Send<EdgeUowMessage>(m => m.Text = "init");
+                await context.Send("dest", message);
+                await context.SendLocal(message);
+                await context.Publish(message);
+                await context.Publish<EdgeUowMessage>(m => m.Text = "pub");
+                await context.SendAt(message, DateTimeOffset.UtcNow.AddHours(1));
+                await context.SendAt("dest", message, DateTimeOffset.UtcNow.AddHours(1));
+                await context.SendLocalAt(message, DateTimeOffset.UtcNow.AddHours(1));
+                await context.PublishAt(message, DateTimeOffset.UtcNow.AddHours(1));
+                var send = new SendOptions(); send.SetHeader("h", "v"); send.SetDestination("opt.dest"); send.SetMessageId("custom-id");
+                await context.Send(message, send);
+                await context.Send((object)message, new SendOptions());
+                await context.Send<EdgeUowMessage>(m => m.Text = "x", new SendOptions());
+                await context.Send("string-body", new SendOptions());
+                var delayed = new SendOptions(); delayed.DelayDeliveryWith(TimeSpan.FromMinutes(5)); delayed.RouteToThisEndpoint();
+                await context.Send(message, delayed);
+                var immediate = new SendOptions(); immediate.RequireImmediateDispatch(); immediate.RouteToThisEndpoint();
+                await context.Send(message, immediate);
+                await context.Publish(message, new PublishOptions());
+                await context.Publish((object)message, new PublishOptions());
+                await context.Publish<EdgeUowMessage>(m => m.Text = "p", new PublishOptions());
+                var publishImmediately = new PublishOptions(); publishImmediately.RequireImmediateDispatch();
+                await context.Publish(message, publishImmediately);
+                await context.Reply(message);
+                await context.Reply<EdgeUowMessage>(m => m.Text = "r");
+                var reply = new ReplyOptions(); reply.SetHeader("rh", "rv"); reply.RequireImmediateDispatch();
+                await context.Reply(message, reply);
+                await context.Reply((object)message, new ReplyOptions());
+                await context.Reply<EdgeUowMessage>(m => m.Text = "ro", new ReplyOptions());
+                await context.ForwardCurrentMessageTo("forward.queue");
+                await context.HandleCurrentMessageLater();
+                context.DoNotContinueDispatchingCurrentMessageToHandlers();
+                var recorded = context.Messages;
+                That(recorded.Count == 26, "recorded " + recorded.Count + " messages");
+                That(recorded[2].Destination == "dest" && recorded[3].Operation == Bq.Testing.MessageOperation.SendLocal, "destinations and operations are recorded");
+                That(recorded[6].DueAt.HasValue && recorded[9].Operation == Bq.Testing.MessageOperation.Publish && recorded[9].DueAt.HasValue, "scheduled sends and publishes record the due time");
+                That(recorded[10].Headers["h"].Equals("v") && recorded[10].Destination == "opt.dest" && recorded[10].MessageId == "custom-id", "send options headers, destination and id");
+                That(recorded[14].ImmediateDispatch || recorded[15].ImmediateDispatch, "immediate dispatch is recorded");
+                var replies = recorded.Where(r => r.Operation == Bq.Testing.MessageOperation.Reply).ToList();
+                That(replies.Count == 5 && replies[0].Destination == "reply.queue" && replies[0].CorrelationId == "corr", "replies go to the reply address with the correlation id");
+                That(replies[2].Headers["rh"].Equals("rv") && replies[2].ImmediateDispatch, "reply options headers and immediate dispatch");
+                That(recorded.Last().Operation == Bq.Testing.MessageOperation.Forward && recorded.Last().Destination == "forward.queue", "forward is recorded");
+                That(context.HandleCurrentMessageLaterCalled && context.HandlerDispatchStopped, "flags are recorded");
+                Throws<ArgumentException>(() => context.ForwardCurrentMessageTo(" ").GetAwaiter().GetResult(), "a blank forward destination");
+                context.Headers["x"] = "y";
+                That(context.MessageHeaders["x"] == "y", "text headers reflect the incoming headers");
+                var withHeader = context.UniformSession.WithHeader("scoped", "1");
+                await withHeader.Send(message);
+                That(context.Messages.Last().Headers["scoped"].Equals("1"), "a scoped session adds headers");
+                Throws<ArgumentException>(() => context.UniformSession.WithHeader(" ", "1"), "a blank header name");
+                await ((IMessageHandlerContext)context).Send<EdgeUowMessage>(m => { });
+                await context.PublishAt(message, DateTimeOffset.UtcNow);
+            });
+            Case("send and reply options validate their inputs", () =>
+            {
+                var send = new SendOptions();
+                Throws<ArgumentException>(() => send.SetHeader(" ", "x"), "a blank header name");
+                Throws<ArgumentException>(() => send.SetHeader("x-bq-reserved", "x"), "a reserved header prefix");
+                Throws<ArgumentException>(() => send.SetDestination(" "), "a blank destination");
+                Throws<ArgumentOutOfRangeException>(() => send.DelayDeliveryWith(TimeSpan.FromSeconds(-1)), "a negative delay");
+                send.DelayDeliveryWith(TimeSpan.FromSeconds(1));
+                send.DoNotDeliverBefore(DateTimeOffset.UtcNow);
+                That(send.GetDeliveryDate().HasValue && !send.GetDeliveryDelay().HasValue, "a later date replaces an earlier delay");
+                var immediateOptions = new SendOptions(); immediateOptions.RequireImmediateDispatch();
+                Throws<InvalidOperationException>(() => immediateOptions.DelayDeliveryWith(TimeSpan.FromSeconds(1)), "a delay after immediate dispatch");
+                Throws<InvalidOperationException>(() => immediateOptions.DoNotDeliverBefore(DateTimeOffset.UtcNow), "a date after immediate dispatch");
+                Throws<InvalidOperationException>(() => send.RequireImmediateDispatch(), "immediate dispatch after scheduling");
+                var scheduled = new SendOptions();
+                scheduled.DoNotDeliverBefore(DateTimeOffset.UtcNow.AddMinutes(1));
+                That(scheduled.GetDeliveryDate().HasValue && !scheduled.GetDeliveryDelay().HasValue, "a date is recorded");
+                var local = new SendOptions(); local.RouteToThisEndpoint();
+                That(local.IsRoutingToThisEndpoint(), "local routing is recorded");
+                Throws<InvalidOperationException>(() => local.SetDestination("somewhere"), "a destination after local routing");
+                var reply = new ReplyOptions();
+                reply.RouteReplyTo("r"); reply.SetDestination("d");
+                That(reply.GetReplyToRoute() == "r" && reply.GetDestination() == "d", "reply routing is recorded");
+                var conversation = new SendOptions(); conversation.StartNewConversation("conv-1");
+                conversation.RouteReplyTo("back"); conversation.SetMessageId("id-1");
+                That(conversation.GetMessageId() == "id-1" && conversation.GetReplyToRoute() == "back", "options keep ids and reply addresses");
+                conversation.SetHeader("k", "v");
+                That(conversation.GetHeaders()["k"] == "v", "text headers are readable");
             });
         }
 
