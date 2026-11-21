@@ -236,6 +236,7 @@ namespace Bq.Messaging.Tests
             await MigrationPipelineTests(new Uri(uri));
             await PhasedMigrationTests(new Uri(uri));
             await ScannerTests(new Uri(uri));
+            await InstanceRoutingTests(new Uri(uri));
             await OrderWorkflowEndToEndTest(new Uri(uri));
             await LifecycleTests.Run(new Uri(uri));
             await UniformSessionTests.Run(new Uri(uri), Sqlite);
@@ -1293,6 +1294,56 @@ namespace Bq.Messaging.Tests
             if (await Task.WhenAny(task, Task.Delay(10000)) != task) throw new Exception("Timed out waiting for delivery.");
             return await task;
         }
+        static async Task InstanceRoutingTests(Uri uri)
+        {
+            var name = "bq.test.instances." + Guid.NewGuid().ToString("N");
+            var path = Path.Combine(Path.GetTempPath(), name + ".db");
+            var store = new SqlitePersistence(() => Sqlite(path), name);
+            await store.Initialize();
+            var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+            EndpointConfiguration Instance(string discriminator)
+            {
+                var instanceConfig = new EndpointConfiguration(name, uri) { Persistence = new SqlitePersistence(() => Sqlite(path), name) };
+                instanceConfig.MakeInstanceUniquelyAddressable(discriminator);
+                instanceConfig.Route(typeof(Command), name);
+                instanceConfig.Handle(() => new Handler<Command>(async (message, context) =>
+                {
+                    seen[message.Text] = discriminator;
+                    if (message.Text == "reply-to-this-instance") await context.Reply(new Response { Text = "answer" });
+                }));
+                instanceConfig.Handle(() => new Handler<Response>((message, context) =>
+                {
+                    seen["response:" + message.Text] = discriminator;
+                    return Task.CompletedTask;
+                }));
+                return instanceConfig;
+            }
+            using (var first = RabbitEndpoint.Start(Instance("a")))
+            using (var second = RabbitEndpoint.Start(Instance("b")))
+            {
+                var toSecond = new SendOptions();
+                toSecond.RouteToSpecificInstance("b");
+                Assert(toSecond.GetRouteToSpecificInstance() == "b", "specific instance routing is readable from the options");
+                // SQLite is single-writer, so deliver one message at a time across the two instances.
+                await first.Send(new Command { Text = "to-b" }, toSecond);
+                await WaitFor(() => Task.FromResult(seen.ContainsKey("to-b")), "message routed to a specific instance");
+                var toThis = new SendOptions();
+                toThis.RouteToThisInstance();
+                Assert(toThis.IsRoutingToThisInstance(), "this-instance routing is readable from the options");
+                await first.Send(new Command { Text = "to-a" }, toThis);
+                await WaitFor(() => Task.FromResult(seen.ContainsKey("to-a")), "message routed to this instance");
+                var withReply = new SendOptions();
+                withReply.RouteReplyToThisInstance();
+                await first.Send(new Command { Text = "reply-to-this-instance" }, withReply);
+                await WaitFor(() => Task.FromResult(seen.ContainsKey("to-b") && seen.ContainsKey("to-a") && seen.ContainsKey("response:answer")),
+                    "instance-routed messages are delivered; saw " + string.Join(",", seen.Select(pair => pair.Key + "=" + pair.Value)));
+                Assert(seen["to-b"] == "b", "RouteToSpecificInstance delivers to the named instance");
+                Assert(seen["to-a"] == "a", "RouteToThisInstance delivers to the sending instance");
+                Assert(seen["response:answer"] == "a", "RouteReplyToThisInstance returns the reply to the sending instance");
+            }
+            Console.WriteLine("Instance routing tests passed.");
+        }
+
         static async Task ScannerTests(Uri uri)
         {
             var name = "bq.test.scanner." + Guid.NewGuid().ToString("N");

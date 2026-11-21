@@ -170,3 +170,7 @@ Register infrastructure message predicates with `Conventions().Conventions.AddSy
 Use `MessageMapper` to create messages and inspect Bq's generated interface implementations. Creating a message registers its CLR names for string lookup. Call `Initialize(types)` to register contracts before creating messages. String lookup also accepts names resolvable by `Type.GetType`, such as assembly-qualified names. Unknown names return `null`. RabbitMQ contract names and aliases are configured separately.
 
 `CreateInstance<T>()` and `CreateInstance(Type)` also construct default values for struct contracts. Construct a struct explicitly to populate its members before sending it.
+
+## Instance routing
+
+All instances of an endpoint compete on one shared queue. Call `config.MakeInstanceUniquelyAddressable("id")` to give an instance its own queue named `<endpoint>-id` as well. Then `RouteToThisInstance`, `RouteToSpecificInstance(id)` (to the instance of the message's routed endpoint), `RouteReplyToThisInstance` and `RouteReplyToAnyInstance` work on `SendOptions` and `ReplyOptions`, with `IsRouting...` and `GetRouteToSpecificInstance` to read them back. Delayed retries and replayed messages return to the shared endpoint queue, so any instance can process them.

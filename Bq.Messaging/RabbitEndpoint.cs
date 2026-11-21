@@ -69,6 +69,8 @@ namespace Bq.Messaging
         readonly CancellationTokenSource forceStop = new CancellationTokenSource();
         readonly TaskCompletionSource<bool> drained = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         string consumerTag;
+        string instanceConsumerTag;
+        readonly string instanceAddress;
         int activeDeliveries;
         bool shutdownRequested;
         Task stopTask;
@@ -86,6 +88,8 @@ namespace Bq.Messaging
             durableMessages = configuration.DurableMessages;
             timeToBeReceived = configuration.Conventions().Conventions.TimeToBeReceivedRule ?? AttributeLifetime;
             localAddress = configuration.LocalAddress ?? configuration.Name;
+            instanceAddress = configuration.InstanceDiscriminator == null ? null
+                : InstanceRouting.InstanceAddress(localAddress, configuration.InstanceDiscriminator);
             forwardReceivedMessagesAddress = configuration.ForwardReceivedMessagesAddress;
             auditQueue = configuration.AuditQueue;
             auditExpiration = configuration.AuditExpiration;
@@ -168,6 +172,7 @@ namespace Bq.Messaging
                         consumerChannel.ExchangeDeclarePassive(errorExchange);
                         consumerChannel.QueueDeclarePassive(errorQueue);
                         consumerChannel.QueueDeclarePassive(localAddress);
+                        if (instanceAddress != null) consumerChannel.QueueDeclarePassive(instanceAddress);
                     }
                     else
                     {
@@ -179,6 +184,12 @@ namespace Bq.Messaging
                             ["x-dead-letter-exchange"] = errorExchange,
                             ["x-dead-letter-routing-key"] = localAddress
                         });
+                        if (instanceAddress != null)
+                            consumerChannel.QueueDeclare(instanceAddress, true, false, false, new Dictionary<string, object>(configuration.InputQueueArguments)
+                            {
+                                ["x-dead-letter-exchange"] = errorExchange,
+                                ["x-dead-letter-routing-key"] = localAddress
+                            });
                     }
                     if (configuration.PurgeInputQueueOnStartup) consumerChannel.QueuePurge(localAddress);
                     var conventions = configuration.Conventions().Conventions;
@@ -196,6 +207,7 @@ namespace Bq.Messaging
                     var consumer = new AsyncEventingBasicConsumer(consumerChannel);
                     consumer.Received += OnReceived;
                     consumerTag = consumerChannel.BasicConsume(localAddress, false, consumer);
+                    if (instanceAddress != null) instanceConsumerTag = consumerChannel.BasicConsume(instanceAddress, false, consumer);
                 }
                 var callback = configuration.OnCriticalError;
                 var contextCallback = configuration.CriticalErrorAction;
@@ -476,6 +488,22 @@ namespace Bq.Messaging
         public Task Send<T>(T message) => SendCore(message, null, null);
         public Task Send<T>(Action<T> initialize) => Send(MessageOptionsExtensions.Initialize(initialize));
         public Task Send<T>(string destination, T message) => SendCore(message, null, RequireDestination(destination));
+        string ResolveInstanceRoute<T>(string routingKey, T message)
+        {
+            if (routingKey == InstanceRouting.ThisInstance)
+                return instanceAddress ?? throw new InvalidOperationException("Call MakeInstanceUniquelyAddressable to route to this instance.");
+            if (routingKey != null && routingKey.StartsWith(InstanceRouting.SpecificInstancePrefix, StringComparison.Ordinal))
+                return InstanceRouting.InstanceAddress(RouteFor(message), routingKey.Substring(InstanceRouting.SpecificInstancePrefix.Length));
+            return routingKey;
+        }
+
+        string ResolveReplyAddress(string replyAddress)
+        {
+            if (replyAddress == InstanceRouting.ReplyThisInstance)
+                return instanceAddress ?? throw new InvalidOperationException("Call MakeInstanceUniquelyAddressable to reply to this instance.");
+            return replyAddress == InstanceRouting.ReplyAnyInstance ? localAddress : null;
+        }
+
         static string RequireDestination(string destination)
         {
             if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("A destination queue is required.", nameof(destination));
@@ -510,11 +538,13 @@ namespace Bq.Messaging
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
             if (kind == OutgoingStage.Send && exchange == eventsExchange && !mandatory) kind = OutgoingStage.Publish;
+            routingKey = ResolveInstanceRoute(routingKey, message);
             var copiedHeaders = new Dictionary<string, object>(configuration.OutgoingHeaders);
             if (headers != null)
                 foreach (var header in headers) copiedHeaders[header.Key] = header.Value;
             copiedHeaders.TryGetValue(MessageOptions.WireIdHeader, out var customId);
             copiedHeaders.TryGetValue(MessageOptions.ReplyAddressHeader, out var replyAddress);
+            replyAddress = ResolveReplyAddress(replyAddress as string) ?? replyAddress;
             copiedHeaders.Remove(MessageOptions.WireIdHeader);
             copiedHeaders.Remove(MessageOptions.ReplyAddressHeader);
             copiedHeaders[MessageHeaders.TimeSent] = DateTimeOffset.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
@@ -1094,7 +1124,7 @@ namespace Bq.Messaging
             try
             {
                 // BasicCancel is synchronous in the netstandard2.0 RabbitMQ client.
-                var cancel = Task.Run(() => { lock (consumerLock) { if (consumerChannel?.IsOpen == true) consumerChannel.BasicCancel(consumerTag); } });
+                var cancel = Task.Run(() => { lock (consumerLock) { if (consumerChannel?.IsOpen == true) { consumerChannel.BasicCancel(consumerTag); if (instanceConsumerTag != null) consumerChannel.BasicCancel(instanceConsumerTag); } } });
                 await WaitFor(cancel, cancellationToken).ConfigureAwait(false);
                 await WaitFor(drained.Task, cancellationToken).ConfigureAwait(false);
                 stopping.Cancel();
