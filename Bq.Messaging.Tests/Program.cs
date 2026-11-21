@@ -239,6 +239,17 @@ namespace Bq.Messaging.Tests
                 mapper.GetMappedTypeFor(typeof(Command)) == typeof(Command) &&
                 mapper.GetMappedTypeFor("Unknown.Message") == null,
                 "message mapper exposes creation and lookup for known contracts");
+            IMessageMapper uninitializedMapper = new MessageMapper();
+            Assert(uninitializedMapper.GetMappedTypeFor(typeof(IPilotEvent).AssemblyQualifiedName) == typeof(IPilotEvent) &&
+                uninitializedMapper.GetMappedTypeFor(typeof(IPilotEvent).FullName) == null,
+                "message mapper can resolve CLR-qualified names before registration");
+            var created = uninitializedMapper.CreateInstance<IPilotEvent>(message =>
+                Assert(uninitializedMapper.GetMappedTypeFor(typeof(IPilotEvent).FullName) == typeof(IPilotEvent),
+                    "message mapper registers the contract before running the initializer"));
+            Assert(uninitializedMapper.GetMappedTypeFor(created.GetType().FullName) == created.GetType() &&
+                uninitializedMapper.CreateInstance<Command>(null) != null &&
+                uninitializedMapper.GetMappedTypeFor(typeof(Command).FullName) == typeof(Command),
+                "message mapper remembers generated implementations and accepts an optional initializer");
             Assert(creator.CreateInstance<Command>() != null && creator.CreateInstance(typeof(IPilotEvent)) is IPilotEvent,
                 "message creator supports concrete classes and interface contracts");
             var sendOptions = new SendOptions();

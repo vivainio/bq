@@ -159,6 +159,6 @@ The `Pipeline.Register` and `Pipeline.Replace` overloads also accept a `Func<TBe
 
 Register infrastructure message predicates with `Conventions().Conventions.AddSystemMessagesConventions(...)`. Matching types satisfy `IsMessageType` and can be identified separately with `IsInSystemConventionList`.
 
-Use `MessageMapper` to create messages and inspect Bq's generated interface implementations. `Initialize(types)` registers CLR names for string lookup. Unknown names return `null`. RabbitMQ contract names and aliases are configured separately.
+Use `MessageMapper` to create messages and inspect Bq's generated interface implementations. Creating a message registers its CLR names for string lookup. Call `Initialize(types)` to register contracts before creating messages. String lookup also accepts names resolvable by `Type.GetType`, such as assembly-qualified names. Unknown names return `null`. RabbitMQ contract names and aliases are configured separately.
 
 `CreateInstance<T>()` and `CreateInstance(Type)` also construct default values for struct contracts. Construct a struct explicitly to populate its members before sending it.

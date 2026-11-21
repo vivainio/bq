@@ -26,11 +26,7 @@ namespace Bq.Messaging
         {
             if (types == null) throw new ArgumentNullException(nameof(types));
             foreach (var type in types)
-            {
-                var mapped = GetMappedTypeFor(type);
-                Remember(type);
-                Remember(mapped);
-            }
+                RememberMapping(type);
         }
 
         public Type GetMappedTypeFor(Type t)
@@ -42,7 +38,15 @@ namespace Bq.Messaging
         public Type GetMappedTypeFor(string typeName)
         {
             if (typeName == null) throw new ArgumentNullException(nameof(typeName));
-            return knownTypes.TryGetValue(typeName, out var type) ? type : null;
+            if (typeName.Length == 0) throw new ArgumentException("A type name is required.", nameof(typeName));
+            return knownTypes.TryGetValue(typeName, out var type) ? type : Type.GetType(typeName);
+        }
+
+        void RememberMapping(Type type)
+        {
+            var mapped = GetMappedTypeFor(type);
+            Remember(type);
+            Remember(mapped);
         }
 
         void Remember(Type type)
@@ -52,9 +56,24 @@ namespace Bq.Messaging
             if (type.AssemblyQualifiedName != null) knownTypes.TryAdd(type.AssemblyQualifiedName, type);
         }
 
-        public T CreateInstance<T>() => MessageCreator.Default.CreateInstance<T>();
-        public T CreateInstance<T>(Action<T> action) => MessageCreator.Default.CreateInstance(action);
-        public object CreateInstance(Type messageType) => MessageCreator.Default.CreateInstance(messageType);
+        public T CreateInstance<T>() => (T)CreateInstance(typeof(T));
+
+        public T CreateInstance<T>(Action<T> action)
+        {
+            if (action == null) return CreateInstance<T>();
+            return MessageCreator.Default.CreateInstance<T>(message =>
+            {
+                RememberMapping(typeof(T));
+                action(message);
+            });
+        }
+
+        public object CreateInstance(Type messageType)
+        {
+            var message = MessageCreator.Default.CreateInstance(messageType);
+            RememberMapping(messageType);
+            return message;
+        }
     }
 
     public sealed class MessageCreator : IMessageCreator
