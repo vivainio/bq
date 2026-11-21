@@ -50,3 +50,15 @@ bash scripts/test-rabbit-sim.sh
 ```
 
 With those variables set, the test run also starts a whole endpoint on Oracle: a handler, a failed message that recovers through the recovery table, and a saga timeout that fires from the timeout table. The Apple Silicon (arm64) image works without emulation. The Podman VM needs about 4 GiB of memory.
+
+### EF6 on the same connection and transaction
+
+`Bq.Persistence.Oracle.Ef6Check` is a small console project that proves the pattern from the section above with EF6 and Oracle's free managed EF provider. Within one Bq session it saves through an EF6 `DbContext` constructed on `session.Connection` with `UseTransaction(session.Transaction)`, then stores an outbox row. It asserts that both commit together, that both roll back together, and that no ambient `System.Transactions` transaction exists, so nothing escalates to MSDTC. Run it with the Oracle container above:
+
+```bash
+dotnet build Bq.Persistence.Oracle.Ef6Check -o /tmp/ef6check
+cp Bq.Persistence.Oracle.Ef6Check/App.config /tmp/ef6check/Bq.Persistence.Oracle.Ef6Check.exe.config
+BQ_ORACLE_CONNECTION_STRING="User Id=bq;Password=bqtest;Data Source=localhost:1521/FREEPDB1" mono /tmp/ef6check/Bq.Persistence.Oracle.Ef6Check.exe
+```
+
+It uses ODP.NET, not Devart. Devart's EF6 provider follows the same `DbConnection` and `DbTransaction` contract, but it has not been run here.

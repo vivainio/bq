@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net472</TargetFramework><OutputType>Exe</OutputType><LangVersion>8.0</LangVersion></PropertyGroup>
+<ItemGroup>
+<ProjectReference Include="../Bq.Persistence.Oracle/Bq.Persistence.Oracle.csproj" />
+<Reference Include="System.Transactions" /><PackageReference Include="EntityFramework" Version="6.5.1"/>
+<PackageReference Include="Oracle.ManagedDataAccess" Version="23.7.0"/>
+<PackageReference Include="Oracle.ManagedDataAccess.EntityFramework" Version="23.7.0"/>
+<PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all"/>
+</ItemGroup></Project>
