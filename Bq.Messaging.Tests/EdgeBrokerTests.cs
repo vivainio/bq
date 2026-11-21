@@ -501,6 +501,41 @@ namespace Bq.Messaging.Tests
                 }
             });
 
+            await Case("a transactional session sends every kind of message when it commits", async () =>
+            {
+                var name = "bq.test.edge.transactional." + Guid.NewGuid().ToString("N");
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                configuration.Route(typeof(EdgeUowMessage), name);
+                var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+                configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) =>
+                {
+                    seen[m.Text] = c.MessageHeaders.TryGetValue("h", out var header) ? header : "";
+                    return Task.CompletedTask;
+                }));
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                {
+                    await endpoint.ExecuteTransaction(async session =>
+                    {
+                        await session.SendLocal(new EdgeUowMessage { Text = "local" });
+                        await session.Send(new EdgeUowMessage { Text = "routed" });
+                        await session.Send<EdgeUowMessage>(m => m.Text = "initialized");
+                        await session.Send(name, new EdgeUowMessage { Text = "addressed" });
+                        await session.SendAt(new EdgeUowMessage { Text = "at" }, DateTimeOffset.UtcNow.AddMilliseconds(200));
+                        await session.SendLocalAt(new EdgeUowMessage { Text = "local-at" }, DateTimeOffset.UtcNow.AddMilliseconds(200));
+                        await session.SendAt(name, new EdgeUowMessage { Text = "addressed-at" }, DateTimeOffset.UtcNow.AddMilliseconds(200));
+                        var options = new SendOptions();
+                        options.SetHeader("h", "from-options");
+                        await session.Send(new EdgeUowMessage { Text = "options" }, options);
+                        await session.WithHeader("h", "scoped").Send(new EdgeUowMessage { Text = "scoped" });
+                        var immediate = new SendOptions();
+                        immediate.RequireImmediateDispatch();
+                        await session.Send(new EdgeUowMessage { Text = "immediate" }, immediate);
+                    });
+                    await Eventually(() => seen.Count == 10, "all ten messages to be handled, saw " + string.Join(",", seen.Keys));
+                    That(seen["options"] == "from-options" && seen["scoped"] == "scoped", "headers set through options and WithHeader arrive");
+                }
+            });
+
             foreach (var mode in new[] { "immediate", "delayed", "discard", "error" })
             {
                 var current = mode;

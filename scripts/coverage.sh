@@ -16,4 +16,4 @@ BQ_RABBITMQ_URI="amqp://guest:guest@127.0.0.1:$port/" BQ_RABBITSIM_HTTP="http://
     mono --debug "--profile=coverage:covfilter-file=$dir/filter.txt,output=$dir/coverage.xml" \
     Bq.Messaging.Tests/bin/Debug/net472/Bq.Messaging.Tests.exe
 kill $broker; wait $broker 2>/dev/null || true; sleep 2
-python3 scripts/coverage-report.py "$dir/coverage.xml" "${1:-40}" ${2:+"$2"}
+cp "$dir/coverage.xml" "${COVERAGE_XML:-/dev/null}"; python3 scripts/coverage-report.py "$dir/coverage.xml" "${1:-40}" ${2:+"$2"}

@@ -128,6 +128,12 @@ namespace Bq.Messaging.Tests
 
     public sealed class EdgeCaseLogProbe { }
     public sealed class EdgeFeatureHolder { }
+    public sealed class EdgePlainPersistence : IPersistenceProvider
+    {
+        public Task<IPersistenceSession> OpenSession() => throw new NotSupportedException();
+        public Task<OutgoingMessage> NextOutgoing(string endpoint) => Task.FromResult<OutgoingMessage>(null);
+        public Task MarkDispatched(string endpoint, string messageId) => Task.CompletedTask;
+    }
     public interface IEdgeService { }
     public sealed class EdgeServiceOne : IEdgeService { }
     public sealed class EdgeServiceTwo : IEdgeService { }
@@ -199,6 +205,7 @@ namespace Bq.Messaging.Tests
             await RunSpiTypeCases();
             RunConfigurationCases();
             await RunContainerAndPersistenceCases();
+            RunStartValidationCases();
             await RunInMemoryCases();
             return cases.ToList();
         }
@@ -879,6 +886,47 @@ namespace Bq.Messaging.Tests
                 That(explicitProvider.Persistence == memory, "a provider set in code is kept");
             });
             await Task.CompletedTask;
+        }
+
+        static void RunStartValidationCases()
+        {
+            // Start validates its configuration before it opens a connection, so none of these need a broker.
+            void Invalid<T>(string name, Action<EndpointConfiguration> change) where T : Exception
+            {
+                Case("Start rejects " + name, () =>
+                {
+                    var configuration = new EndpointConfiguration("edge-validate", new Uri("amqp://localhost:1/")) { Persistence = new InMemoryPersistenceProvider("edge-validate") };
+                    change(configuration);
+                    Throws<T>(() => RabbitEndpoint.Start(configuration), name);
+                });
+            }
+            Invalid<ArgumentException>("an empty events exchange", c => c.EventsExchange = " ");
+            Invalid<ArgumentException>("an empty error exchange", c => c.ErrorExchange = "");
+            Invalid<ArgumentException>("the same events and error exchange", c => { c.EventsExchange = "same"; c.ErrorExchange = "same"; });
+            Invalid<ArgumentException>("a dead-letter exchange argument", c => c.InputQueueArguments["x-dead-letter-exchange"] = "x");
+            Invalid<ArgumentException>("a dead-letter routing key argument", c => c.InputQueueArguments["x-dead-letter-routing-key"] = "x");
+            Invalid<InvalidOperationException>("a send-only endpoint with handlers", c =>
+            {
+                c.SendOnly();
+                c.Handle(() => new Handler<EdgeUowMessage>((m, ctx) => Task.CompletedTask));
+            });
+            Invalid<InvalidOperationException>("missing persistence", c => c.Persistence = null);
+            Invalid<InvalidOperationException>("persistence without recovery support", c => c.Persistence = new EdgePlainPersistence());
+            Invalid<ArgumentException>("a negative delayed retry", c => c.Recoverability.DelayedRetries = new[] { TimeSpan.FromSeconds(-1) });
+            Invalid<ArgumentException>("a delayed retry beyond 24 days", c => c.Recoverability.DelayedRetries = new[] { TimeSpan.FromDays(25) });
+            Invalid<ArgumentException>("missing delayed retries", c => c.Recoverability.DelayedRetries = null);
+            Invalid<ArgumentException>("a blank error queue", c => c.Recoverability.ErrorQueue = " ");
+            Invalid<ArgumentException>("an error queue equal to the input queue", c => c.Recoverability.ErrorQueue = "edge-validate");
+            Invalid<ArgumentOutOfRangeException>("a zero dispatch poll interval", c => c.DispatchPollInterval = TimeSpan.Zero);
+            Invalid<ArgumentOutOfRangeException>("a zero publisher confirm timeout", c => c.PublisherConfirmTimeout = TimeSpan.Zero);
+            Invalid<ArgumentOutOfRangeException>("a zero network recovery interval", c => c.NetworkRecoveryInterval = TimeSpan.Zero);
+            Invalid<ArgumentOutOfRangeException>("a critical error action without a threshold", c =>
+            {
+                c.OnCriticalError = (error, exception) => Task.CompletedTask;
+                c.CriticalErrorThreshold = TimeSpan.Zero;
+            });
+            Invalid<ArgumentOutOfRangeException>("zero concurrency", c => c.MaxConcurrency = 0);
+            Invalid<ArgumentOutOfRangeException>("negative immediate retries", c => c.ImmediateRetries = -1);
         }
 
         static async Task RunInMemoryCases()
