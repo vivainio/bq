@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Bq.Messaging.DataBus;
 using Bq.Messaging.DeliveryConstraints;
 using System.Threading;
 using System.Security.Cryptography;
@@ -49,6 +50,8 @@ namespace Bq.Messaging
         readonly Bq.Messaging.ObjectBuilder.Common.IContainer rootContainer;
         readonly Bq.Messaging.ObjectBuilder.IBuilder rootBuilder;
         readonly bool ownsContainer;
+        readonly IDataBus dataBus;
+        readonly IDataBusSerializer dataBusSerializer;
         readonly Dictionary<Type, string> wireNames = new Dictionary<Type, string>();
         readonly Dictionary<string, Registration> receivers = new Dictionary<string, Registration>();
         readonly bool sendOnly;
@@ -139,6 +142,12 @@ namespace Bq.Messaging
                 rootBuilder = new Bq.Messaging.Container.ContainerBuilder(rootContainer);
                 ownsContainer = configuration.OwnsContainer;
             }
+            // A container-registered data bus or serializer wins over the one selected with UseDataBus.
+            dataBus = (rootContainer != null && rootContainer.HasComponent(typeof(IDataBus)) ? (IDataBus)rootContainer.Build(typeof(IDataBus)) : null)
+                ?? configuration.CreateConfiguredDataBus();
+            dataBusSerializer = rootContainer != null && rootContainer.HasComponent(typeof(IDataBusSerializer))
+                ? (IDataBusSerializer)rootContainer.Build(typeof(IDataBusSerializer)) : null;
+            dataBus?.Start().GetAwaiter().GetResult();
             rootContainer?.RegisterSingleton(typeof(CriticalError), new CriticalError(async context =>
             {
                 if (configuration.CriticalErrorAction != null)
@@ -628,6 +637,7 @@ namespace Bq.Messaging
                 RecoveryWire.ApplyTextHeaderEdits(copiedHeaders, original, mutation.OutgoingHeaders);
                 outgoingMessage = mutation.OutgoingMessage;
             }
+            await StoreDataBusProperties(outgoingMessage, contract, declaredLifetime).ConfigureAwait(false);
             var serializationType = InterfaceMessage.SerializationType(contract);
             var value = InterfaceMessage.SerializationValue(contract, serializationType, outgoingMessage);
             var serialized = MessagePackSerializer.Serialize(serializationType, value, SerializerOptions);
@@ -953,6 +963,8 @@ namespace Bq.Messaging
                                         object message;
                                         try { message = DeserializeMessage(registration.Type, attemptBody); }
                                         catch (Exception ex) { unrecoverable = true; throw new MessageDeserializationException("Message deserialization failed.", ex); }
+                                        // Fetching can fail for transient storage reasons, so a failure here goes through recoverability.
+                                        await FetchDataBusProperties(message, registration.Type).ConfigureAwait(false);
                                         var incomingContext = new IncomingMessageContext(message, attemptContext, registration.Type, attemptTypeName, attempt, cycle);
                                         await incoming(incomingContext, async () =>
                                         {

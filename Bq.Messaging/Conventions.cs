@@ -22,9 +22,12 @@ namespace Bq.Messaging
         internal Func<Type, TimeSpan> TimeToBeReceivedRule { get; set; }
         internal Func<System.Reflection.PropertyInfo, bool> EncryptedPropertyRule { get; set; }
 
-        /// <summary>Bq has no DataBus, so no property is ever a DataBus property.</summary>
+        internal Func<System.Reflection.PropertyInfo, bool> DataBusPropertyRule { get; set; }
+
+        /// <summary>By default a property is a data bus property when its type is an <see cref="IDataBusProperty"/>.</summary>
         public bool IsDataBusProperty(System.Reflection.PropertyInfo property) =>
-            property == null ? throw new ArgumentNullException(nameof(property)) : false;
+            (property ?? throw new ArgumentNullException(nameof(property))) is var checkedProperty &&
+            (DataBusPropertyRule?.Invoke(checkedProperty) ?? typeof(IDataBusProperty).IsAssignableFrom(checkedProperty.PropertyType));
 
         public bool IsEncryptedProperty(System.Reflection.PropertyInfo property) =>
             EncryptedPropertyRule?.Invoke(property ?? throw new ArgumentNullException(nameof(property))) ?? false;
@@ -84,9 +87,6 @@ namespace Bq.Messaging
             Conventions.EncryptedPropertyRule = definesEncryptedProperty ?? throw new ArgumentNullException(nameof(definesEncryptedProperty));
             return this;
         }
-
-        public ConventionsBuilder DefiningDataBusPropertiesAs(Func<System.Reflection.PropertyInfo, bool> definesDataBusProperty) =>
-            throw new NotSupportedException("Bq has no DataBus. Send the data as part of the message or store it and send a reference.");
 
         public ConventionsBuilder DefiningEventsAs(Func<Type, bool> definesEventType)
         {

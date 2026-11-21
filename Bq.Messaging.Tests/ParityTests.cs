@@ -104,6 +104,12 @@ namespace Bq.Messaging.Tests
             new Bq.Messaging.Config.MessageForwardingInCaseOfFaultConfig { ErrorQueue = "from.provider" };
     }
 
+    public class DataBusMessage
+    {
+        public string Text { get; set; }
+        public DataBusProperty<byte[]> Attachment { get; set; }
+    }
+
     public class OrderedMessage { public string Text { get; set; } }
     public sealed class OrderedHandlerA : IHandleMessages<OrderedMessage>
     {
@@ -270,11 +276,10 @@ namespace Bq.Messaging.Tests
             Assert(outgoing.MessageId == "id", "the transport outgoing message type constructs");
 
             var conventions = new EndpointConfiguration("conv-databus", new Uri("amqp://localhost/")).Conventions();
-            Assert(!conventions.Conventions.IsDataBusProperty(typeof(Response).GetProperty("Text")), "no property is a DataBus property");
+            Assert(!conventions.Conventions.IsDataBusProperty(typeof(Response).GetProperty("Text")), "only IDataBusProperty properties are data bus properties by default");
+            conventions.DefiningDataBusPropertiesAs(property => property.Name == "Text");
+            Assert(conventions.Conventions.IsDataBusProperty(typeof(Response).GetProperty("Text")), "the data bus property convention matches properties");
             var refused = false;
-            try { conventions.DefiningDataBusPropertiesAs(property => true); } catch (NotSupportedException) { refused = true; }
-            Assert(refused, "DataBus conventions fail at configuration time");
-            refused = false;
             try { new EndpointConfiguration("conv-source", new Uri("amqp://localhost/")).CustomConfigurationSource(null); } catch (ArgumentNullException) { refused = true; }
             Assert(refused, "a missing configuration source is rejected");
 
@@ -416,6 +421,42 @@ namespace Bq.Messaging.Tests
                 await endpoint.Send(new SendProbe { Text = "critical" });
                 Assert(await Within(criticalRaised.Task) == "behavior failure:critical probe", "CriticalError.Raise reaches the configured critical error action");
             }
+
+            // Large values travel through the file share data bus, and only their keys go on the wire.
+            var busRoot = Path.Combine(Path.GetTempPath(), "bq-databus-" + Guid.NewGuid().ToString("N"));
+            var busName = "bq.test.parity.databus." + Guid.NewGuid().ToString("N");
+            var busPath = Path.Combine(Path.GetTempPath(), busName + ".db");
+            var busStore = new SqlitePersistence(() => Sqlite(busPath), busName);
+            await busStore.Initialize();
+            var busConfig = new EndpointConfiguration(busName, uri) { Persistence = busStore };
+            busConfig.UseDataBus<FileShareDataBus>().BasePath(busRoot);
+            busConfig.Route(typeof(DataBusMessage), busName);
+            var wireBytes = 0;
+            busConfig.MutateOutgoing = transport => { if (transport.TypeName == typeof(DataBusMessage).FullName) wireBytes = transport.Body.Length; };
+            var busReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            busConfig.Handle(() => new Handler<DataBusMessage>((message, context) =>
+            {
+                busReceived.TrySetResult(message.Text + ":" + message.Attachment.Value.Length + ":" + message.Attachment.Value[1000] + ":" + (message.Attachment.Key != null));
+                return Task.CompletedTask;
+            }));
+            var attachment = new byte[300000];
+            attachment[1000] = 42;
+            using (var endpoint = RabbitEndpoint.Start(busConfig))
+            {
+                await endpoint.Send(new DataBusMessage { Text = "bus", Attachment = new DataBusProperty<byte[]>(attachment) });
+                Assert(await Within(busReceived.Task) == "bus:300000:42:True", "a data bus value reaches the handler with its key");
+                Assert(wireBytes > 0 && wireBytes < 1000, "only the key travels in the message");
+            }
+            var bus = new Bq.Messaging.DataBus.FileShareDataBusImplementationProbe(busRoot).Create();
+            var expiring = bus.Put(new MemoryStream(new byte[] { 1 }), TimeSpan.FromMilliseconds(1)).GetAwaiter().GetResult();
+            await Task.Delay(50);
+            bus.Start().GetAwaiter().GetResult();
+            var expired = false;
+            try { bus.Get(expiring).GetAwaiter().GetResult(); } catch (FileNotFoundException) { expired = true; }
+            Assert(expired, "expired data bus values are removed");
+            var escaped = false;
+            try { bus.Get("../outside").GetAwaiter().GetResult(); } catch (InvalidOperationException) { escaped = true; }
+            Assert(escaped, "data bus keys cannot leave the base directory");
 
             // Outgoing send and publish stages and physical body updates, observed by the receiving handlers.
             var outName = "bq.test.parity.outgoing." + Guid.NewGuid().ToString("N");
