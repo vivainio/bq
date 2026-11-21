@@ -27,7 +27,7 @@ The runner uses `--data` to persist broker state to a temporary SQLite file. It 
 
 ## TUnit runner
 
-`Bq.Messaging.Tests.TUnit` runs the same tests under [TUnit](https://tunit.dev) on .NET Framework (net472, on Mono), so each test reports on its own and one failure does not hide the rest. The older test groups each appear as one test, and the edge-case tests appear one per case.
+`Bq.Messaging.Tests.TUnit` runs the same tests under [TUnit](https://tunit.dev) on .NET Framework (net472, on Mono), so each test reports on its own and one failure does not hide the rest. The older test groups each appear as one test that lists every failed check when it ends, and the edge-case tests appear one per case.
 
 ```sh
 dotnet build Bq.Messaging.Tests.TUnit/Bq.Messaging.Tests.TUnit.csproj
