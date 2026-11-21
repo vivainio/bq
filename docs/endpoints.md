@@ -157,6 +157,8 @@ Call `context.DoNotContinueDispatchingCurrentMessageToHandlers()` to skip subseq
 
 Use `Pipeline.Register<TRegisterStep>()` or `Pipeline.Register(step)` to register an incoming behavior with ordering constraints. Derive from `RegisterStep` and declare dependencies with `InsertBefore` or `InsertAfter` by step ID. The `IfExists` forms allow optional steps. Bq resolves ordering at startup and rejects missing required steps and cycles.
 
+Use `RegisterMessageMutator(instance)` to register a message mutator for each incoming or outgoing interface it implements. Registering the same instance twice runs it once per applicable stage. Distinct mutators run in registration order within each stage.
+
 Pass a behavior factory to the `RegisterStep` constructor when a behavior needs constructor arguments. Bq calls the factory during registration and reuses the returned behavior across deliveries.
 
 The `Pipeline.Register` and `Pipeline.Replace` overloads also accept a `Func<TBehavior>` for behavior construction during configuration. A factory registration without a step ID uses the full name of `TBehavior`.

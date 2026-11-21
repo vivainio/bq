@@ -60,6 +60,8 @@ namespace Bq.Messaging.Tests
         public async Task MutateOutgoing(MutateOutgoingTransportMessageContext context)
         {
             if (!(context.OutgoingMessage is Response reply)) return;
+            if (context.OutgoingHeaders.ContainsKey("pilot-outgoing-mutator"))
+                throw new InvalidOperationException("The outgoing transport mutator ran more than once.");
             if (!reply.Text.EndsWith(" mutated", StringComparison.Ordinal))
                 throw new InvalidOperationException("The transport mutator must see the replacement message.");
             await Task.Yield();
@@ -72,6 +74,8 @@ namespace Bq.Messaging.Tests
         public async Task MutateIncoming(MutateIncomingTransportMessageContext context)
         {
             if (!context.Headers.ContainsKey("migration-source")) return;
+            if (context.Headers.ContainsKey("pilot-transport-mutator"))
+                throw new InvalidOperationException("The incoming transport mutator ran more than once.");
             await Task.Yield();
             context.Body = context.Body.ToArray();
             context.Headers["pilot-transport-mutator"] = "applied";
@@ -501,7 +505,9 @@ namespace Bq.Messaging.Tests
             windsor.Attach(receiver);
             receiver.ForwardReceivedMessagesTo(forwardQueue);
             receiver.AuditProcessedMessagesTo(auditQueue, TimeSpan.FromMinutes(1));
-            receiver.RegisterMessageMutator(new PilotMessageMutator());
+            var mutator = new PilotMessageMutator();
+            receiver.RegisterMessageMutator(mutator);
+            MutatorRegistrationExtensions.RegisterMessageMutator(receiver, mutator);
             receiver.Pipeline.Register("first-observer", typeof(UnexpectedPilotBehavior), "Replace before startup");
             receiver.Pipeline.Register("removed-observer", new UnexpectedPilotBehavior(), "Remove before startup");
             receiver.Pipeline.Remove("removed-observer");

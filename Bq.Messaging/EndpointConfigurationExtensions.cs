@@ -28,31 +28,8 @@ namespace Bq.Messaging
             config.ForwardReceivedMessagesAddress = MessageOptions.ValidateAddressField(address, nameof(address));
         }
 
-        public static void RegisterMessageMutator(this EndpointConfiguration endpointConfiguration, object messageMutator)
-        {
-            if (endpointConfiguration == null) throw new ArgumentNullException(nameof(endpointConfiguration));
-            if (messageMutator == null) throw new ArgumentNullException(nameof(messageMutator));
-            if (messageMutator is IMutateIncomingTransportMessages transport)
-                endpointConfiguration.IncomingTransportMutators.Add(transport);
-            if (messageMutator is IMutateOutgoingMessages outgoingLogical)
-                endpointConfiguration.OutgoingMessageMutators.Add(outgoingLogical);
-            if (messageMutator is IMutateOutgoingTransportMessages outgoing)
-                endpointConfiguration.OutgoingTransportMutators.Add(outgoing);
-            if (!(messageMutator is IMutateIncomingMessages incoming))
-            {
-                if (messageMutator is IMutateIncomingTransportMessages || messageMutator is IMutateOutgoingTransportMessages ||
-                    messageMutator is IMutateOutgoingMessages) return;
-                throw new ArgumentException("A supported message mutator is required.", nameof(messageMutator));
-            }
-
-            endpointConfiguration.Incoming.Use(async (context, next) =>
-            {
-                var mutation = new MutateIncomingMessageContext(context.Message, context.LogicalHeaders);
-                await incoming.MutateIncoming(mutation).ConfigureAwait(false);
-                context.UpdateMessageInstance(mutation.Message);
-                await next().ConfigureAwait(false);
-            });
-        }
+        public static void RegisterMessageMutator(EndpointConfiguration endpointConfiguration, object messageMutator) =>
+            MutatorRegistrationExtensions.RegisterMessageMutator(endpointConfiguration, messageMutator);
 
         public static void OverrideLocalAddress(this EndpointConfiguration config, string baseInputQueueName)
         {

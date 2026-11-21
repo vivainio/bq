@@ -145,6 +145,7 @@ namespace Bq.Messaging
         internal Dictionary<string, object> OutgoingHeaders { get; } = new Dictionary<string, object>(StringComparer.Ordinal);
         public TimeSpan CriticalErrorThreshold { get; set; } = TimeSpan.FromMinutes(10);
         public Action<TransportMessage> MutateIncoming { get; set; }
+        internal HashSet<IMutateIncomingMessages> IncomingMessageMutators { get; } = new HashSet<IMutateIncomingMessages>();
         internal List<IMutateIncomingTransportMessages> IncomingTransportMutators { get; } = new List<IMutateIncomingTransportMessages>();
         internal List<IMutateOutgoingMessages> OutgoingMessageMutators { get; } = new List<IMutateOutgoingMessages>();
         internal List<IMutateOutgoingTransportMessages> OutgoingTransportMutators { get; } = new List<IMutateOutgoingTransportMessages>();
