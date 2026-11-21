@@ -124,6 +124,12 @@ namespace Bq.Messaging.Tests
 
     public sealed class EdgeCaseLogProbe { }
     public sealed class EdgeFeatureHolder { }
+    public sealed class EdgeSagaData : IContainSagaData
+    {
+        public Guid Id { get; set; }
+        public string Originator { get; set; }
+        public string OriginalMessageId { get; set; }
+    }
 
     static class EdgeCaseTests
     {
@@ -164,6 +170,7 @@ namespace Bq.Messaging.Tests
             RunLoggingCases();
             await RunSettingsAndTestingCases();
             RunSerializationCases();
+            await RunSagaSpiCases();
             await RunInMemoryCases();
             Console.WriteLine("Edge case tests: " + passed + " passed, " + failures.Count + " failed.");
             if (failures.Count > 0) throw new Exception("Failed edge cases:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
@@ -525,6 +532,63 @@ namespace Bq.Messaging.Tests
                 section.ExpiredKeys = collection;
                 That(section.Key == "abc" && section.KeyIdentifier == "main" && section.KeyFormat == Bq.Messaging.Config.KeyFormat.Base64 && section.ExpiredKeys == collection, "section properties round trip");
             });
+        }
+
+        static async Task RunSagaSpiCases()
+        {
+            Case("saga metadata and collection lookups", () =>
+            {
+                var metadata = Bq.Messaging.Sagas.SagaMetadata.Create(typeof(ScannedSaga));
+                That(metadata.SagaType == typeof(ScannedSaga) && metadata.SagaEntityType == typeof(ScannedSagaState) && metadata.EntityName == typeof(ScannedSagaState).FullName, "type names");
+                That(metadata.IsMessageAllowedToStartTheSaga(typeof(SagaStart).FullName) && !metadata.IsMessageAllowedToStartTheSaga(typeof(SagaDone).FullName), "only the starting message may start the saga");
+                That(metadata.AssociatedMessages.Count == 2, "both messages are associated");
+                That(metadata.TryGetCorrelationProperty(out var correlation) && correlation.Name == "OrderId" && correlation.Type == typeof(string), "the correlation property is found");
+                That(!metadata.TryGetFinder(typeof(SagaStart).FullName, out var finder) && finder == null, "Bq has no custom finders");
+                That(Bq.Messaging.Sagas.SagaMetadata.IsSagaType(typeof(ScannedSaga)) && !Bq.Messaging.Sagas.SagaMetadata.IsSagaType(typeof(string)), "saga types are recognized");
+                Throws<ArgumentException>(() => Bq.Messaging.Sagas.SagaMetadata.Create(typeof(string)), "a non-saga type");
+                Throws<ArgumentNullException>(() => Bq.Messaging.Sagas.SagaMetadata.Create(null), "a null type");
+                var collection = new Bq.Messaging.Sagas.SagaMetadataCollection();
+                collection.Initialize(new[] { typeof(ScannedSaga), typeof(string), typeof(LegacyMappedSaga) });
+                That(collection.Count() == 2 && collection.Find(typeof(ScannedSaga)).SagaEntityType == typeof(ScannedSagaState), "the collection holds only sagas");
+                That(collection.FindByEntity(typeof(LegacyState)).SagaType == typeof(LegacyMappedSaga), "lookup by entity");
+                Throws<System.Collections.Generic.KeyNotFoundException>(() => collection.Find(typeof(string)), "an unknown saga");
+                Throws<System.Collections.Generic.KeyNotFoundException>(() => collection.FindByEntity(typeof(string)), "an unknown entity");
+                Throws<ArgumentNullException>(() => collection.Initialize(null), "null types");
+                That(new Bq.Messaging.Sagas.SagaFinderDefinition(typeof(ScannedSaga), null, null).Properties.Count == 0, "finder properties default to empty");
+                Throws<ArgumentNullException>(() => new Bq.Messaging.Sagas.SagaCorrelationProperty(null, 1), "a null property name");
+                Throws<ArgumentNullException>(() => new Bq.Messaging.Sagas.SagaCorrelationProperty("n", null), "a null property value");
+                Throws<ArgumentNullException>(() => new Bq.Messaging.Sagas.SagaMessage(null, true), "a null message type");
+            });
+            await CaseAsync("active saga instance and the persister contract", async () =>
+            {
+                var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+                Throws<ArgumentNullException>(() => new Bq.Messaging.Sagas.ActiveSagaInstance(null, null, null), "a missing clock");
+                var persister = new Bq.Messaging.Sagas.PersistenceSagaPersister();
+                var data = new EdgeSagaData();
+                await ThrowsAsync<NotSupportedException>(() => persister.Save(data, null, null, null), "Save");
+                await ThrowsAsync<NotSupportedException>(() => persister.Update(data, null, null), "Update");
+                await ThrowsAsync<NotSupportedException>(() => persister.Complete(data, null, null), "Complete");
+                await ThrowsAsync<NotSupportedException>(() => persister.Get<EdgeSagaData>(Guid.NewGuid(), null, null), "Get by id");
+                await ThrowsAsync<ArgumentException>(() => persister.Get<EdgeSagaData>("OrderId", "1", null, null), "Get without a Bq session");
+                var memory = new InMemoryPersistenceProvider("edge-spi");
+                using (var session = await memory.OpenSession())
+                {
+                    That(await persister.Get<EdgeSagaData>("OrderId", "missing", (SynchronizedStorageSession)session, null) == null, "a missing saga returns null");
+                    var state = new SagaStoredState<EdgeSagaData> { InstanceId = "1", Data = new EdgeSagaData { Originator = "me" } };
+                    var options = MessagePack.MessagePackSerializerOptions.Standard.WithResolver(MessagePack.Resolvers.ContractlessStandardResolver.Instance);
+                    await session.SaveSaga(typeof(EdgeSagaData).FullName, "42", MessagePack.MessagePackSerializer.Serialize(state, options), null);
+                    var found = await persister.Get<EdgeSagaData>("OrderId", 42, (SynchronizedStorageSession)session, null);
+                    That(found != null && found.Originator == "me", "a stored saga is read back by its correlation value");
+                }
+            });
+        }
+
+        static async Task ThrowsAsync<T>(Func<Task> action, string name) where T : Exception
+        {
+            try { await action(); }
+            catch (T) { return; }
+            catch (Exception ex) { throw new Exception(name + " threw " + ex.GetType().Name + " instead of " + typeof(T).Name); }
+            throw new Exception(name + " did not throw " + typeof(T).Name);
         }
 
         static async Task RunInMemoryCases()
