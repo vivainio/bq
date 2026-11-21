@@ -128,6 +128,46 @@ namespace Bq.Messaging.Tests
 
     public sealed class EdgeCaseLogProbe { }
     public sealed class EdgeFeatureHolder { }
+    public class EdgeSagaStart { public string Key { get; set; } public string Action { get; set; } }
+    public class EdgeSagaTimeout { public string Key { get; set; } }
+    public class EdgeSagaReply { public string Text { get; set; } }
+    public sealed class EdgeSagaWithOriginator : IContainSagaData
+    {
+        public Guid Id { get; set; }
+        public string Originator { get; set; }
+        public string OriginalMessageId { get; set; }
+        public string Key { get; set; }
+    }
+    public sealed class EdgePlainSagaState { public string Key { get; set; } }
+    public sealed class EdgeSaga : Saga<EdgeSagaWithOriginator>, IAmStartedByMessages<EdgeSagaStart>, IHandleTimeouts<EdgeSagaTimeout>
+    {
+        protected override void ConfigureHowToFindSaga(SagaPropertyMapper<EdgeSagaWithOriginator> mapper) =>
+            mapper.MapSaga(data => data.Key).ToMessage<EdgeSagaStart>(message => message.Key);
+        public async Task Handle(EdgeSagaStart message, IMessageHandlerContext context)
+        {
+            var state = new EdgeSagaTimeout { Key = message.Key };
+            switch (message.Action)
+            {
+                case "reply": await ReplyToOriginator(context, new EdgeSagaReply { Text = "done" }); break;
+                case "ctx-timespan": await RequestTimeout<EdgeSagaTimeout>(context, TimeSpan.FromMinutes(1)); break;
+                case "ctx-datetime": await RequestTimeout<EdgeSagaTimeout>(context, DateTime.UtcNow.AddMinutes(1)); break;
+                case "ctx-state-timespan": await RequestTimeout(context, TimeSpan.FromMinutes(1), state); break;
+                case "ctx-state-datetime": await RequestTimeout(context, DateTime.UtcNow.AddMinutes(1), state); break;
+                case "state-timespan": await RequestTimeout(TimeSpan.FromMinutes(1), state); break;
+                case "state-offset": await RequestTimeout(DateTimeOffset.UtcNow.AddMinutes(1), state); break;
+                case "negative": await RequestTimeout(TimeSpan.FromSeconds(-1), state); break;
+                case "null-state": await RequestTimeout<EdgeSagaTimeout>(DateTimeOffset.UtcNow, null); break;
+                case "complete": MarkAsComplete(); break;
+            }
+        }
+        public Task Timeout(EdgeSagaTimeout state, IMessageHandlerContext context) => Task.CompletedTask;
+    }
+    public sealed class EdgePlainSaga : Saga<EdgePlainSagaState>, IAmStartedByMessages<EdgeSagaStart>
+    {
+        protected override void ConfigureHowToFindSaga(SagaPropertyMapper<EdgePlainSagaState> mapper) =>
+            mapper.MapSaga(data => data.Key).ToMessage<EdgeSagaStart>(message => message.Key);
+        public Task Handle(EdgeSagaStart message, IMessageHandlerContext context) => ReplyToOriginator(context, new EdgeSagaReply());
+    }
     public sealed class EdgeStepLogical : RegisterStep
     {
         public EdgeStepLogical() : base("edge-step-logical", typeof(EdgeLogicalBehavior), "a step registered as an object", () => new EdgeLogicalBehavior())
@@ -229,6 +269,7 @@ namespace Bq.Messaging.Tests
             RunStartValidationCases();
             RunPipelineRegistrationCases();
             RunSoftCheckCases();
+            await RunSagaApiCases();
             await RunInMemoryCases();
             return cases.ToList();
         }
@@ -1015,6 +1056,44 @@ namespace Bq.Messaging.Tests
                 SoftChecks.Begin();
                 SoftChecks.Finish(null);
 #endif
+            });
+        }
+
+        static async Task RunSagaApiCases()
+        {
+            await CaseAsync("a saga replies to its originator and requests timeouts every supported way", async () =>
+            {
+                var test = new Bq.Testing.SagaTest<EdgeSaga, EdgeSagaWithOriginator>(new EdgeSaga(), new EdgeSagaWithOriginator { Originator = "originator.queue", OriginalMessageId = "origin-id" });
+                var context = await test.Handle(new EdgeSagaStart { Key = "k", Action = "reply" });
+                var reply = context.Messages.Single(m => m.Operation == Bq.Testing.MessageOperation.Reply);
+                That(reply.Destination == "originator.queue" && reply.CorrelationId == "origin-id", "the reply goes to the originator with the original message id");
+                foreach (var action in new[] { "ctx-timespan", "ctx-datetime", "ctx-state-timespan", "ctx-state-datetime", "state-timespan", "state-offset" })
+                    await test.Handle(new EdgeSagaStart { Key = "k", Action = action });
+                That(test.Timeouts.Count == 6 && test.Timeouts.All(t => t.StateType == typeof(EdgeSagaTimeout)), "each overload records a timeout: " + test.Timeouts.Count);
+                await ThrowsAsync<ArgumentOutOfRangeException>(() => test.Handle(new EdgeSagaStart { Key = "k", Action = "negative" }), "a negative delay");
+                await ThrowsAsync<ArgumentNullException>(() => test.Handle(new EdgeSagaStart { Key = "k", Action = "null-state" }), "a null timeout state");
+                That(test.Saga.Completed == false, "the saga is not complete until it says so");
+                await test.Handle(new EdgeSagaStart { Key = "k", Action = "complete" });
+                That(test.Completed, "MarkAsComplete is visible to the harness");
+            });
+            await CaseAsync("a saga without originator data cannot reply to it", async () =>
+            {
+                var withoutOriginator = new Bq.Testing.SagaTest<EdgeSaga, EdgeSagaWithOriginator>(new EdgeSaga(), new EdgeSagaWithOriginator());
+                await ThrowsAsync<InvalidOperationException>(() => withoutOriginator.Handle(new EdgeSagaStart { Key = "k", Action = "reply" }), "no recorded originator");
+                var plainData = new Bq.Testing.SagaTest<EdgePlainSaga, EdgePlainSagaState>(new EdgePlainSaga(), null);
+                await ThrowsAsync<InvalidOperationException>(() => plainData.Handle(new EdgeSagaStart { Key = "k", Action = "reply" }), "saga data that cannot carry an originator");
+            });
+            Case("saga registration rejects mappings the saga cannot serve", () =>
+            {
+                var configuration = Configuration("edge-saga-registration");
+                Throws<InvalidOperationException>(() => configuration.RegisterSaga<EdgeSaga, EdgeSagaWithOriginator>(() => new EdgeSaga(),
+                    mappings => mappings.Start<EdgeSagaTimeout>(message => "k")), "a start message the saga does not implement");
+                Throws<InvalidOperationException>(() => configuration.RegisterSaga<EdgeSaga, EdgeSagaWithOriginator>(() => new EdgeSaga(),
+                    mappings => mappings.Handle<EdgeUowMessage>(message => "k")), "a handled message the saga does not implement");
+                Throws<InvalidOperationException>(() => configuration.RegisterSaga<EdgeSaga, EdgeSagaWithOriginator>(() => new EdgeSaga(),
+                    mappings => mappings.Timeout<EdgeUowMessage>()), "a timeout the saga does not handle");
+                Throws<ArgumentNullException>(() => configuration.RegisterSaga<EdgeSaga, EdgeSagaWithOriginator>(() => new EdgeSaga(),
+                    mappings => mappings.Start<EdgeSagaStart>(null)), "a missing correlation function");
             });
         }
 
