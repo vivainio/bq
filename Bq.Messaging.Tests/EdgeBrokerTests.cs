@@ -374,6 +374,29 @@ namespace Bq.Messaging.Tests
                 }
             });
 
+            await Case("a saga with a timeout runs over JSON", async () =>
+            {
+                OrderWorkflow.TimeoutCalls = 0;
+                var name = "bq.test.edge.jsonsaga." + Guid.NewGuid().ToString("N");
+                var memory = new InMemoryPersistenceProvider(name);
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = memory };
+                configuration.UseSerialization<Bq.Messaging.Serialization.JsonSerializer>();
+                configuration.Route(typeof(StartOrder), name);
+                configuration.Route(typeof(ChangeOrder), name);
+                configuration.RegisterSaga<OrderWorkflow, OrderState>();
+                var wire = new List<string>();
+                configuration.MutateOutgoing = transport => { lock (wire) wire.Add(System.Text.Encoding.UTF8.GetString(transport.Body)); };
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                {
+                    await endpoint.Send(new StartOrder { OrderId = "json-1", DelayMs = 200 });
+                    await Eventually(() => Volatile.Read(ref OrderWorkflow.TimeoutCalls) == 1, "the saga timeout to fire");
+                    await endpoint.Send(new ChangeOrder { OrderId = "json-1", Complete = true });
+                    using (var session = await memory.OpenSession())
+                        await Eventually(() => session.LoadSaga(typeof(OrderWorkflow).FullName, "json-1").GetAwaiter().GetResult() == null, "the completed saga to be deleted");
+                    lock (wire) That(wire.Count >= 3 && wire.All(w => w.StartsWith("{")), "every message, the timeout included, is JSON on the wire: " + string.Join(" | ", wire));
+                }
+            });
+
             foreach (var mode in new[] { "immediate", "delayed", "discard", "error" })
             {
                 var current = mode;
