@@ -657,6 +657,60 @@ namespace Bq.Messaging.Tests
                 }
             });
 
+            await Case("an endpoint's uniform session sends every kind of message", async () =>
+            {
+                var name = "bq.test.edge.uniform." + Guid.NewGuid().ToString("N");
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                configuration.Route(typeof(EdgeUowMessage), name);
+                var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+                configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen[m.Text] = c.MessageHeaders.TryGetValue("h", out var header) ? header : ""; return Task.CompletedTask; }));
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                {
+                    var session = endpoint.CreateUniformSession();
+                    var due = DateTimeOffset.UtcNow.AddMilliseconds(200);
+                    await session.Send(new EdgeUowMessage { Text = "u-send" });
+                    await session.Send(name, new EdgeUowMessage { Text = "u-dest" });
+                    await session.SendLocal(new EdgeUowMessage { Text = "u-local" });
+                    await session.Send<EdgeUowMessage>(m => m.Text = "u-init");
+                    await session.Send(new EdgeUowMessage { Text = "u-opts" }, new SendOptions());
+                    await session.Send((object)new EdgeUowMessage { Text = "u-object-opts" }, new SendOptions());
+                    await session.Send<EdgeUowMessage>(m => m.Text = "u-init-opts", new SendOptions());
+                    await session.SendAt(new EdgeUowMessage { Text = "u-at" }, due);
+                    await session.SendAt(name, new EdgeUowMessage { Text = "u-at-dest" }, due);
+                    await session.SendLocalAt(new EdgeUowMessage { Text = "u-local-at" }, due);
+                    await session.Publish(new EdgeUowMessage { Text = "u-publish" });
+                    await session.Publish<EdgeUowMessage>(m => m.Text = "u-publish-init");
+                    await session.Publish(new EdgeUowMessage { Text = "u-publish-opts" }, new PublishOptions());
+                    await session.PublishAt(new EdgeUowMessage { Text = "u-publish-at" }, due);
+                    await session.WithHeader("h", "scoped").Send(new EdgeUowMessage { Text = "u-header" });
+                    var expected = new[] { "u-send", "u-dest", "u-local", "u-init", "u-opts", "u-object-opts", "u-init-opts", "u-at", "u-at-dest", "u-local-at", "u-header" };
+                    await Eventually(() => expected.All(seen.ContainsKey), "every message to be handled; missing " + string.Join(",", expected.Where(e => !seen.ContainsKey(e))));
+                    That(seen["u-header"] == "scoped", "a header added to the session travels with its messages");
+                }
+            });
+            foreach (var failing in new[] { "throwing policy", "policy naming the endpoint's own queue" })
+            {
+                var mode = failing;
+                await Case("a recoverability " + mode + " falls back to the default", async () =>
+                {
+                    var name = "bq.test.edge.policyfail." + Guid.NewGuid().ToString("N");
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name), ImmediateRetries = 0 };
+                    configuration.Recoverability.DelayedRetries = new TimeSpan[0];
+                    if (mode == "throwing policy") configuration.Recoverability.Policy = context => throw new InvalidOperationException("policy bug");
+                    else configuration.Recoverability.CustomPolicy((config, error) => RecoverabilityAction.MoveToError(name));
+                    configuration.Route(typeof(EdgeUowMessage), name);
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => throw new ApplicationException("handler failed")));
+                    var errored = new TaskCompletionSource<FailedMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    configuration.Notifications.Errors.MessageSentToErrorQueue += (sender, message) => errored.TrySetResult(message);
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        await endpoint.Send(new EdgeUowMessage { Text = "x" });
+                        var failed = await Within(errored.Task);
+                        That(failed.ErrorQueue == name + ".error", "the message reaches the default error queue: " + failed.ErrorQueue);
+                    }
+                });
+            }
+
             foreach (var mode in new[] { "immediate", "delayed", "discard", "error" })
             {
                 var current = mode;
