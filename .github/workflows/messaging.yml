@@ -11,6 +11,9 @@ on:
       - 'Bq.Persistence.Oracle/**'
       - 'Bq.Extensions.CastleWindsor/**'
       - 'Bq.Reference.Windsor/**'
+      - 'Bq.Reference.Net10/**'
+      - 'Bq.Messaging.Tests.TUnit/**'
+      - 'Bq.Persistence.Oracle.Ef6Check/**'
       - 'scripts/test-rabbitmq.sh'
       - 'scripts/test-rabbit-sim.sh'
       - '.github/workflows/messaging.yml'
@@ -23,6 +26,9 @@ on:
       - 'Bq.Persistence.Oracle/**'
       - 'Bq.Extensions.CastleWindsor/**'
       - 'Bq.Reference.Windsor/**'
+      - 'Bq.Reference.Net10/**'
+      - 'Bq.Messaging.Tests.TUnit/**'
+      - 'Bq.Persistence.Oracle.Ef6Check/**'
       - 'scripts/test-rabbitmq.sh'
       - 'scripts/test-rabbit-sim.sh'
       - '.github/workflows/messaging.yml'
@@ -34,7 +40,7 @@ permissions:
 jobs:
   simulator:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v6
@@ -48,9 +54,58 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mono-devel libmono-sqlite4.0-cil
       - name: Install rabbit-sim
-        run: python -m pip install --only-binary=:all: rabbit-sim==0.1.0
+        run: |
+          python -m pip install --only-binary=:all: rabbit-sim==0.1.0
       - name: Run messaging integration tests
         run: bash scripts/test-rabbit-sim.sh
+
+  oracle:
+    # The Oracle checks and the whole-endpoint test run against Oracle Database Free, with rabbit-sim as the broker.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      oracle:
+        image: gvenzl/oracle-free:23-slim-faststart
+        env:
+          ORACLE_PASSWORD: bqtest
+          APP_USER: bq
+          APP_USER_PASSWORD: bqtest
+        ports:
+          - 1521:1521
+        options: >-
+          --health-cmd healthcheck.sh
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install Mono and SQLite provider
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mono-devel libmono-sqlite4.0-cil
+      - name: Install rabbit-sim
+        run: |
+          python -m pip install --only-binary=:all: rabbit-sim==0.1.0
+      - name: Create the Bq schema
+        run: |
+          container=$(docker ps --filter ancestor=gvenzl/oracle-free:23-slim-faststart --format '{{.ID}}' | head -n 1)
+          docker cp Bq.Persistence.Oracle/migrations/001_create_bq_tables.sql "$container:/tmp/001.sql"
+          docker exec "$container" bash -c "echo exit | sqlplus -s bq/bqtest@//localhost:1521/FREEPDB1 @/tmp/001.sql"
+      - name: Collect the ODP.NET driver with its dependencies
+        run: dotnet build Bq.Persistence.Oracle.Ef6Check -o "$RUNNER_TEMP/oracle-driver"
+      - name: Run messaging tests with Oracle
+        env:
+          BQ_ORACLE_CONNECTION_STRING: "User Id=bq;Password=bqtest;Data Source=localhost:1521/FREEPDB1"
+          BQ_ORACLE_CONNECTION_TYPE: Oracle.ManagedDataAccess.Client.OracleConnection
+        run: |
+          export BQ_ORACLE_DRIVER_ASSEMBLY="$RUNNER_TEMP/oracle-driver/Oracle.ManagedDataAccess.dll"
+          bash scripts/test-rabbit-sim.sh
 
   rabbitmq:
     if: github.event_name == 'workflow_dispatch'
