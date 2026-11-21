@@ -9,7 +9,9 @@ trap 'kill $broker 2>/dev/null || true; rm -rf "$dir"' EXIT
 port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
 http_port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])')
 printf '+Bq.Messaging\n+Bq.Persistence.Sqlite\n+Bq.Persistence.Oracle\n+Bq.Testing\n+Bq.Extensions.CastleWindsor\n' >"$dir/filter.txt"
-rabbit-sim --bind 127.0.0.1 --port "$port" --http-port "$http_port" --data "$dir/broker.db" >"$dir/broker.log" 2>&1 &
+rabbitmq_args=()
+if rabbit-sim --help 2>&1 | grep -q -- '--rabbitmq'; then rabbitmq_args=(--rabbitmq 4); fi
+rabbit-sim --bind 127.0.0.1 --port "$port" --http-port "$http_port" "${rabbitmq_args[@]}" --data "$dir/broker.db" >"$dir/broker.log" 2>&1 &
 broker=$!
 sleep 1
 BQ_RABBITMQ_URI="amqp://guest:guest@127.0.0.1:$port/" BQ_RABBITSIM_HTTP="http://127.0.0.1:$http_port" \

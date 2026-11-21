@@ -47,8 +47,12 @@ with socket.socket() as listener:
 PYTHON
 )
 
+# Emulate RabbitMQ 4's stricter checks when this rabbit-sim can, so a test that RabbitMQ 4 would reject fails here too.
+rabbitmq_args=()
+if rabbit-sim --help 2>&1 | grep -q -- '--rabbitmq'; then rabbitmq_args=(--rabbitmq 4); fi
+
 start_broker() {
-    rabbit-sim --bind 127.0.0.1 --port "$port" --http-port "$http_port" --data "$test_dir/broker.db" \
+    rabbit-sim --bind 127.0.0.1 --port "$port" --http-port "$http_port" "${rabbitmq_args[@]}" --data "$test_dir/broker.db" \
         >>"$test_dir/broker.log" 2>&1 &
     broker_pid=$!
     local attempt
