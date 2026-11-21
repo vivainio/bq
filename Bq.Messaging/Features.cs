@@ -133,10 +133,24 @@ namespace Bq.Messaging.Features
 
     public static class SettingsExtensions
     {
-        public static void EnableFeatureByDefault<T>(this SettingsHolder settings) where T : Feature => settings.EnableFeatureByDefault(typeof(T));
+        public static SettingsHolder EnableFeatureByDefault<T>(this SettingsHolder settings) where T : Feature => settings.EnableFeatureByDefault(typeof(T));
 
-        public static void EnableFeatureByDefault(this SettingsHolder settings, Type featureType) =>
+        public static SettingsHolder EnableFeatureByDefault(this SettingsHolder settings, Type featureType)
+        {
             (settings ?? throw new ArgumentNullException(nameof(settings))).SetDefault(StateKey(featureType), FeatureState.Enabled);
+            return settings;
+        }
+
+        public static string EndpointName(this ReadOnlySettings settings) => settings.Get<string>(EndpointConfiguration.EndpointNameKey);
+
+        public static string LocalAddress(this ReadOnlySettings settings) =>
+            settings.GetOrDefault<string>("Bq.LocalAddress") ?? settings.EndpointName();
+
+        public static string InstanceSpecificQueue(this ReadOnlySettings settings) => settings.GetOrDefault<string>("Bq.InstanceSpecificQueue");
+
+        /// <summary>The types found by assembly scanning, available to features once scanning has run.</summary>
+        public static IList<Type> GetAvailableTypes(this ReadOnlySettings settings) =>
+            settings.GetOrDefault<IList<Type>>("Bq.AvailableTypes") ?? new List<Type>();
 
         public static bool IsFeatureEnabled<T>(this ReadOnlySettings settings) where T : Feature => settings.IsFeatureEnabled(typeof(T));
         public static bool IsFeatureEnabled(this ReadOnlySettings settings, Type featureType) =>

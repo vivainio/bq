@@ -1379,6 +1379,14 @@ namespace Bq.Messaging.Tests
                     "scanned handlers are resolved from the container with their dependencies");
                 Assert(await Within(InvokeProbe.Seen.Task) == "ScannedHandler:ScannedCommand:True:True",
                     "handler invocation behaviors wrap the handler and see its type, message and builder");
+                var runs = 0;
+                var twice = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                await endpoint.ScheduleEvery(TimeSpan.FromMilliseconds(300), "probe", context =>
+                {
+                    if (Interlocked.Increment(ref runs) == 2) twice.TrySetResult(true);
+                    return Task.CompletedTask;
+                });
+                Assert(await Within(twice.Task), "ScheduleEvery runs the task repeatedly");
                 await endpoint.Stop();
                 Assert(await Within(ScannedFeature.Stopped.Task), "feature startup tasks stop with the endpoint");
             }
@@ -1470,6 +1478,29 @@ namespace Bq.Messaging.Tests
             Assert(conventions.IsEncryptedProperty(typeof(Response).GetProperty("Text")), "the encrypted property convention matches properties");
             Assert(!new EndpointConfiguration("convention-default", new Uri("amqp://localhost/")).Conventions().Conventions
                 .IsEncryptedProperty(typeof(Response).GetProperty("Text")), "no property is encrypted by default");
+
+            var compat = new EndpointConfiguration("compat-test", new Uri("amqp://localhost/"));
+            compat.EnableOutbox();
+            compat.License("ignored");
+            compat.UniquelyIdentifyRunningInstance().UsingCustomDisplayName("x");
+            compat.TimeToWaitBeforeTriggeringCriticalErrorOnTimeoutOutages(TimeSpan.FromMinutes(2));
+            Assert(compat.CriticalErrorThreshold == TimeSpan.FromMinutes(2), "outage wait maps to the critical error threshold");
+            var unsupported = 0;
+            try { compat.EnableOutbox().TimeToKeepDeduplicationData(TimeSpan.FromDays(1)); } catch (NotSupportedException) { unsupported++; }
+            try { compat.UnitOfWork().WrapHandlersInATransactionScope(); } catch (NotSupportedException) { unsupported++; }
+            Assert(unsupported == 2, "settings that Bq cannot honour fail at configuration time");
+            compat.MakeInstanceUniquelyAddressable("n1");
+            compat.ApplyTransportSettings();
+            var compatSettings = Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(compat);
+            Assert(compatSettings.EndpointName() == "compat-test" && compatSettings.InstanceSpecificQueue() == "compat-test-n1" &&
+                compatSettings.LocalAddress() == "compat-test", "feature settings expose endpoint names and queues");
+            var wire = new IncomingMessage("native-id", new System.Collections.Generic.Dictionary<string, string> { ["NServiceBus.MessageId"] = "logical-id" }, new byte[] { 1 });
+            Assert(wire.MessageId == "logical-id" && wire.NativeMessageId == "native-id", "IncomingMessage builds from wire data");
+            var logDirectory = Path.Combine(Path.GetTempPath(), "bq-log-" + Guid.NewGuid().ToString("N"));
+            Bq.Messaging.Logging.LogManager.Use<Bq.Messaging.Logging.DefaultFactory>().Directory(logDirectory);
+            Bq.Messaging.Logging.LogManager.GetLogger("probe").Info("hello file");
+            Assert(Directory.GetFiles(logDirectory).Any(file => File.ReadAllText(file).Contains("hello file")), "DefaultFactory writes log files");
+            Bq.Messaging.Logging.LogManager.Use<Bq.Messaging.Logging.DefaultFactory>();
 
             var featureConfiguration = new EndpointConfiguration("feature-test", new Uri("amqp://localhost/"));
             featureConfiguration.EnableFeature<DependentFeature>();

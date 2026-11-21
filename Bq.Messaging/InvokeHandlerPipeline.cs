@@ -10,7 +10,9 @@ namespace Bq.Messaging.Unicast.Messages
 {
     public class MessageMetadata
     {
-        public MessageMetadata(Type messageType, Type[] messageHierarchy = null)
+        public MessageMetadata(Type messageType) : this(messageType, null) { }
+
+        public MessageMetadata(Type messageType, Type[] messageHierarchy)
         {
             MessageType = messageType ?? throw new ArgumentNullException(nameof(messageType));
             MessageHierarchy = messageHierarchy ?? new[] { messageType }.Concat(messageType.GetInterfaces()).ToArray();
@@ -31,8 +33,19 @@ namespace Bq.Messaging.Pipeline
             Instance = instance;
         }
 
+        readonly Func<object, object, IMessageHandlerContext, Task> invocation;
+
+        public MessageHandler(Func<object, object, IMessageHandlerContext, Task> invocation, Type handlerType)
+        {
+            this.invocation = invocation ?? throw new ArgumentNullException(nameof(invocation));
+            HandlerType = handlerType;
+        }
+
         public Type HandlerType { get; }
         public object Instance { get; set; }
+
+        public Task Invoke(object message, IMessageHandlerContext handlerContext) =>
+            (invocation ?? throw new InvalidOperationException("This handler was not created with an invocation."))(Instance, message, handlerContext);
     }
 }
 
@@ -48,6 +61,7 @@ namespace Bq.Messaging
         new Dictionary<string, string> Headers { get; }
         object MessageBeingHandled { get; }
         bool HandlerInvocationAborted { get; }
+        bool HandleCurrentMessageLaterWasCalled { get; }
         MessageMetadata MessageMetadata { get; }
     }
 
@@ -70,6 +84,7 @@ namespace Bq.Messaging
         public Dictionary<string, string> Headers { get; }
         public object MessageBeingHandled { get; }
         public bool HandlerInvocationAborted => false;
+        public bool HandleCurrentMessageLaterWasCalled { get; private set; }
         public MessageMetadata MessageMetadata { get; }
         public ExceptionDispatchInfo DownstreamFailure { get; set; }
         public IBuilder Builder => builder();
@@ -84,7 +99,7 @@ namespace Bq.Messaging
         public IPersistenceSession PersistenceSession => inner.PersistenceSession;
         public SynchronizedStorageSession SynchronizedStorageSession => inner.SynchronizedStorageSession;
         public void DoNotContinueDispatchingCurrentMessageToHandlers() => inner.DoNotContinueDispatchingCurrentMessageToHandlers();
-        public Task HandleCurrentMessageLater() => inner.HandleCurrentMessageLater();
+        public Task HandleCurrentMessageLater() { HandleCurrentMessageLaterWasCalled = true; return inner.HandleCurrentMessageLater(); }
         public Task ForwardCurrentMessageTo(string destination) => inner.ForwardCurrentMessageTo(destination);
         public Task Send<T>(T message) => inner.Send(message);
         public Task Send<T>(Action<T> initialize) => inner.Send(initialize);

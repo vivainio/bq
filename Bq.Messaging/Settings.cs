@@ -89,6 +89,8 @@ namespace Bq.Messaging.Settings
         public void Set(string key, object value) { lock (gate) overrides[Require(key)] = value; }
         public void Set<T>(T value) => Set(typeof(T).FullName, value);
         public void Set<T>(Action value) => Set(typeof(T).FullName, value);
+        public void Set<T>(object value) => Set(typeof(T).FullName, value);
+        public void SetDefault<T>(object value) => SetDefault(typeof(T).FullName, value);
         public void SetDefault(string key, object value) { lock (gate) defaults[Require(key)] = value; }
         public void SetDefault<T>(T value) => SetDefault(typeof(T).FullName, value);
         public void SetDefault<T>(Action value) => SetDefault(typeof(T).FullName, value);

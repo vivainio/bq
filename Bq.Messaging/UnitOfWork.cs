@@ -64,8 +64,12 @@ namespace Bq.Messaging.UnitOfWork
 
 namespace Bq.Messaging
 {
-    public class MessageDeserializationException : Exception
+    [Serializable]
+    public class MessageDeserializationException : System.Runtime.Serialization.SerializationException
     {
+        protected MessageDeserializationException(System.Runtime.Serialization.SerializationInfo info, System.Runtime.Serialization.StreamingContext context)
+            : base(info, context) { }
+
         public MessageDeserializationException(string message) : base(message) { }
         public MessageDeserializationException(string message, Exception innerException) : base(message, innerException) { }
     }

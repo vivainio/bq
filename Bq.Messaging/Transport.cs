@@ -92,6 +92,9 @@ namespace Bq.Messaging
             if (Settings.TryGet<Func<string>>(TransportKeys.ConnectionString, out var connectionString))
                 RabbitMqUri = TransportConnectionString.ToUri(connectionString());
             if (Settings.TryGet<TimeSpan>(TransportKeys.CircuitBreaker, out var wait)) CriticalErrorThreshold = wait;
+            var local = LocalAddress ?? Name;
+            Settings.Set("Bq.LocalAddress", local);
+            if (InstanceDiscriminator != null) Settings.Set("Bq.InstanceSpecificQueue", InstanceRouting.InstanceAddress(local, InstanceDiscriminator));
         }
     }
 

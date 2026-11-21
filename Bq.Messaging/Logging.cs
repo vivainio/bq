@@ -44,20 +44,29 @@ namespace Bq.Messaging.Logging
     public class DefaultFactory : LoggingFactoryDefinition
     {
         LogLevel level = LogLevel.Info;
+        string directory;
 
         public void Level(LogLevel level) => this.level = level;
 
-        protected internal override ILoggerFactory GetLoggingFactory() => new TraceLoggerFactory(level);
+        /// <summary>Also appends log lines to a daily file in the directory.</summary>
+        public void Directory(string directory)
+        {
+            if (string.IsNullOrWhiteSpace(directory)) throw new ArgumentException("A directory is required.", nameof(directory));
+            this.directory = directory;
+        }
+
+        protected internal override ILoggerFactory GetLoggingFactory() => new TraceLoggerFactory(level, directory);
 
         sealed class TraceLoggerFactory : ILoggerFactory
         {
             readonly LogLevel level;
-            public TraceLoggerFactory(LogLevel level) { this.level = level; }
+            readonly string directory;
+            public TraceLoggerFactory(LogLevel level, string directory) { this.level = level; this.directory = directory; }
             public ILog GetLogger(Type type) => GetLogger((type ?? throw new ArgumentNullException(nameof(type))).FullName);
             public ILog GetLogger(string name)
             {
                 if (string.IsNullOrEmpty(name)) throw new ArgumentException("A logger name is required.", nameof(name));
-                return new TraceLog(name, level);
+                return new TraceLog(name, level, directory);
             }
         }
 
@@ -65,7 +74,9 @@ namespace Bq.Messaging.Logging
         {
             readonly string name;
             readonly LogLevel minimum;
-            public TraceLog(string name, LogLevel minimum) { this.name = name; this.minimum = minimum; }
+            static readonly object FileLock = new object();
+            readonly string directory;
+            public TraceLog(string name, LogLevel minimum, string directory) { this.name = name; this.minimum = minimum; this.directory = directory; }
             bool Enabled(LogLevel value) => value >= minimum;
             public bool IsDebugEnabled => Enabled(LogLevel.Debug);
             public bool IsInfoEnabled => Enabled(LogLevel.Info);
@@ -80,6 +91,14 @@ namespace Bq.Messaging.Logging
                 if (value >= LogLevel.Error) System.Diagnostics.Trace.TraceError(text);
                 else if (value == LogLevel.Warn) System.Diagnostics.Trace.TraceWarning(text);
                 else System.Diagnostics.Trace.TraceInformation(text);
+                if (directory == null) return;
+                try
+                {
+                    System.IO.Directory.CreateDirectory(directory);
+                    var file = System.IO.Path.Combine(directory, "bq-" + DateTime.UtcNow.ToString("yyyyMMdd") + ".txt");
+                    lock (FileLock) System.IO.File.AppendAllText(file, DateTime.UtcNow.ToString("O") + " " + value + " " + text + Environment.NewLine);
+                }
+                catch (Exception) { /* logging must not fail message processing */ }
             }
 
             static string Format(string format, object[] args) => string.Format(format, args);

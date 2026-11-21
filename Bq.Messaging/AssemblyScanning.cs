@@ -53,6 +53,11 @@ namespace Bq.Messaging
                 .Where(type => type.IsClass && !type.IsAbstract && !type.IsGenericTypeDefinition && !Scanner.ExcludedTypes.Contains(type))
                 .Distinct().ToList();
 
+            // ExecuteTheseHandlersFirst: listed handlers register first and so run first; the rest keep scan order.
+            types = types.Select((type, index) => (type, index))
+                .OrderBy(entry => HandlerOrder.IndexOf(entry.type) is var position && position >= 0 ? position : int.MaxValue)
+                .ThenBy(entry => entry.index).Select(entry => entry.type).ToList();
+            Settings.Set<IList<Type>>(types);
             var handlerRegistrations = new List<Action>();
             var componentRegistrations = new List<Type>();
             foreach (var type in types)

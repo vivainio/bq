@@ -17,7 +17,21 @@ namespace Bq.Messaging
     /// </summary>
     public abstract class PersistenceDefinition
     {
+        readonly System.Collections.Generic.List<Type> supported = new System.Collections.Generic.List<Type>();
+        readonly System.Collections.Generic.List<Action<SettingsHolder>> defaults = new System.Collections.Generic.List<Action<SettingsHolder>>();
+
         public abstract IPersistenceProvider CreateProvider(ReadOnlySettings settings);
+
+        protected void Supports<T>(Action<SettingsHolder> action) where T : StorageType
+        {
+            supported.Add(typeof(T));
+            if (action != null) defaults.Add(action);
+        }
+
+        protected void Defaults(Action<SettingsHolder> action) => defaults.Add(action ?? throw new ArgumentNullException(nameof(action)));
+        public bool HasSupportFor<T>() where T : StorageType => HasSupportFor(typeof(T));
+        public bool HasSupportFor(Type storageType) => supported.Contains(storageType ?? throw new ArgumentNullException(nameof(storageType)));
+        internal void ApplyDefaults(SettingsHolder settings) { foreach (var action in defaults) action(settings); }
     }
 
     /// <summary>Storage categories used by <c>UsePersistence&lt;T, S&gt;</c>. Bq stores them all in one provider.</summary>
@@ -33,6 +47,7 @@ namespace Bq.Messaging
     public class PersistenceExtensions : ExposeSettings
     {
         public PersistenceExtensions(SettingsHolder settings) : base(settings) { }
+        public PersistenceExtensions(Type definitionType, SettingsHolder settings, Type storageType) : base(settings) { }
     }
 
     public class PersistenceExtensions<T> : PersistenceExtensions where T : PersistenceDefinition
@@ -92,7 +107,11 @@ namespace Bq.Messaging
         internal void ApplyPersistenceSettings()
         {
             if (Persistence == null && Settings.TryGet<Type>(PersistenceConfig.DefinitionKey, out var definitionType))
-                Persistence = ((PersistenceDefinition)Activator.CreateInstance(definitionType)).CreateProvider(Settings);
+            {
+                var definition = (PersistenceDefinition)Activator.CreateInstance(definitionType);
+                definition.ApplyDefaults(Settings);
+                Persistence = definition.CreateProvider(Settings);
+            }
             if (installersEnabled && Persistence is IInstallablePersistence installable)
                 installable.Initialize().GetAwaiter().GetResult();
         }

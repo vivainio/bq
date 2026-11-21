@@ -33,6 +33,8 @@ namespace Bq.Messaging
 
     public sealed class FailedConfig
     {
+        public FailedConfig(string errorQueue) : this(errorQueue, new HashSet<Type>()) { }
+
         public FailedConfig(string errorQueue, HashSet<Type> unrecoverableExceptionTypes)
         {
             ErrorQueue = errorQueue;
@@ -63,20 +65,27 @@ namespace Bq.Messaging
         internal IncomingMessage(string messageId, IDictionary<string, object> headers, ReadOnlyMemory<byte> body)
         {
             MessageId = messageId;
+            NativeMessageId = messageId;
             Headers = MessageHeaders.AsText(headers ?? new Dictionary<string, object>())
                 .ToDictionary(header => header.Key, header => header.Value);
             Body = body.ToArray();
         }
 
-        internal IncomingMessage(string messageId, Dictionary<string, string> headers, byte[] body)
+        public IncomingMessage(string nativeMessageId, Dictionary<string, string> headers, byte[] body)
         {
+            if (string.IsNullOrEmpty(nativeMessageId)) throw new ArgumentException("A native message ID is required.", nameof(nativeMessageId));
+            if (headers == null) throw new ArgumentNullException(nameof(headers));
+            if (body == null) throw new ArgumentNullException(nameof(body));
+            var messageId = headers.TryGetValue(Headers_MessageId, out var original) && !string.IsNullOrEmpty(original) ? original : nativeMessageId;
             MessageId = messageId;
+            NativeMessageId = nativeMessageId;
             Headers = headers;
             Body = body;
         }
 
+        const string Headers_MessageId = "NServiceBus.MessageId";
         public string MessageId { get; }
-        public string NativeMessageId => MessageId;
+        public string NativeMessageId { get; }
         public Dictionary<string, string> Headers { get; }
         public byte[] Body { get; private set; }
 

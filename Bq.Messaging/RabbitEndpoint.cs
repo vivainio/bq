@@ -38,6 +38,7 @@ namespace Bq.Messaging
         readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
         readonly Func<IncomingPhysicalContext, Func<Task>, Task> physical;
         readonly bool hasPhysicalBehaviors;
+        internal EndpointConfiguration Configuration => configuration;
         readonly Func<FailedMessage, Task> errorQueueNotification;
         readonly Func<ImmediateRetryMessage, Task> immediateRetryNotification;
         readonly Func<DelayedRetryMessage, Task> delayedRetryNotification;
@@ -230,6 +231,7 @@ namespace Bq.Messaging
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
             configuration.ApplyTransportSettings();
             configuration.ApplyPersistenceSettings();
+            configuration.RegisterScheduledTaskHandler();
             configuration.ActivateFeatures();
             if (string.IsNullOrWhiteSpace(configuration.EventsExchange) ||
                 string.IsNullOrWhiteSpace(configuration.ErrorExchange) ||

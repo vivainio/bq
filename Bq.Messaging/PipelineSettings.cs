@@ -32,8 +32,17 @@ namespace Bq.Messaging
         {
             MessageType = type;
             Instance = instance;
+            Metadata = new Unicast.Messages.MessageMetadata(type);
         }
 
+        public LogicalMessage(Unicast.Messages.MessageMetadata metadata, object instance)
+        {
+            Metadata = metadata ?? throw new ArgumentNullException(nameof(metadata));
+            MessageType = metadata.MessageType;
+            Instance = instance ?? throw new ArgumentNullException(nameof(instance));
+        }
+
+        public Unicast.Messages.MessageMetadata Metadata { get; }
         public Type MessageType { get; }
         public object Instance { get; }
     }
