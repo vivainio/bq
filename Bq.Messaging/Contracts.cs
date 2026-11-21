@@ -151,6 +151,7 @@ namespace Bq.Messaging
         internal List<IMutateOutgoingTransportMessages> OutgoingTransportMutators { get; } = new List<IMutateOutgoingTransportMessages>();
         public Action<TransportMessage> MutateOutgoing { get; set; }
         public IncomingPipeline Incoming { get; } = new IncomingPipeline();
+        internal List<Func<UnitOfWork.IManageUnitsOfWork>> UnitOfWorkFactories { get; } = new List<Func<UnitOfWork.IManageUnitsOfWork>>();
         public PipelineSettings Pipeline { get; }
         public RecoverabilityOptions Recoverability { get; } = new RecoverabilityOptions();
         // Retained for existing applications.

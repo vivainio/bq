@@ -79,6 +79,9 @@ namespace Bq.Messaging
         internal void UsePhysical(Func<IncomingPhysicalContext, Func<Task>, Task> behavior) =>
             physicalBehaviors.Add(behavior ?? throw new ArgumentNullException(nameof(behavior)));
 
+        internal void UsePhysicalOutermost(Func<IncomingPhysicalContext, Func<Task>, Task> behavior) =>
+            physicalBehaviors.Insert(0, behavior ?? throw new ArgumentNullException(nameof(behavior)));
+
         internal void ReplacePhysical(Func<IncomingPhysicalContext, Func<Task>, Task> current,
             Func<IncomingPhysicalContext, Func<Task>, Task> replacement) =>
             physicalBehaviors[physicalBehaviors.IndexOf(current)] = replacement;

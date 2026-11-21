@@ -803,7 +803,7 @@ namespace Bq.Messaging
                                         { unrecoverable = true; throw new InvalidOperationException("Unknown message type or content type."); }
                                         object message;
                                         try { message = DeserializeMessage(registration.Type, attemptBody); }
-                                        catch (Exception ex) { unrecoverable = true; throw new InvalidOperationException("Message deserialization failed.", ex); }
+                                        catch (Exception ex) { unrecoverable = true; throw new MessageDeserializationException("Message deserialization failed.", ex); }
                                         var incomingContext = new IncomingMessageContext(message, attemptContext, registration.Type, attemptTypeName, attempt, cycle);
                                         await incoming(incomingContext, async () =>
                                         {

@@ -121,6 +121,17 @@ namespace Bq.Messaging.Tests
         }
     }
 
+    sealed class RecordingUnit : Bq.Messaging.UnitOfWork.IManageUnitsOfWork
+    {
+        public static int AtHandler;
+        public static readonly System.Collections.Concurrent.ConcurrentQueue<string> Log =
+            new System.Collections.Concurrent.ConcurrentQueue<string>();
+        readonly string name;
+        public RecordingUnit(string name) { this.name = name; }
+        public Task Begin() { Log.Enqueue(name + ".begin"); return Task.CompletedTask; }
+        public Task End(Exception ex = null) { Log.Enqueue(name + ".end" + (ex == null ? "" : ".failed")); return Task.CompletedTask; }
+    }
+
     public sealed class PhysicalPilotBehavior : Behavior<IIncomingPhysicalMessageContext>
     {
         public static int Skipped;
@@ -566,6 +577,8 @@ namespace Bq.Messaging.Tests
             windsor.ReplaceBehavior<ObservePilotEvent>(receiver, "second-observer", "Resolve the observer through Windsor");
             receiver.Pipeline.Replace("first-observer", () => new ObservePilotEvent(), "Inspect the declared event contract");
             receiver.Pipeline.Register<OrderedPilotStep>();
+            Bq.Messaging.UnitOfWork.UnitOfWorkConfigurationExtensions.RegisterUnitOfWork(receiver, () => new RecordingUnit("a"));
+            Bq.Messaging.UnitOfWork.UnitOfWorkConfigurationExtensions.RegisterUnitOfWork(receiver, () => new RecordingUnit("b"));
             receiver.Pipeline.Register("physical-second", new PhysicalPilotBehavior(false), "Run after the first physical behavior");
             receiver.Pipeline.Register<PhysicalFirstStep>();
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -577,6 +590,10 @@ namespace Bq.Messaging.Tests
                     "logical header edits reach the handler while raw AMQP headers retain the received value");
                 Assert(context.GetHeader("migration-source") == "pilot-producer", "endpoint headers reach published events");
                 Assert(context.GetHeader("pilot-mutator") == "applied", "registered mutator headers reach the handler");
+                var seenUnits = RecordingUnit.Log.ToArray();
+                Assert(seenUnits.Length >= 2 && seenUnits.Skip(seenUnits.Length - 2).SequenceEqual(new[] { "a.begin", "b.begin" }),
+                    "units of work begin in registration order before the handler");
+                Volatile.Write(ref RecordingUnit.AtHandler, seenUnits.Length);
                 Assert(context.GetHeader("physical-stage") == "applied" && context.GetHeader("physical-order") == "first",
                     "ordered physical behavior header edits reach the handler");
                 Assert(context.GetHeader("pilot-transport-mutator") == "applied", "transport mutator headers reach the handler");
@@ -666,6 +683,10 @@ namespace Bq.Messaging.Tests
                         Action<Command> initializeCommand = command => command.Text = "pilot command";
                         await producer.Send(initializeCommand);
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
+                        await WaitFor(() => Task.FromResult(RecordingUnit.Log.Count >= Volatile.Read(ref RecordingUnit.AtHandler) + 2),
+                            "units of work end after the handler");
+                        Assert(string.Join(",", RecordingUnit.Log.Skip(Volatile.Read(ref RecordingUnit.AtHandler)).Take(2)) == "b.end,a.end",
+                            "units of work end in reverse order");
                         var skip = new SendOptions();
                         skip.SetHeader("physical-skip", "1");
                         await producer.Send(new Command { Text = "physically skipped" }, skip);
