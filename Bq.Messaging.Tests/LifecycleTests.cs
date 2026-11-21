@@ -50,7 +50,7 @@ namespace Bq.Messaging.Tests
             if (await Task.WhenAny(task, Task.Delay(10000)) != task) throw new Exception("Timeout: " + label);
             await task;
         }
-        static void Assert(bool value, string label) { if (!value) throw new Exception("Failed: " + label); }
+        static void Assert(bool value, string label) => SoftChecks.Assert(value, label);
         static void Publish(IModel channel, string queue, string text)
         {
             var properties = channel.CreateBasicProperties();

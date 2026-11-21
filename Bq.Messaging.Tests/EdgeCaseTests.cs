@@ -228,6 +228,7 @@ namespace Bq.Messaging.Tests
             await RunContainerAndPersistenceCases();
             RunStartValidationCases();
             RunPipelineRegistrationCases();
+            RunSoftCheckCases();
             await RunInMemoryCases();
             return cases.ToList();
         }
@@ -985,6 +986,35 @@ namespace Bq.Messaging.Tests
                 Throws<ArgumentNullException>(() => new LogicalMessage(new Bq.Messaging.Unicast.Messages.MessageMetadata(typeof(EdgeUowMessage)), null), "a missing instance");
                 var message = new LogicalMessage(new Bq.Messaging.Unicast.Messages.MessageMetadata(typeof(EdgeUowMessage)), new EdgeUowMessage());
                 That(message.MessageType == typeof(EdgeUowMessage) && message.Metadata.MessageHierarchy.Contains(typeof(EdgeUowMessage)), "metadata describes the message type");
+            });
+        }
+
+        static void RunSoftCheckCases()
+        {
+            Case("the shared Assert stops at the first failure in the console runner and collects failures under TUnit", () =>
+            {
+#if TUNIT
+                SoftChecks.Begin();
+                SoftChecks.Assert(false, "first failure");
+                SoftChecks.Assert(true, "passing check");
+                SoftChecks.Assert(false, "second failure");
+                var message = "";
+                try { SoftChecks.Finish(null); } catch (Exception ex) { message = ex.Message; }
+                That(message.Contains("2 failed check(s)") && message.Contains("first failure") && message.Contains("second failure") && !message.Contains("passing check"),
+                    "every failed check is listed together: " + message);
+                SoftChecks.Begin();
+                SoftChecks.Assert(false, "before the stop");
+                var withStop = "";
+                try { SoftChecks.Finish(new InvalidOperationException("boom")); } catch (Exception ex) { withStop = ex.Message; }
+                That(withStop.Contains("before the stop") && withStop.Contains("boom"), "a failed check and the exception that stopped the group are both reported: " + withStop);
+                SoftChecks.Begin();
+                SoftChecks.Finish(null);
+#else
+                Throws<Exception>(() => SoftChecks.Assert(false, "stops here"), "a failed check");
+                SoftChecks.Assert(true, "passes");
+                SoftChecks.Begin();
+                SoftChecks.Finish(null);
+#endif
             });
         }
 

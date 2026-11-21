@@ -1618,6 +1618,6 @@ namespace Bq.Messaging.Tests
         }
         sealed class ContainerBuilder_Probe { }
 
-        static void Assert(bool value, string name) { if (!value) throw new Exception("Failed: " + name); }
+        static void Assert(bool value, string name) => SoftChecks.Assert(value, name);
     }
 }

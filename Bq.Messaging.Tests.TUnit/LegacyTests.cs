@@ -64,6 +64,14 @@ namespace Bq.Messaging.Tests.TUnitRunner
             Program.LegacyGroups(BrokerUri()).Select(g => (Func<string>)(() => g.Name));
 
         [Test, MethodDataSource(nameof(Names))]
-        public Task Group(string name) => Program.LegacyGroups(BrokerUri()).Single(g => g.Name == name).Body();
+        public async Task Group(string name)
+        {
+            var body = Program.LegacyGroups(BrokerUri()).Single(g => g.Name == name).Body;
+            SoftChecks.Begin();
+            Exception thrown = null;
+            try { await body(); }
+            catch (Exception ex) { thrown = ex; }
+            SoftChecks.Finish(thrown);
+        }
     }
 }

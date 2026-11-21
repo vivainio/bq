@@ -18,7 +18,7 @@ namespace Bq.Messaging.Tests
             if (await Task.WhenAny(task, Task.Delay(12000)) != task) throw new Exception("Timeout: " + label);
             await task;
         }
-        static void Assert(bool value, string label) { if (!value) throw new Exception("Failed: " + label); }
+        static void Assert(bool value, string label) => SoftChecks.Assert(value, label);
         public static async Task Run(Uri uri, Func<string, System.Data.Common.DbConnection> createConnection)
         {
             var name = "bq.uniform." + Guid.NewGuid().ToString("N");
