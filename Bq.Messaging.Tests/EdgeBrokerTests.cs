@@ -578,8 +578,15 @@ namespace Bq.Messaging.Tests
                         var immediate = new SendOptions();
                         immediate.RequireImmediateDispatch();
                         await session.Send(new EdgeUowMessage { Text = "immediate" }, immediate);
+                        // Nothing subscribes to these events, so they only need to be accepted and stored without error.
+                        await session.Publish(new EdgeUowMessage { Text = "published" });
+                        await session.Publish<EdgeUowMessage>(m => m.Text = "published-init");
+                        await session.Publish(new EdgeUowMessage { Text = "published-opts" }, new PublishOptions());
+                        await session.PublishAt(new EdgeUowMessage { Text = "published-at" }, DateTimeOffset.UtcNow.AddMilliseconds(200));
+                        await session.WithHeader("h", "scoped-at").SendAt(new EdgeUowMessage { Text = "scoped-at" }, DateTimeOffset.UtcNow.AddMilliseconds(200));
+                        await session.WithHeader("h", "scoped-local").SendLocal(new EdgeUowMessage { Text = "scoped-local" });
                     });
-                    await Eventually(() => seen.Count == 10, "all ten messages to be handled, saw " + string.Join(",", seen.Keys));
+                    await Eventually(() => seen.Count == 12, "all twelve messages to be handled, saw " + string.Join(",", seen.Keys));
                     That(seen["options"] == "from-options" && seen["scoped"] == "scoped", "headers set through options and WithHeader arrive");
                 }
             });
