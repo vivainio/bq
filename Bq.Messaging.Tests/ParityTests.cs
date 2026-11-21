@@ -291,6 +291,31 @@ namespace Bq.Messaging.Tests
             }
             hostContainer.Dispose();
 
+            // Handlers and behaviors can raise a critical error through the container.
+            var criticalName = "bq.test.parity.critical." + Guid.NewGuid().ToString("N");
+            var criticalPath = Path.Combine(Path.GetTempPath(), criticalName + ".db");
+            var criticalStore = new SqlitePersistence(() => Sqlite(criticalPath), criticalName);
+            await criticalStore.Initialize();
+            var criticalConfig = new EndpointConfiguration(criticalName, uri) { Persistence = criticalStore };
+            var criticalRaised = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            criticalConfig.OnCriticalError = (error, exception) =>
+            {
+                criticalRaised.TrySetResult(error + ":" + exception.Message);
+                return Task.CompletedTask;
+            };
+            criticalConfig.Route(typeof(SendProbe), criticalName);
+            criticalConfig.Handle(() => new Handler<SendProbe>((message, context) => Task.CompletedTask));
+            criticalConfig.Incoming.Use((incoming, next) =>
+            {
+                incoming.Builder.Build<CriticalError>().Raise("behavior failure", new InvalidOperationException("critical probe"));
+                return next();
+            });
+            using (var endpoint = RabbitEndpoint.Start(criticalConfig))
+            {
+                await endpoint.Send(new SendProbe { Text = "critical" });
+                Assert(await Within(criticalRaised.Task) == "behavior failure:critical probe", "CriticalError.Raise reaches the configured critical error action");
+            }
+
             // Outgoing send and publish stages and physical body updates, observed by the receiving handlers.
             var outName = "bq.test.parity.outgoing." + Guid.NewGuid().ToString("N");
             var outPath = Path.Combine(Path.GetTempPath(), outName + ".db");

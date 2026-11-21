@@ -138,6 +138,13 @@ namespace Bq.Messaging
                 rootBuilder = new Bq.Messaging.Container.ContainerBuilder(rootContainer);
                 ownsContainer = configuration.OwnsContainer;
             }
+            rootContainer?.RegisterSingleton(typeof(CriticalError), new CriticalError(async context =>
+            {
+                if (configuration.CriticalErrorAction != null)
+                    await configuration.CriticalErrorAction(new CriticalErrorContext(() => StopAsync(), context.Error, context.Exception)).ConfigureAwait(false);
+                else if (configuration.OnCriticalError != null)
+                    await configuration.OnCriticalError(context.Error, context.Exception).ConfigureAwait(false);
+            }, () => StopAsync()));
             incoming = configuration.Incoming.Build(configuration.Pipeline);
             physical = configuration.Incoming.BuildPhysical(configuration.Pipeline);
             outgoingStages = configuration.Incoming.BuildOutgoing(configuration.Pipeline);
