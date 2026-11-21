@@ -38,6 +38,8 @@ namespace Bq.Messaging
         readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
         readonly Func<IncomingPhysicalContext, Func<Task>, Task> physical;
         readonly bool hasPhysicalBehaviors;
+        readonly Func<TransportReceiveContext, Func<Task>, Task> receive;
+        readonly bool hasReceiveBehaviors;
         internal EndpointConfiguration Configuration => configuration;
         readonly Func<FailedMessage, Task> errorQueueNotification;
         readonly Func<ImmediateRetryMessage, Task> immediateRetryNotification;
@@ -64,6 +66,9 @@ namespace Bq.Messaging
 
         internal static Bq.Messaging.ObjectBuilder.IBuilder BuilderFor(IMessageHandlerContext context) =>
             (context as HandlerContext ?? throw new InvalidOperationException("A Bq message handler context is required.")).Builder;
+
+        internal static SynchronizedStorageSession CurrentPersistenceSession() =>
+            (currentHandler.Value ?? throw new InvalidOperationException("No message is being processed.")).PersistenceSession;
 
         internal static Bq.Messaging.ObjectBuilder.IBuilder CurrentBuilder() =>
             (currentHandler.Value ?? throw new InvalidOperationException("No message is being processed.")).Builder;
@@ -127,6 +132,8 @@ namespace Bq.Messaging
             incoming = configuration.Incoming.Build(configuration.Pipeline);
             physical = configuration.Incoming.BuildPhysical(configuration.Pipeline);
             outgoingStages = configuration.Incoming.BuildOutgoing(configuration.Pipeline);
+            receive = configuration.Incoming.BuildReceive(configuration.Pipeline);
+            hasReceiveBehaviors = configuration.Incoming.HasReceiveBehaviors;
             configuration.InvokeHandlerChain = configuration.Incoming.BuildInvokeHandler(configuration.Pipeline);
             hasPhysicalBehaviors = configuration.Incoming.HasPhysicalBehaviors;
             var owners = new Dictionary<string, Type>();
@@ -935,9 +942,17 @@ namespace Bq.Messaging
                                                 await attemptContext.ForwardCurrentMessageTo(auditQueue, auditExpiration).ConfigureAwait(false);
                                         }
                                     };
-                                    await (needsTransport
+                                    Func<Task> process = () => needsTransport
                                         ? physical(new IncomingPhysicalContext(attemptContext, physicalMessage), terminal)
-                                        : terminal()).ConfigureAwait(false);
+                                        : terminal();
+                                    if (hasReceiveBehaviors)
+                                    {
+                                        var receiveContext = new TransportReceiveContext(attemptContext,
+                                            new IncomingMessage(currentId, MessageHeaders.ToTextDictionary(props.Headers ?? new Dictionary<string, object>()), delivery.Body.ToArray()));
+                                        await receive(receiveContext, process).ConfigureAwait(false);
+                                        if (receiveContext.Aborted) throw new AbortReceiveException();
+                                    }
+                                    else await process().ConfigureAwait(false);
                                 }
                                 finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; currentHandler.Value = previousHandler; context.DisposeBuilder(); }
                             }
@@ -945,6 +960,12 @@ namespace Bq.Messaging
                             session.Commit();
                         }
                         break;
+                    }
+                    catch (AbortReceiveException)
+                    {
+                        // The transaction rolled back when the session was disposed; hand the message back untouched.
+                        RequeueDelivery(delivery.DeliveryTag);
+                        return;
                     }
                     catch (Exception ex) when (!forceStop.IsCancellationRequested)
                     {
@@ -1090,6 +1111,12 @@ namespace Bq.Messaging
                 System.Diagnostics.Trace.TraceError("Unrecoverable exception classifier failed: {0}", policyError);
                 return false;
             }
+        }
+
+        void RequeueDelivery(ulong deliveryTag)
+        {
+            try { lock (consumerLock) { if (!disposed) consumerChannel.BasicNack(deliveryTag, false, true); } }
+            catch (Exception ex) { System.Diagnostics.Trace.TraceError("Failed to requeue aborted delivery {0}: {1}", deliveryTag, ex); }
         }
 
         void AcknowledgeCommittedDelivery(ulong deliveryTag)

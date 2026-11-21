@@ -106,6 +106,8 @@ namespace Bq.Messaging
             new Dictionary<string, Func<IncomingMessageContext, Func<Task>, Task>>(StringComparer.Ordinal);
         readonly Dictionary<string, Func<IncomingPhysicalContext, Func<Task>, Task>> physicalSteps =
             new Dictionary<string, Func<IncomingPhysicalContext, Func<Task>, Task>>(StringComparer.Ordinal);
+        readonly Dictionary<string, Func<TransportReceiveContext, Func<Task>, Task>> receiveSteps =
+            new Dictionary<string, Func<TransportReceiveContext, Func<Task>, Task>>(StringComparer.Ordinal);
         readonly Dictionary<string, Func<InvokeHandlerContext, Func<Task>, Task>> invokeHandlerSteps =
             new Dictionary<string, Func<InvokeHandlerContext, Func<Task>, Task>>(StringComparer.Ordinal);
         readonly Dictionary<OutgoingStage, Dictionary<string, Func<OutgoingContext, Func<Task>, Task>>> outgoingSteps =
@@ -151,6 +153,13 @@ namespace Bq.Messaging
         public void Register<T>(string stepId, T behavior, string description) where T : IBehavior
         {
             ValidateNewStepId(stepId);
+            if (behavior is IBehavior<ITransportReceiveContext, ITransportReceiveContext> receiveBehavior)
+            {
+                Func<TransportReceiveContext, Func<Task>, Task> adaptedReceive = (c, next) => receiveBehavior.Invoke(c, x => Continue(c, x, next));
+                receiveSteps.Add(stepId, adaptedReceive);
+                incoming.UseReceive(adaptedReceive);
+                return;
+            }
             if (behavior is IBehavior<IInvokeHandlerContext, IInvokeHandlerContext> invokeHandler)
             {
                 Func<InvokeHandlerContext, Func<Task>, Task> adapted = (c, next) => invokeHandler.Invoke(c, x => Continue(c, x, next));
@@ -187,6 +196,15 @@ namespace Bq.Messaging
 
         public void Replace<T>(string stepId, T newBehavior, string description = null) where T : IBehavior
         {
+            if (receiveSteps.TryGetValue(stepId ?? string.Empty, out var currentReceive))
+            {
+                if (!(newBehavior is IBehavior<ITransportReceiveContext, ITransportReceiveContext> replacementReceive))
+                    throw new InvalidOperationException("Pipeline step " + stepId + " must be replaced by a behavior for the same stage.");
+                Func<TransportReceiveContext, Func<Task>, Task> adaptedReceiveReplacement = (c, next) => replacementReceive.Invoke(c, x => Continue(c, x, next));
+                incoming.ReplaceReceive(currentReceive, adaptedReceiveReplacement);
+                receiveSteps[stepId] = adaptedReceiveReplacement;
+                return;
+            }
             if (invokeHandlerSteps.TryGetValue(stepId ?? string.Empty, out var currentInvoke))
             {
                 if (!(newBehavior is IBehavior<IInvokeHandlerContext, IInvokeHandlerContext> replacementInvoke))
@@ -226,7 +244,12 @@ namespace Bq.Messaging
 
         public void Remove(string stepId)
         {
-            if (invokeHandlerSteps.TryGetValue(stepId ?? string.Empty, out var removeInvoke))
+            if (receiveSteps.TryGetValue(stepId ?? string.Empty, out var removeReceive))
+            {
+                incoming.RemoveReceive(removeReceive);
+                receiveSteps.Remove(stepId);
+            }
+            else if (invokeHandlerSteps.TryGetValue(stepId ?? string.Empty, out var removeInvoke))
             {
                 incoming.RemoveInvokeHandler(removeInvoke);
                 invokeHandlerSteps.Remove(stepId);
@@ -252,7 +275,7 @@ namespace Bq.Messaging
         void RequireStep(string stepId)
         {
             if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
-            if (!steps.ContainsKey(stepId) && !physicalSteps.ContainsKey(stepId) && !invokeHandlerSteps.ContainsKey(stepId) && !TryFindOutgoing(stepId, out _, out _))
+            if (!steps.ContainsKey(stepId) && !physicalSteps.ContainsKey(stepId) && !invokeHandlerSteps.ContainsKey(stepId) && !receiveSteps.ContainsKey(stepId) && !TryFindOutgoing(stepId, out _, out _))
                 throw new InvalidOperationException("No pipeline step uses ID " + stepId);
         }
 
@@ -318,7 +341,7 @@ namespace Bq.Messaging
         void ValidateNewStepId(string stepId)
         {
             if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
-            if (steps.ContainsKey(stepId) || physicalSteps.ContainsKey(stepId) || invokeHandlerSteps.ContainsKey(stepId) || TryFindOutgoing(stepId, out _, out _))
+            if (steps.ContainsKey(stepId) || physicalSteps.ContainsKey(stepId) || invokeHandlerSteps.ContainsKey(stepId) || receiveSteps.ContainsKey(stepId) || TryFindOutgoing(stepId, out _, out _))
                 throw new InvalidOperationException("A pipeline step already uses ID " + stepId);
         }
 
@@ -353,6 +376,9 @@ namespace Bq.Messaging
             invoke = null;
             return false;
         }
+
+        internal IEnumerable<Func<TransportReceiveContext, Func<Task>, Task>> OrderReceive(
+            IReadOnlyList<Func<TransportReceiveContext, Func<Task>, Task>> behaviors) => Order(receiveSteps, behaviors);
 
         internal IEnumerable<Func<InvokeHandlerContext, Func<Task>, Task>> OrderInvokeHandler(
             IReadOnlyList<Func<InvokeHandlerContext, Func<Task>, Task>> behaviors) => Order(invokeHandlerSteps, behaviors);

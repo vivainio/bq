@@ -67,6 +67,21 @@ namespace Bq.Messaging.Tests
     public class PublishProbe : IEvent { public string Text { get; set; } }
     public class FailingProbe { public string Text { get; set; } }
 
+    public sealed class AbortOnceBehavior : Behavior<ITransportReceiveContext>
+    {
+        public static int Seen;
+        public override Task Invoke(ITransportReceiveContext context, Func<Task> next)
+        {
+            if (!context.Message.Headers.ContainsKey("abort-once")) return next();
+            if (Interlocked.Increment(ref Seen) == 1)
+            {
+                context.AbortReceiveOperation();
+                return Task.CompletedTask;
+            }
+            return next();
+        }
+    }
+
     public sealed class OutgoingSendMarker : Behavior<IOutgoingSendContext>
     {
         public override Task Invoke(IOutgoingSendContext context, Func<Task> next) { context.Headers["stage-send"] = "1"; return next(); }
@@ -184,6 +199,33 @@ namespace Bq.Messaging.Tests
                 Assert(await Within(sendSeen.Task) == "11", "send and physical stage behaviors run for sends");
                 Assert(await Within(publishSeen.Task) == "11", "publish and physical stage behaviors run for publishes");
                 Assert(Volatile.Read(ref OutgoingBodyRewriter.Rewrites) == 2, "the physical stage accepts body updates");
+            }
+
+            // Aborting the receive operation rolls back and redelivers the message without a failure.
+            var abortName = "bq.test.parity.abort." + Guid.NewGuid().ToString("N");
+            var abortPath = Path.Combine(Path.GetTempPath(), abortName + ".db");
+            var abortStore = new SqlitePersistence(() => Sqlite(abortPath), abortName);
+            await abortStore.Initialize();
+            var abortConfig = new EndpointConfiguration(abortName, uri) { Persistence = abortStore, ImmediateRetries = 0 };
+            abortConfig.Recoverability.DelayedRetries = new TimeSpan[0];
+            abortConfig.Route(typeof(SendProbe), abortName);
+            abortConfig.Pipeline.Register("abort-once", new AbortOnceBehavior(), "Abort the first receive");
+            var abortHandled = 0;
+            var abortDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            abortConfig.Handle(() => new Handler<SendProbe>((message, context) =>
+            {
+                Interlocked.Increment(ref abortHandled);
+                abortDone.TrySetResult(true);
+                return Task.CompletedTask;
+            }));
+            using (var endpoint = RabbitEndpoint.Start(abortConfig))
+            {
+                var abortOptions = new SendOptions();
+                abortOptions.SetHeader("abort-once", "1");
+                await endpoint.Send(new SendProbe { Text = "abort" }, abortOptions);
+                Assert(await Within(abortDone.Task), "an aborted receive is redelivered and then handled");
+                Assert(Volatile.Read(ref AbortOnceBehavior.Seen) == 2 && Volatile.Read(ref abortHandled) == 1,
+                    "the handler ran once, after the aborted attempt rolled back");
             }
 
             // Delayed retry and error queue notifications.

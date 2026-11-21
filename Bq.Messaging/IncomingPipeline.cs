@@ -73,7 +73,7 @@ namespace Bq.Messaging
         public Task ForwardCurrentMessageTo(string destination) => HandlerContext.ForwardCurrentMessageTo(destination);
     }
 
-    public sealed class IncomingPipeline
+    public sealed partial class IncomingPipeline
     {
         readonly List<Func<IncomingPhysicalContext, Func<Task>, Task>> physicalBehaviors =
             new List<Func<IncomingPhysicalContext, Func<Task>, Task>>();
