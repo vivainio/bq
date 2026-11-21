@@ -229,6 +229,13 @@ namespace Bq.Messaging.Tests
 #if !TUNIT
         static async Task Main()
         {
+            // The TUnit runner reports every other group on its own. This mode keeps only the broker outage test,
+            // which scripts/test-rabbit-sim.sh drives by stopping and restarting the broker.
+            if (Environment.GetEnvironmentVariable("BQ_OUTAGE_ONLY") == "1")
+            {
+                await BrokerOutageTest(new Uri(Environment.GetEnvironmentVariable("BQ_RABBITMQ_URI")), Environment.GetEnvironmentVariable("BQ_BROKER_OUTAGE_DIR"));
+                return;
+            }
             var options = MessagePackSerializerOptions.Standard.WithResolver(ContractlessStandardResolver.Instance).WithSecurity(MessagePackSecurity.UntrustedData);
             var bytes = MessagePackSerializer.Serialize(new OldContract { Text = "hello" }, options);
             var newer = MessagePackSerializer.Deserialize<NewContract>(bytes, options);

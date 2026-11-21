@@ -76,7 +76,7 @@ wait_for_marker() {
 start_broker
 export BQ_RABBITMQ_URI="amqp://guest:guest@127.0.0.1:$port/"
 export BQ_RABBITSIM_HTTP="http://127.0.0.1:$http_port"
-BQ_BROKER_OUTAGE_DIR="$test_dir" \
+BQ_OUTAGE_ONLY=1 BQ_BROKER_OUTAGE_DIR="$test_dir" \
     mono Bq.Messaging.Tests/bin/Debug/net472/Bq.Messaging.Tests.exe &
 test_pid=$!
 

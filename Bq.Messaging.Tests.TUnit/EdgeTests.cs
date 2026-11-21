@@ -23,11 +23,7 @@ namespace Bq.Messaging.Tests.TUnitRunner
     {
         const string NoBroker = "(no broker configured)";
 
-        static Uri BrokerUri()
-        {
-            var value = Environment.GetEnvironmentVariable("BQ_RABBITMQ_URI");
-            return string.IsNullOrEmpty(value) ? null : new Uri(value);
-        }
+        static Uri BrokerUri() => SimBroker.Uri();
 
         public static IEnumerable<Func<string>> Names()
         {
