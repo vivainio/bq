@@ -1503,6 +1503,28 @@ namespace Bq.Messaging.Tests
             Assert(Directory.GetFiles(logDirectory).Any(file => File.ReadAllText(file).Contains("hello file")), "DefaultFactory writes log files");
             Bq.Messaging.Logging.LogManager.Use<Bq.Messaging.Logging.DefaultFactory>();
 
+            var orderMetadata = Bq.Messaging.Sagas.SagaMetadata.Create(typeof(OrderWorkflow));
+            Assert(orderMetadata.SagaEntityType == typeof(OrderState) && orderMetadata.CorrelationProperty.Name == "OrderId" &&
+                orderMetadata.IsMessageAllowedToStartTheSaga(typeof(StartOrder).FullName) &&
+                !orderMetadata.IsMessageAllowedToStartTheSaga(typeof(ChangeOrder).FullName) &&
+                orderMetadata.AssociatedMessages.Any(message => message.MessageType == typeof(OrderTimeout).FullName),
+                "saga metadata reflects mappings and starting messages");
+            Assert(new Bq.Messaging.Sagas.SagaMetadataCollection(typeof(Program).Assembly.GetTypes()).Count() >= 2, "saga metadata collections find sagas in a type list");
+            var storageProbePath = Path.Combine(Path.GetTempPath(), "bq-storage-" + Guid.NewGuid().ToString("N") + ".db");
+            var storageProvider = new SqlitePersistence(() => Sqlite(storageProbePath), "storage-probe");
+            storageProvider.Initialize().GetAwaiter().GetResult();
+            var synchronizedStorage = new Bq.Messaging.Persistence.PersistenceSynchronizedStorage(storageProvider);
+            using (var storageSession = synchronizedStorage.OpenSession(new ContextBag()).GetAwaiter().GetResult())
+            {
+                Assert(storageSession.Connection != null && storageSession.Transaction != null, "synchronized storage exposes the connection and transaction");
+                storageSession.CompleteAsync().GetAwaiter().GetResult();
+            }
+            var adapted = new Bq.Messaging.Persistence.CompletableSynchronizedStorageSessionAdapter(synchronizedStorage, synchronizedStorage);
+            Assert(!adapted.TryOpen(new Bq.Messaging.Transport.TransportTransaction(), new ContextBag()).GetAwaiter().GetResult(),
+                "Bq has no separate transport transaction to adapt");
+            var dueTimeout = new Bq.Messaging.Timeout.Core.Timeout("t1", DateTime.UtcNow);
+            Assert(new Bq.Messaging.Timeout.Core.TimeoutsChunk(new[] { dueTimeout }, DateTime.UtcNow).DueTimeouts.Length == 1, "timeout SPI types construct");
+
             var featureConfiguration = new EndpointConfiguration("feature-test", new Uri("amqp://localhost/"));
             featureConfiguration.EnableFeature<DependentFeature>();
             featureConfiguration.EnableFeature<BaseFeature>();

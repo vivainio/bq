@@ -67,6 +67,23 @@ namespace Bq.Messaging.Tests
     public class PublishProbe : IEvent { public string Text { get; set; } }
     public class FailingProbe { public string Text { get; set; } }
 
+    public sealed class SatelliteFeature : Bq.Messaging.Features.Feature
+    {
+        public static string Queue;
+        public static readonly ConcurrentQueue<string> Received = new ConcurrentQueue<string>();
+        protected override void Setup(Bq.Messaging.Features.FeatureConfigurationContext context) =>
+            context.AddSatelliteReceiver("probe-satellite", Queue, Bq.Messaging.Transport.PushRuntimeSettings.Default,
+                (config, error) => error.Exception.Message == "satellite failure"
+                    ? (RecoverabilityAction)RecoverabilityAction.MoveToError(config.Failed.ErrorQueue) : RecoverabilityAction.Discard("unexpected"),
+                (builder, message) =>
+                {
+                    var text = System.Text.Encoding.UTF8.GetString(message.Body);
+                    Received.Enqueue(text + ":" + (builder != null) + ":" + message.Headers["probe"]);
+                    if (text == "fail") throw new InvalidOperationException("satellite failure");
+                    return Task.CompletedTask;
+                });
+    }
+
     public sealed class AbortOnceBehavior : Behavior<ITransportReceiveContext>
     {
         public static int Seen;
@@ -226,6 +243,38 @@ namespace Bq.Messaging.Tests
                 Assert(await Within(abortDone.Task), "an aborted receive is redelivered and then handled");
                 Assert(Volatile.Read(ref AbortOnceBehavior.Seen) == 2 && Volatile.Read(ref abortHandled) == 1,
                     "the handler ran once, after the aborted attempt rolled back");
+            }
+
+            // A satellite receiver reads its own queue with its own delegate and recoverability policy.
+            var satelliteName = "bq.test.parity.satellite." + Guid.NewGuid().ToString("N");
+            var satellitePath = Path.Combine(Path.GetTempPath(), satelliteName + ".db");
+            var satelliteStore = new SqlitePersistence(() => Sqlite(satellitePath), satelliteName);
+            await satelliteStore.Initialize();
+            SatelliteFeature.Queue = satelliteName + ".satellite";
+            var satelliteConfig = new EndpointConfiguration(satelliteName, uri) { Persistence = satelliteStore };
+            satelliteConfig.EnableFeature<SatelliteFeature>();
+            using (var endpoint = RabbitEndpoint.Start(satelliteConfig))
+            using (var connection = new RabbitMQ.Client.ConnectionFactory { Uri = uri }.CreateConnection())
+            using (var channel = connection.CreateModel())
+            {
+                foreach (var text in new[] { "ok", "fail" })
+                {
+                    var properties = channel.CreateBasicProperties();
+                    properties.MessageId = Guid.NewGuid().ToString("N");
+                    properties.Headers = new System.Collections.Generic.Dictionary<string, object> { ["probe"] = "yes" };
+                    channel.BasicPublish("", SatelliteFeature.Queue, false, properties, System.Text.Encoding.UTF8.GetBytes(text));
+                }
+                await WaitFor(() => Task.FromResult(SatelliteFeature.Received.Count == 2), "the satellite receives both messages");
+                Assert(SatelliteFeature.Received.Contains("ok:True:yes"), "the satellite delegate gets a builder, body and headers");
+                RabbitMQ.Client.BasicGetResult failed = null;
+                await WaitFor(() =>
+                {
+                    failed = channel.BasicGet(satelliteName + ".error", true);
+                    return Task.FromResult(failed != null);
+                }, "a failed satellite message moves to the error queue");
+                Assert(System.Text.Encoding.UTF8.GetString(failed.Body.ToArray()) == "fail" &&
+                    System.Text.Encoding.UTF8.GetString((byte[])failed.BasicProperties.Headers["x-bq-exception-message"]) == "satellite failure",
+                    "the error queue copy keeps the body and records the failure");
             }
 
             // Delayed retry and error queue notifications.

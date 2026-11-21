@@ -12,7 +12,7 @@ using RabbitMQ.Client.Events;
 
 namespace Bq.Messaging
 {
-    public sealed class RabbitEndpoint : IEndpointInstance
+    public sealed partial class RabbitEndpoint : IEndpointInstance
     {
         readonly string localAddress;
         readonly MessagePropertyEncryption propertyEncryption;
@@ -216,6 +216,7 @@ namespace Bq.Messaging
                     var consumer = new AsyncEventingBasicConsumer(consumerChannel);
                     consumer.Received += OnReceived;
                     consumerTag = consumerChannel.BasicConsume(localAddress, false, consumer);
+                    StartSatellites();
                     if (instanceAddress != null) instanceConsumerTag = consumerChannel.BasicConsume(instanceAddress, false, consumer);
                 }
                 var callback = configuration.OnCriticalError;
@@ -1156,7 +1157,7 @@ namespace Bq.Messaging
             try
             {
                 // BasicCancel is synchronous in the netstandard2.0 RabbitMQ client.
-                var cancel = Task.Run(() => { lock (consumerLock) { if (consumerChannel?.IsOpen == true) { consumerChannel.BasicCancel(consumerTag); if (instanceConsumerTag != null) consumerChannel.BasicCancel(instanceConsumerTag); } } });
+                var cancel = Task.Run(() => { lock (consumerLock) { if (consumerChannel?.IsOpen == true) { consumerChannel.BasicCancel(consumerTag); if (instanceConsumerTag != null) consumerChannel.BasicCancel(instanceConsumerTag); } CancelSatellites(); } });
                 await WaitFor(cancel, cancellationToken).ConfigureAwait(false);
                 await WaitFor(drained.Task, cancellationToken).ConfigureAwait(false);
                 stopping.Cancel();

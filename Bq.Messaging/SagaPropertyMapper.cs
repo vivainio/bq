@@ -41,6 +41,8 @@ namespace Bq.Messaging
 
         readonly Dictionary<Type, IMapping> mappings = new Dictionary<Type, IMapping>();
         PropertyInfo sagaProperty;
+        internal PropertyInfo CorrelationProperty => sagaProperty;
+        internal IEnumerable<Type> MappedMessageTypes => mappings.Keys;
 
         public ToSagaExpression<TData, TMessage> ConfigureMapping<TMessage>(Expression<Func<TMessage, object>> property)
             where TMessage : class => new ToSagaExpression<TData, TMessage>(property, Add);

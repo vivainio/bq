@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Bq.Messaging.ObjectBuilder;
 using Bq.Messaging.Settings;
+using Bq.Messaging.Transport;
 
 namespace Bq.Messaging.Features
 {
@@ -25,13 +26,37 @@ namespace Bq.Messaging.Features
             Pipeline = configuration.Pipeline;
             Container = components;
             StartupTasks = configuration.FeatureStartupTasks;
+            satellites = configuration.Satellites;
         }
 
         readonly List<Func<IBuilder, FeatureStartupTask>> StartupTasks;
+        readonly List<SatelliteReceiver> satellites;
 
         public ReadOnlySettings Settings { get; }
         public IConfigureComponents Container { get; }
         public PipelineSettings Pipeline { get; }
+
+        public void AddSatelliteReceiver(string name, string transportAddress, PushRuntimeSettings runtimeSettings,
+            Func<RecoverabilityConfig, ErrorContext, RecoverabilityAction> recoverabilityPolicy, Func<IBuilder, MessageContext, Task> onMessage) =>
+            AddSatelliteReceiver(name, transportAddress, TransportTransactionMode.ReceiveOnly, runtimeSettings, recoverabilityPolicy, onMessage);
+
+        /// <summary>
+        /// Adds an extra input queue with its own processing delegate. Delayed retries hold the delivery unacknowledged
+        /// for the delay and then requeue it; failed messages move to the error queue with failure headers.
+        /// </summary>
+        public void AddSatelliteReceiver(string name, string transportAddress, TransportTransactionMode requiredTransportTransactionMode,
+            PushRuntimeSettings runtimeSettings, Func<RecoverabilityConfig, ErrorContext, RecoverabilityAction> recoverabilityPolicy,
+            Func<IBuilder, MessageContext, Task> onMessage)
+        {
+            if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("A satellite name is required.", nameof(name));
+            if (string.IsNullOrWhiteSpace(transportAddress)) throw new ArgumentException("A satellite address is required.", nameof(transportAddress));
+            if (requiredTransportTransactionMode != TransportTransactionMode.ReceiveOnly && requiredTransportTransactionMode != TransportTransactionMode.None)
+                throw new NotSupportedException("Satellite receivers support only ReceiveOnly processing.");
+            if (satellites.Exists(s => s.Address == transportAddress)) throw new InvalidOperationException("A satellite already reads " + transportAddress);
+            satellites.Add(new SatelliteReceiver(name, transportAddress, runtimeSettings ?? PushRuntimeSettings.Default,
+                recoverabilityPolicy ?? throw new ArgumentNullException(nameof(recoverabilityPolicy)),
+                onMessage ?? throw new ArgumentNullException(nameof(onMessage))));
+        }
 
         public void RegisterStartupTask<T>(Func<IBuilder, T> startupTaskFactory) where T : FeatureStartupTask
         {
