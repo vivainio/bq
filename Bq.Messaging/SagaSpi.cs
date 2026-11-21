@@ -8,7 +8,7 @@ namespace Bq.Messaging.Sagas
 {
     public class SagaCorrelationProperty
     {
-        public static readonly SagaCorrelationProperty None = null;
+        public static SagaCorrelationProperty None { get; } = null;
 
         public SagaCorrelationProperty(string name, object value)
         {

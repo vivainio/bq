@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Bq.Messaging.DeliveryConstraints;
 using System.Threading;
 using System.Security.Cryptography;
 using System.Text;
@@ -465,12 +466,12 @@ namespace Bq.Messaging
         async Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
             await session.StoreTimeout(
-                await Prepare(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers, deferred: true).ConfigureAwait(false), dueUtc).ConfigureAwait(false);
+                await Prepare(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers, deferred: true, dueUtc: dueUtc).ConfigureAwait(false), dueUtc).ConfigureAwait(false);
 
         async Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId,
             IDictionary<string, object> headers = null) =>
             await session.StoreTimeout(
-                await Prepare(message, "", RequireDestination(destination), correlationId, true, headers, deferred: true).ConfigureAwait(false), dueUtc).ConfigureAwait(false);
+                await Prepare(message, "", RequireDestination(destination), correlationId, true, headers, deferred: true, dueUtc: dueUtc).ConfigureAwait(false), dueUtc).ConfigureAwait(false);
 
         public Task Subscribe(Type eventType, SubscribeOptions options)
         {
@@ -563,7 +564,7 @@ namespace Bq.Messaging
         internal Task PublishCore<T>(T message, string correlationId, IDictionary<string, object> headers = null) =>
             Dispatch(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers);
         async Task<OutgoingMessage> Prepare<T>(T message, string exchange, string routingKey, string correlationId, bool mandatory,
-            IDictionary<string, object> headers = null, bool deferred = false, OutgoingStage kind = OutgoingStage.Send)
+            IDictionary<string, object> headers = null, bool deferred = false, OutgoingStage kind = OutgoingStage.Send, DateTime? dueUtc = null)
         {
             if (message == null) throw new ArgumentNullException(nameof(message));
             if (kind == OutgoingStage.Send && exchange == eventsExchange && !mandatory) kind = OutgoingStage.Publish;
@@ -589,8 +590,14 @@ namespace Bq.Messaging
             {
                 kind == OutgoingStage.Publish ? (Routing.RoutingStrategy)new Routing.MulticastRoutingStrategy(contract) : new Routing.UnicastRoutingStrategy(routingKey)
             };
+            // Outgoing behaviors see the causing message's extensions, plus this operation's own delivery constraints.
+            var extensions = new ContextBag(causingContext?.Extensions);
+            if (dueUtc.HasValue) extensions.AddDeliveryConstraint(new DelayedDelivery.DoNotDeliverBefore(dueUtc.Value));
+            var declaredLifetime = timeToBeReceived(contract);
+            if (declaredLifetime != TimeSpan.MaxValue && declaredLifetime >= TimeSpan.Zero)
+                extensions.AddDeliveryConstraint(new Performance.TimeToBeReceived.DiscardIfNotReceivedBefore(declaredLifetime));
             var stage = new OutgoingContext(this, () => causingContext is HandlerContext handler ? handler.Builder : rootBuilder, id, contract,
-                message, stageHeaders, causingContext?.Extensions ?? new ContextBag(), routing);
+                message, stageHeaders, extensions, routing);
             // Behaviors edit text headers; fold their edits into the typed header set at each stage boundary.
             void SyncFromStage()
             {

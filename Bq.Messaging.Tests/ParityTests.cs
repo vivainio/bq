@@ -125,6 +125,20 @@ namespace Bq.Messaging.Tests
         }
     }
 
+    public sealed class ConstraintProbe : Behavior<IOutgoingLogicalMessageContext>
+    {
+        public static readonly ConcurrentDictionary<string, string> Seen = new ConcurrentDictionary<string, string>();
+        public override Task Invoke(IOutgoingLogicalMessageContext context, Func<Task> next)
+        {
+            if (context.Message.Instance is SendProbe probe)
+            {
+                var constraints = Bq.Messaging.DeliveryConstraints.DeliveryConstraintContextExtensions.GetDeliveryConstraints(context.Extensions);
+                Seen[probe.Text] = string.Join(",", constraints.Select(constraint => constraint.GetType().Name).OrderBy(name => name));
+            }
+            return next();
+        }
+    }
+
     public sealed class OutgoingSendMarker : Behavior<IOutgoingSendContext>
     {
         public override Task Invoke(IOutgoingSendContext context, Func<Task> next) { context.Headers["stage-send"] = "1"; return next(); }
@@ -349,13 +363,17 @@ namespace Bq.Messaging.Tests
             await outStore.Initialize();
             var outConfig = new EndpointConfiguration(outName, uri) { Persistence = outStore };
             outConfig.Route(typeof(SendProbe), outName);
+            outConfig.Pipeline.Register("constraint-probe", new ConstraintProbe(), "Record delivery constraints");
+            outConfig.Conventions().DefiningTimeToBeReceivedAs(type => type == typeof(SendProbe) ? TimeSpan.FromMinutes(5) : TimeSpan.MaxValue);
             outConfig.Pipeline.Register("stage-send", new OutgoingSendMarker(), "Mark sends");
             outConfig.Pipeline.Register("stage-publish", builder => new OutgoingPublishMarker(), "Mark publishes");
             outConfig.Pipeline.Register("stage-physical", new OutgoingBodyRewriter(), "Rewrite bodies");
             var sendSeen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var publishSeen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var delayedSeen = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             outConfig.Handle(() => new Handler<SendProbe>((message, context) =>
             {
+                if (message.Text == "delayed") delayedSeen.TrySetResult(true);
                 sendSeen.TrySetResult(context.GetHeader("stage-send") + context.GetHeader("stage-physical"));
                 return Task.CompletedTask;
             }));
@@ -370,7 +388,13 @@ namespace Bq.Messaging.Tests
                 await endpoint.Publish(new PublishProbe { Text = "publish" });
                 Assert(await Within(sendSeen.Task) == "11", "send and physical stage behaviors run for sends");
                 Assert(await Within(publishSeen.Task) == "11", "publish and physical stage behaviors run for publishes");
-                Assert(Volatile.Read(ref OutgoingBodyRewriter.Rewrites) == 2, "the physical stage accepts body updates");
+                var delayedOptions = new SendOptions();
+                delayedOptions.DelayDeliveryWith(TimeSpan.FromMilliseconds(300));
+                await endpoint.Send(new SendProbe { Text = "delayed" }, delayedOptions);
+                Assert(await Within(delayedSeen.Task), "the delayed send is delivered");
+                Assert(ConstraintProbe.Seen["send"] == "DiscardIfNotReceivedBefore", "time to be received becomes a delivery constraint");
+                Assert(ConstraintProbe.Seen["delayed"] == "DiscardIfNotReceivedBefore,DoNotDeliverBefore", "a delayed send carries a DoNotDeliverBefore constraint");
+                Assert(Volatile.Read(ref OutgoingBodyRewriter.Rewrites) >= 2, "the physical stage accepts body updates");
             }
 
             // The whole endpoint runs on in-memory persistence, selected like any NServiceBus persistence.

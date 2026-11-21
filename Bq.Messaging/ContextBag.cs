@@ -73,6 +73,15 @@ namespace Bq.Messaging
             return false;
         }
 
+        internal bool TryGetLocal<T>(string key, out T result)
+        {
+            if (values.TryGetValue(key, out var existing)) { result = (T)existing; return true; }
+            result = default;
+            return false;
+        }
+
+        internal void SetLocal<T>(string key, T value) => values[key] = value;
+
         public T GetOrCreate<T>() where T : class, new()
         {
             if (TryGet<T>(out var value)) return value;
