@@ -1416,6 +1416,24 @@ namespace Bq.Messaging.Tests
             Assert(Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(configuration).Get<ContainerBuilder_Probe>("probe") == other, "settings round-trip");
             container.Dispose();
 
+            var transportConfiguration = new EndpointConfiguration("transport-test", new Uri("amqp://localhost/"));
+            transportConfiguration.UseTransport<RabbitMQTransport>()
+                .ConnectionString(() => "host=broker.example;port=5673;username=svc;password=p@ss;virtualhost=prod;useTls=true")
+                .TimeToWaitBeforeTriggeringCircuitBreaker(TimeSpan.FromMinutes(3))
+                .Transactions(TransportTransactionMode.ReceiveOnly);
+            transportConfiguration.ApplyTransportSettings();
+            Assert(transportConfiguration.RabbitMqUri.ToString() == "amqps://svc:p%40ss@broker.example:5673/prod", "connection strings become an AMQP URI");
+            Assert(transportConfiguration.CriticalErrorThreshold == TimeSpan.FromMinutes(3), "circuit breaker time maps to the critical error threshold");
+            var rejected = false;
+            try { transportConfiguration.UseTransport<RabbitMQTransport>().Transactions(TransportTransactionMode.TransactionScope); }
+            catch (NotSupportedException) { rejected = true; }
+            Assert(rejected, "unsupported transaction modes fail at configuration time");
+            rejected = false;
+            try { transportConfiguration.UseSerialization<Bq.Messaging.Serialization.XmlSerializer>(); }
+            catch (NotSupportedException) { rejected = true; }
+            Assert(rejected, "XML serialization fails at configuration time");
+            transportConfiguration.UseSerialization<Bq.Messaging.Serialization.MessagePackSerialization>();
+
             var featureConfiguration = new EndpointConfiguration("feature-test", new Uri("amqp://localhost/"));
             featureConfiguration.EnableFeature<DependentFeature>();
             featureConfiguration.EnableFeature<BaseFeature>();

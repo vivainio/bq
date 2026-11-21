@@ -174,3 +174,7 @@ Use `MessageMapper` to create messages and inspect Bq's generated interface impl
 ## Instance routing
 
 All instances of an endpoint compete on one shared queue. Call `config.MakeInstanceUniquelyAddressable("id")` to give an instance its own queue named `<endpoint>-id` as well. Then `RouteToThisInstance`, `RouteToSpecificInstance(id)` (to the instance of the message's routed endpoint), `RouteReplyToThisInstance` and `RouteReplyToAnyInstance` work on `SendOptions` and `ReplyOptions`, with `IsRouting...` and `GetRouteToSpecificInstance` to read them back. Delayed retries and replayed messages return to the shared endpoint queue, so any instance can process them.
+
+## NServiceBus-style transport and serialization configuration
+
+`UseTransport<RabbitMQTransport>()` accepts `ConnectionString` (an `amqp://` URI or the `host=...;username=...` form, optionally from a callback evaluated at start), `TimeToWaitBeforeTriggeringCircuitBreaker` (mapped to `CriticalErrorThreshold`) and `Transactions(TransportTransactionMode.ReceiveOnly)`. Other transaction modes throw `NotSupportedException`, because atomic sends come from the transactional outbox. `UseSerialization<MessagePackSerialization>()` is accepted. `XmlSerializer` and `JsonSerializer` exist so configuration compiles, but selecting them throws `NotSupportedException`, since the wire format is MessagePack.

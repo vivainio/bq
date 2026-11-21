@@ -227,6 +227,7 @@ namespace Bq.Messaging
         public static RabbitEndpoint Start(EndpointConfiguration configuration)
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
+            configuration.ApplyTransportSettings();
             configuration.ActivateFeatures();
             if (string.IsNullOrWhiteSpace(configuration.EventsExchange) ||
                 string.IsNullOrWhiteSpace(configuration.ErrorExchange) ||

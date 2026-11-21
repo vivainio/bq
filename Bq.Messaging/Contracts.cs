@@ -160,7 +160,7 @@ namespace Bq.Messaging
             Pipeline = new PipelineSettings(Incoming);
         }
         public string Name { get; }
-        public Uri RabbitMqUri { get; }
+        public Uri RabbitMqUri { get; internal set; }
         public Action<RabbitMQ.Client.ConnectionFactory> ConfigureRabbitMqConnection { get; set; }
         public string EventsExchange { get; set; } = "bq.events";
         public string ErrorExchange { get; set; } = "bq.errors";
