@@ -15,7 +15,7 @@ using RabbitMQ.Client;
 
 namespace Bq.Messaging.Tests
 {
-    public sealed class RuntimeSubscriptionEvent { public int Value { get; set; } }
+    public struct RuntimeSubscriptionEvent { public int Value { get; set; } }
 
     sealed class PilotMessageConvention : IMessageConvention
     {
@@ -558,10 +558,12 @@ namespace Bq.Messaging.Tests
             receiver.RegisterMessageContract<RuntimeSubscriptionEvent>(runtimeContract, runtimeAlias);
             receiver.RegisterMessageContract<WorkflowBarrier>(barrierContract);
             var runtimeDeliveries = 0;
+            var receivedDefaultStruct = false;
             var subscribed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var barrier = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             receiver.Handle(() => new Handler<RuntimeSubscriptionEvent>((message, context) =>
             {
+                if (message.Value == 0) Volatile.Write(ref receivedDefaultStruct, true);
                 if (Interlocked.Increment(ref runtimeDeliveries) == 2) subscribed.TrySetResult(true);
                 return Task.CompletedTask;
             }));
@@ -663,9 +665,10 @@ namespace Bq.Messaging.Tests
                         Func<Task> unsubscribe = subscriptions.Unsubscribe<RuntimeSubscriptionEvent>;
                         await subscribe();
                         await IMessageSessionExtensions.Subscribe(subscriptions, messageType: typeof(RuntimeSubscriptionEvent));
-                        await messaging.Publish(new RuntimeSubscriptionEvent { Value = 1 }, new PublishOptions());
+                        await messaging.Publish<RuntimeSubscriptionEvent>();
                         PublishSubscriptionProbe(channel, pilotExchange, runtimeAlias, runtimeAlias, new RuntimeSubscriptionEvent { Value = 2 });
                         await Within(subscribed.Task);
+                        Assert(Volatile.Read(ref receivedDefaultStruct), "the broker delivers a default-initialized struct event");
 
                         await unsubscribe();
                         await messaging.Publish(new RuntimeSubscriptionEvent { Value = 3 }, new PublishOptions());
