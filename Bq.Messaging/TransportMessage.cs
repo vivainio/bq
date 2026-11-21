@@ -9,7 +9,7 @@ namespace Bq.Messaging
         Task MutateOutgoing(MutateOutgoingMessageContext context);
     }
 
-    public sealed class MutateOutgoingMessageContext
+    public class MutateOutgoingMessageContext
     {
         readonly object incomingMessage;
         readonly IReadOnlyDictionary<string, string> incomingHeaders;
@@ -18,25 +18,30 @@ namespace Bq.Messaging
             Dictionary<string, string> outgoingHeaders, object incomingMessage,
             IReadOnlyDictionary<string, string> incomingHeaders)
         {
-            OutgoingMessage = outgoingMessage;
-            OutgoingHeaders = outgoingHeaders;
+            currentOutgoingMessage = outgoingMessage ?? throw new ArgumentNullException(nameof(outgoingMessage));
+            OutgoingHeaders = outgoingHeaders ?? throw new ArgumentNullException(nameof(outgoingHeaders));
             this.incomingMessage = incomingMessage;
             this.incomingHeaders = incomingHeaders;
         }
 
-        public object OutgoingMessage { get; set; }
+        object currentOutgoingMessage;
+        public object OutgoingMessage
+        {
+            get => currentOutgoingMessage;
+            set => currentOutgoingMessage = value ?? throw new ArgumentNullException(nameof(value));
+        }
         public Dictionary<string, string> OutgoingHeaders { get; }
 
-        public bool TryGetIncomingMessage(out object message)
+        public bool TryGetIncomingMessage(out object incomingMessage)
         {
-            message = incomingMessage;
-            return message != null;
+            incomingMessage = this.incomingMessage;
+            return incomingMessage != null;
         }
 
-        public bool TryGetIncomingHeaders(out IReadOnlyDictionary<string, string> headers)
+        public bool TryGetIncomingHeaders(out IReadOnlyDictionary<string, string> incomingHeaders)
         {
-            headers = incomingHeaders;
-            return headers != null;
+            incomingHeaders = this.incomingHeaders;
+            return incomingHeaders != null;
         }
     }
 
@@ -45,7 +50,7 @@ namespace Bq.Messaging
         Task MutateOutgoing(MutateOutgoingTransportMessageContext context);
     }
 
-    public sealed class MutateOutgoingTransportMessageContext
+    public class MutateOutgoingTransportMessageContext
     {
         readonly object incomingMessage;
         readonly IReadOnlyDictionary<string, string> incomingHeaders;
@@ -54,27 +59,32 @@ namespace Bq.Messaging
             Dictionary<string, string> outgoingHeaders, object incomingMessage,
             IReadOnlyDictionary<string, string> incomingHeaders)
         {
-            OutgoingBody = outgoingBody;
-            OutgoingMessage = outgoingMessage;
-            OutgoingHeaders = outgoingHeaders;
+            currentOutgoingBody = outgoingBody ?? throw new ArgumentNullException(nameof(outgoingBody));
+            OutgoingMessage = outgoingMessage ?? throw new ArgumentNullException(nameof(outgoingMessage));
+            OutgoingHeaders = outgoingHeaders ?? throw new ArgumentNullException(nameof(outgoingHeaders));
             this.incomingMessage = incomingMessage;
             this.incomingHeaders = incomingHeaders;
         }
 
-        public byte[] OutgoingBody { get; set; }
+        byte[] currentOutgoingBody;
+        public byte[] OutgoingBody
+        {
+            get => currentOutgoingBody;
+            set => currentOutgoingBody = value ?? throw new ArgumentNullException(nameof(value));
+        }
         public object OutgoingMessage { get; }
         public Dictionary<string, string> OutgoingHeaders { get; }
 
-        public bool TryGetIncomingMessage(out object message)
+        public bool TryGetIncomingMessage(out object incomingMessage)
         {
-            message = incomingMessage;
-            return message != null;
+            incomingMessage = this.incomingMessage;
+            return incomingMessage != null;
         }
 
-        public bool TryGetIncomingHeaders(out IReadOnlyDictionary<string, string> headers)
+        public bool TryGetIncomingHeaders(out IReadOnlyDictionary<string, string> incomingHeaders)
         {
-            headers = incomingHeaders;
-            return headers != null;
+            incomingHeaders = this.incomingHeaders;
+            return incomingHeaders != null;
         }
     }
 
@@ -83,15 +93,20 @@ namespace Bq.Messaging
         Task MutateIncoming(MutateIncomingTransportMessageContext context);
     }
 
-    public sealed class MutateIncomingTransportMessageContext
+    public class MutateIncomingTransportMessageContext
     {
         public MutateIncomingTransportMessageContext(byte[] body, Dictionary<string, string> headers)
         {
-            Body = body ?? throw new ArgumentNullException(nameof(body));
+            currentBody = body ?? throw new ArgumentNullException(nameof(body));
             Headers = headers ?? throw new ArgumentNullException(nameof(headers));
         }
 
-        public byte[] Body { get; set; }
+        byte[] currentBody;
+        public byte[] Body
+        {
+            get => currentBody;
+            set => currentBody = value ?? throw new ArgumentNullException(nameof(value));
+        }
         public Dictionary<string, string> Headers { get; }
     }
 
@@ -100,15 +115,20 @@ namespace Bq.Messaging
         Task MutateIncoming(MutateIncomingMessageContext context);
     }
 
-    public sealed class MutateIncomingMessageContext
+    public class MutateIncomingMessageContext
     {
         public MutateIncomingMessageContext(object message, Dictionary<string, string> headers)
         {
-            Message = message ?? throw new ArgumentNullException(nameof(message));
+            currentMessage = message ?? throw new ArgumentNullException(nameof(message));
             Headers = headers ?? throw new ArgumentNullException(nameof(headers));
         }
 
-        public object Message { get; set; }
+        object currentMessage;
+        public object Message
+        {
+            get => currentMessage;
+            set => currentMessage = value ?? throw new ArgumentNullException(nameof(value));
+        }
         public Dictionary<string, string> Headers { get; }
     }
 

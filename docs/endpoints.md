@@ -159,6 +159,8 @@ Use `Pipeline.Register<TRegisterStep>()` or `Pipeline.Register(step)` to registe
 
 Use `RegisterMessageMutator(instance)` to register a message mutator for each incoming or outgoing interface it implements. Registering the same instance twice runs it once per applicable stage. Distinct mutators run in registration order within each stage.
 
+Mutator contexts require a message or body and a header dictionary when constructed. Replacement messages and bodies must be non-null. In outgoing mutators, use `TryGetIncomingMessage` and `TryGetIncomingHeaders` to read the causing message when available.
+
 Pass a behavior factory to the `RegisterStep` constructor when a behavior needs constructor arguments. Bq calls the factory during registration and reuses the returned behavior across deliveries.
 
 The `Pipeline.Register` and `Pipeline.Replace` overloads also accept a `Func<TBehavior>` for behavior construction during configuration. A factory registration without a step ID uses the full name of `TBehavior`.

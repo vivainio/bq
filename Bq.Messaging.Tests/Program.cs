@@ -188,6 +188,29 @@ namespace Bq.Messaging.Tests
         }
         static async Task TestingSupportTests()
         {
+            var mutatorHeaders = new System.Collections.Generic.Dictionary<string, string>();
+            var mutatorMessage = new Command();
+            var outgoingLogical = new MutateOutgoingMessageContext(mutatorMessage, mutatorHeaders, null, null);
+            var outgoingTransport = new MutateOutgoingTransportMessageContext(Array.Empty<byte>(), mutatorMessage,
+                mutatorHeaders, mutatorMessage, mutatorHeaders);
+            var incomingLogical = new MutateIncomingMessageContext(mutatorMessage, mutatorHeaders);
+            var incomingTransport = new MutateIncomingTransportMessageContext(Array.Empty<byte>(), mutatorHeaders);
+            Assert(!outgoingLogical.TryGetIncomingHeaders(incomingHeaders: out _) &&
+                outgoingTransport.TryGetIncomingMessage(incomingMessage: out var causingMessage) &&
+                ReferenceEquals(causingMessage, mutatorMessage), "outgoing mutators expose optional incoming context");
+            foreach (var replaceWithNull in new Action[]
+            {
+                () => outgoingLogical.OutgoingMessage = null,
+                () => outgoingTransport.OutgoingBody = null,
+                () => incomingLogical.Message = null,
+                () => incomingTransport.Body = null
+            })
+            {
+                var rejected = false;
+                try { replaceWithNull(); }
+                catch (ArgumentNullException error) when (error.ParamName == "value") { rejected = true; }
+                Assert(rejected, "mutator contexts reject null replacements");
+            }
             VerifyPipelineOrderingValidation();
             var conventions = new ConventionsBuilder().DefiningMessagesAs(_ => false).Conventions;
             conventions.AddSystemMessagesConventions(type => type == typeof(WorkflowBarrier));
