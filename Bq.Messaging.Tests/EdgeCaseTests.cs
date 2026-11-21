@@ -122,6 +122,8 @@ namespace Bq.Messaging.Tests
         public override Task Invoke(IIncomingPhysicalMessageContext context, Func<Task> next) => next();
     }
 
+    public sealed class EdgeCaseLogProbe { }
+
     static class EdgeCaseTests
     {
         static readonly List<string> failures = new List<string>();
@@ -158,6 +160,7 @@ namespace Bq.Messaging.Tests
         {
             RunFeatureCases();
             RunPipelineCases();
+            RunLoggingCases();
             await RunInMemoryCases();
             Console.WriteLine("Edge case tests: " + passed + " passed, " + failures.Count + " failed.");
             if (failures.Count > 0) throw new Exception("Failed edge cases:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
@@ -324,6 +327,40 @@ namespace Bq.Messaging.Tests
                 Throws<InvalidOperationException>(() => pipeline.Replace("missing", () => new EdgeLogicalBehavior(), "x"), "unknown id with a factory");
                 Throws<ArgumentException>(() => pipeline.Register(" ", new EdgeLogicalBehavior(), "x"), "blank id");
                 Throws<ArgumentException>(() => pipeline.Replace(null, new EdgeLogicalBehavior(), "x"), "null id");
+            });
+        }
+
+        static void RunLoggingCases()
+        {
+            Case("default logging filters by level, writes a daily file and validates arguments", () =>
+            {
+                var directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "bq-log-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    var factory = Bq.Messaging.Logging.LogManager.Use<Bq.Messaging.Logging.DefaultFactory>();
+                    factory.Level(Bq.Messaging.Logging.LogLevel.Warn);
+                    factory.Directory(directory);
+                    var log = Bq.Messaging.Logging.LogManager.GetLogger<EdgeCaseLogProbe>();
+                    That(!log.IsDebugEnabled && !log.IsInfoEnabled && log.IsWarnEnabled && log.IsErrorEnabled && log.IsFatalEnabled, "levels below Warn are disabled");
+                    log.Debug("d"); log.Debug("d", null); log.DebugFormat("d{0}", 1);
+                    log.Info("i"); log.Info("i", null); log.InfoFormat("i{0}", 1);
+                    log.Warn("warn-line"); log.Warn("w", new Exception("w")); log.WarnFormat("w{0}", 1);
+                    log.Error("error-line"); log.Error("e", new Exception("boom")); log.ErrorFormat("e{0}", 1);
+                    log.Fatal("fatal-line"); log.Fatal("f", new Exception("f")); log.FatalFormat("f{0}", 1);
+                    var text = string.Concat(System.IO.Directory.GetFiles(directory).Select(System.IO.File.ReadAllText));
+                    That(text.Contains("warn-line") && text.Contains("error-line") && text.Contains("fatal-line") && text.Contains("boom"), "warnings and above are written");
+                    That(!text.Contains("Debug") && !text.Contains(" Info "), "lower levels are not written");
+                    That(Bq.Messaging.Logging.LogManager.GetLogger("named") != null, "loggers can be named");
+                    Throws<ArgumentException>(() => Bq.Messaging.Logging.LogManager.GetLogger(""), "an empty logger name");
+                    Throws<ArgumentNullException>(() => Bq.Messaging.Logging.LogManager.GetLogger((Type)null), "a null type");
+                    Throws<ArgumentException>(() => factory.Directory(" "), "a blank directory");
+                    Throws<ArgumentNullException>(() => Bq.Messaging.Logging.LogManager.UseFactory(null), "a null factory");
+                }
+                finally
+                {
+                    Bq.Messaging.Logging.LogManager.Use<Bq.Messaging.Logging.DefaultFactory>();
+                    if (System.IO.Directory.Exists(directory)) System.IO.Directory.Delete(directory, true);
+                }
             });
         }
 
