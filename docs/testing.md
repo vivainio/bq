@@ -25,6 +25,31 @@ bash scripts/test-rabbit-sim.sh
 
 The runner uses `--data` to persist broker state to a temporary SQLite file. It stops the simulator, waits for the endpoint to observe the outage, and restarts it with that same file before running the Windsor sample.
 
+## TUnit runner
+
+`Bq.Messaging.Tests.TUnit` runs the same tests under [TUnit](https://tunit.dev) on .NET Framework (net472, on Mono), so each test reports on its own and one failure does not hide the rest. The older test groups each appear as one test, and the edge-case tests appear one per case.
+
+```sh
+dotnet build Bq.Messaging.Tests.TUnit/Bq.Messaging.Tests.TUnit.csproj
+mono Bq.Messaging.Tests.TUnit/bin/Debug/net472/Bq.Messaging.Tests.exe
+```
+
+With `BQ_RABBITMQ_URI` unset and `rabbit-sim` on `PATH`, the runner starts its own simulator on free ports and stops it when it exits, so the broker tests run without setup. Set `BQ_NO_SIM=1` to run only the tests that need no broker. `scripts/test-rabbit-sim.sh` runs this project after the broker outage test, which the script drives by stopping and restarting the broker.
+
+New tests go into the registered-case files (`EdgeCaseTests.cs` for tests without a broker, `EdgeBrokerTests.cs` for tests with one). The console runner and TUnit both pick them up.
+
+## Coverage
+
+`scripts/coverage.sh` runs the suite under Mono's coverage profiler and lists the files with the most uncovered lines. Pass a row count and a file name to list that file's missed lines, for example `bash scripts/coverage.sh 30 RabbitEndpoint.cs`.
+
+## Oracle
+
+When `BQ_ORACLE_CONNECTION_STRING`, `BQ_ORACLE_DRIVER_ASSEMBLY` and `BQ_ORACLE_CONNECTION_TYPE` are set, the same run also checks the Oracle provider and a whole endpoint on Oracle. The `oracle` job in the messaging workflow does this against an Oracle Database Free container. `Bq.Persistence.Oracle/README.md` in the repository describes the local setup, including the Oracle Database Free container.
+
+## Two runtimes
+
+`Bq.Reference.Net10` builds the Castle Windsor reference application for net10.0 from the same source as the net472 sample, and the test script runs both against the simulator. The libraries target .NET Standard 2.0, so one build serves both runtimes.
+
 ## Cross-endpoint workflow
 
 The [order workflow tutorial](order-workflow.md) explains the scenario. The test uses three endpoints with separate SQLite databases and one RabbitMQ broker. It checks that intake commits an order with its command, fulfillment runs a saga and durable timeout, and a downstream handler rolls back and retries after an endpoint restart. It also redelivers both the original event and its successful retry to verify that the workflow completes once.
