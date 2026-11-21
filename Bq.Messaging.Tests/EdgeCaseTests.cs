@@ -163,6 +163,7 @@ namespace Bq.Messaging.Tests
             RunPipelineCases();
             RunLoggingCases();
             await RunSettingsAndTestingCases();
+            RunSerializationCases();
             await RunInMemoryCases();
             Console.WriteLine("Edge case tests: " + passed + " passed, " + failures.Count + " failed.");
             if (failures.Count > 0) throw new Exception("Failed edge cases:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
@@ -476,6 +477,53 @@ namespace Bq.Messaging.Tests
                 That(conversation.GetMessageId() == "id-1" && conversation.GetReplyToRoute() == "back", "options keep ids and reply addresses");
                 conversation.SetHeader("k", "v");
                 That(conversation.GetHeaders()["k"] == "v", "text headers are readable");
+            });
+        }
+
+        static void RunSerializationCases()
+        {
+            foreach (var definition in new Bq.Messaging.Serialization.SerializationDefinition[] { new Bq.Messaging.Serialization.JsonSerializer(), new Bq.Messaging.Serialization.MessagePackSerialization() })
+            {
+                var current = definition;
+                Case("serializer round trip: " + current.GetType().Name, () =>
+                {
+                    var serializer = current.Configure(new Bq.Messaging.Settings.SettingsHolder())(null);
+                    var message = new EdgeUowMessage { Text = "hello" };
+                    using (var stream = new System.IO.MemoryStream())
+                    {
+                        serializer.Serialize(message, stream);
+                        stream.Position = 0;
+                        var read = serializer.Deserialize(stream, new[] { typeof(EdgeUowMessage) });
+                        That(read.Length == 1 && ((EdgeUowMessage)read[0]).Text == "hello", "the typed message round trips");
+                    }
+                    var wire = current.CreateWireFormat();
+                    var bytes = wire.Serialize(typeof(EdgeUowMessage), message);
+                    That(((EdgeUowMessage)wire.Deserialize(typeof(EdgeUowMessage), bytes)).Text == "hello", "the wire format round trips");
+                    That(wire.ContentType == serializer.ContentType && !string.IsNullOrEmpty(wire.ContentType), "content types agree");
+                    using (var stream = new System.IO.MemoryStream(bytes))
+                    {
+                        var untyped = serializer.Deserialize(stream);
+                        That(untyped.Length == 1, "reading without a type list still returns one value");
+                    }
+                });
+            }
+            Case("rijndael expired key collection operations", () =>
+            {
+                var collection = new Bq.Messaging.Config.RijndaelExpiredKeyCollection();
+                var first = new Bq.Messaging.Config.RijndaelExpiredKey { Key = "k1", KeyIdentifier = "id1" };
+                var second = new Bq.Messaging.Config.RijndaelExpiredKey { Key = "k2" };
+                collection.Add(first); collection.Add(second);
+                That(collection.Count == 2 && collection[1].Key == "k2" && collection.IndexOf(second) == 1, "keys are stored in order");
+                That(first.KeyIdentifier == "id1" && first.KeyFormat == Bq.Messaging.Config.KeyFormat.Ascii, "the key format defaults to ASCII");
+                collection.Remove(first);
+                That(collection.Count == 1, "a key is removed");
+                collection.RemoveAt(0);
+                collection.Add(first);
+                collection.Clear();
+                That(collection.Count == 0, "the collection clears");
+                var section = new Bq.Messaging.Config.RijndaelEncryptionServiceConfig { Key = "abc", KeyIdentifier = "main", KeyFormat = Bq.Messaging.Config.KeyFormat.Base64 };
+                section.ExpiredKeys = collection;
+                That(section.Key == "abc" && section.KeyIdentifier == "main" && section.KeyFormat == Bq.Messaging.Config.KeyFormat.Base64 && section.ExpiredKeys == collection, "section properties round trip");
             });
         }
 
