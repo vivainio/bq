@@ -141,7 +141,7 @@ namespace Bq.Messaging.Tests
                 try
                 {
                     channel.ExchangeDeclare(exchange, ExchangeType.Topic, true);
-                    channel.QueueDeclare(observer, false, false, true);
+                    channel.QueueDeclare(observer, false, true, true); // RabbitMQ 4 rejects transient queues that are not exclusive
                     channel.QueueBind(observer, exchange, typeof(FulfillmentStarted).FullName);
                     channel.QueueBind(observer, exchange, typeof(FulfillmentCompleted).FullName);
                     channel.ConfirmSelect();
