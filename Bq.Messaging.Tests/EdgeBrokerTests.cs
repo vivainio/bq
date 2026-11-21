@@ -852,6 +852,11 @@ namespace Bq.Messaging.Tests
                         await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");
                         await Task.Delay(500);
                         That(seen.Values.All(n => n == 1), "no row was handled twice: " + string.Join(",", seen.Where(p => p.Value != 1).Take(3).Select(p => p.Key)));
+                        // Retention today: delivered outbox rows are removed, but there is no cleanup of the inbox, so it keeps one row per
+                        // handled message. When cleanup is added this is the assertion to change.
+                        That(await EdgeOutbox.Count(path, "bq_outbox") == 0, "delivered rows leave the outbox");
+                        That(await EdgeOutbox.Count(path, "bq_inbox") == total, "the inbox keeps a row for every handled message, found " + await EdgeOutbox.Count(path, "bq_inbox"));
+                        That(await EdgeOutbox.Count(path, "bq_recovery") == 0, "no recovery records were created by successful handling");
                     }
                 }
                 finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
