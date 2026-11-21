@@ -12,6 +12,7 @@
     <ProjectReference Include="../Bq.Persistence.Oracle/Bq.Persistence.Oracle.csproj" />
     <ProjectReference Include="../Bq.Persistence.Sqlite/Bq.Persistence.Sqlite.csproj" />
     <Reference Include="System.Transactions" />
+    <Reference Include="System.Net.Http" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>
 </Project>

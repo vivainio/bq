@@ -11,6 +11,9 @@ namespace Bq.Messaging.Tests
 {
     public class EdgeUowMessage { public string Text { get; set; } }
 
+    [TimeToBeReceived("00:00:30")]
+    public class EdgeTtlMessage { public string Text { get; set; } }
+
     public sealed class EdgeUnit : IManageUnitsOfWork
     {
         public static readonly List<string> Log = new List<string>();
@@ -116,6 +119,32 @@ namespace Bq.Messaging.Tests
                         "an End failure combines with the original: " + combined.Message);
                     That(EdgeUnit.Log.Contains("end:outer:ApplicationException"),
                         "the remaining units still end with the original failure: " + string.Join(",", EdgeUnit.Log));
+                }
+            });
+
+            await Case("a TimeToBeReceived message expires on the broker clock", async () =>
+            {
+                var http = Environment.GetEnvironmentVariable("BQ_RABBITSIM_HTTP");
+                if (string.IsNullOrEmpty(http)) { Console.WriteLine("TTL test skipped: set BQ_RABBITSIM_HTTP."); return; }
+                var name = "bq.test.edge.ttl." + Guid.NewGuid().ToString("N");
+                var sink = name + ".sink";
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                configuration.Route(typeof(EdgeTtlMessage), sink);
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var channel = connection.CreateModel())
+                {
+                    channel.QueueDeclare(sink, true, false, false);
+                    await endpoint.Send(new EdgeTtlMessage { Text = "short-lived" });
+                    await Eventually(() => channel.MessageCount(sink) == 1, "the message to reach the sink queue");
+                    using (var client = new System.Net.Http.HttpClient())
+                    {
+                        await client.PostAsync(http + "/chaos/clock/advance?ms=10000", null);
+                        await Task.Delay(300);
+                        That(channel.MessageCount(sink) == 1, "the message is still alive before its time to be received passes");
+                        await client.PostAsync(http + "/chaos/clock/advance?ms=30000", null);
+                    }
+                    await Eventually(() => channel.MessageCount(sink) == 0, "the message to expire after the clock passes its TTL");
                 }
             });
 

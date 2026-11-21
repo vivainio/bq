@@ -36,8 +36,17 @@ with socket.socket() as listener:
 PYTHON
 )
 
+http_port=$(python3 - <<'PYTHON'
+import socket
+
+with socket.socket() as listener:
+    listener.bind(("127.0.0.1", 0))
+    print(listener.getsockname()[1])
+PYTHON
+)
+
 start_broker() {
-    rabbit-sim --bind 127.0.0.1 --port "$port" --http-port 0 --data "$test_dir/broker.db" \
+    rabbit-sim --bind 127.0.0.1 --port "$port" --http-port "$http_port" --data "$test_dir/broker.db" \
         >>"$test_dir/broker.log" 2>&1 &
     broker_pid=$!
     local attempt
@@ -64,6 +73,7 @@ wait_for_marker() {
 
 start_broker
 export BQ_RABBITMQ_URI="amqp://guest:guest@127.0.0.1:$port/"
+export BQ_RABBITSIM_HTTP="http://127.0.0.1:$http_port"
 BQ_BROKER_OUTAGE_DIR="$test_dir" \
     mono Bq.Messaging.Tests/bin/Debug/net472/Bq.Messaging.Tests.exe &
 test_pid=$!
