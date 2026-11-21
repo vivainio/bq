@@ -228,6 +228,7 @@ namespace Bq.Messaging
         {
             if (configuration == null) throw new ArgumentNullException(nameof(configuration));
             configuration.ApplyTransportSettings();
+            configuration.ApplyPersistenceSettings();
             configuration.ActivateFeatures();
             if (string.IsNullOrWhiteSpace(configuration.EventsExchange) ||
                 string.IsNullOrWhiteSpace(configuration.ErrorExchange) ||

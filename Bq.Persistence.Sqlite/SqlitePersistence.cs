@@ -7,7 +7,7 @@ using Bq.Messaging;
 namespace Bq.Persistence.Sqlite
 {
     // Accepts an ADO.NET SQLite connection factory; the host selects the driver.
-    public sealed class SqlitePersistence : IPersistenceProvider, IRecoveryPersistence
+    public sealed class SqlitePersistence : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence
     {
         readonly Func<DbConnection> factory;
         readonly string endpoint;

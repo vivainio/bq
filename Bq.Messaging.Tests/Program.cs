@@ -1434,6 +1434,22 @@ namespace Bq.Messaging.Tests
             Assert(rejected, "XML serialization fails at configuration time");
             transportConfiguration.UseSerialization<Bq.Messaging.Serialization.MessagePackSerialization>();
 
+            var persistencePath = Path.Combine(Path.GetTempPath(), "bq-usepersistence-" + Guid.NewGuid().ToString("N") + ".db");
+            var persistenceConfiguration = new EndpointConfiguration("persistence-test", new Uri("amqp://localhost/"));
+            persistenceConfiguration.UsePersistence<SqlitePersistenceDefinition>().ConnectionFactory(() => Sqlite(persistencePath));
+            persistenceConfiguration.EnableInstallers();
+            persistenceConfiguration.ApplyPersistenceSettings();
+            Assert(persistenceConfiguration.Persistence is SqlitePersistence, "UsePersistence creates the provider");
+            using (var db = Sqlite(persistencePath))
+            {
+                db.Open();
+                using (var command = db.CreateCommand())
+                {
+                    command.CommandText = "SELECT count(*) FROM sqlite_master WHERE name = 'bq_inbox'";
+                    Assert(Convert.ToInt32(command.ExecuteScalar()) == 1, "installers create the schema");
+                }
+            }
+
             var featureConfiguration = new EndpointConfiguration("feature-test", new Uri("amqp://localhost/"));
             featureConfiguration.EnableFeature<DependentFeature>();
             featureConfiguration.EnableFeature<BaseFeature>();

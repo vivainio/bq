@@ -157,9 +157,11 @@ namespace Bq.Messaging
             if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("An endpoint name is required.", nameof(name));
             Name = name;
             RabbitMqUri = rabbitMqUri ?? throw new ArgumentNullException(nameof(rabbitMqUri));
+            Settings.Set(EndpointNameKey, name);
             Pipeline = new PipelineSettings(Incoming);
         }
         public string Name { get; }
+        internal const string EndpointNameKey = "Bq.EndpointName";
         public Uri RabbitMqUri { get; internal set; }
         public Action<RabbitMQ.Client.ConnectionFactory> ConfigureRabbitMqConnection { get; set; }
         public string EventsExchange { get; set; } = "bq.events";
