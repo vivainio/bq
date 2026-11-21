@@ -50,6 +50,58 @@ namespace Bq.Messaging.Tests
         }
     }
 
+    public sealed class EdgeReverseEncryption : Bq.Messaging.IEncryptionService
+    {
+        public static int Encrypted, Decrypted;
+        static string Reverse(string value) { var chars = value.ToCharArray(); Array.Reverse(chars); return new string(chars); }
+        public Bq.Messaging.EncryptedValue Encrypt(string value, IOutgoingLogicalMessageContext context)
+        {
+            Interlocked.Increment(ref Encrypted);
+            return new Bq.Messaging.EncryptedValue { EncryptedBase64Value = Reverse(value), Base64Iv = "iv" };
+        }
+        public string Decrypt(Bq.Messaging.EncryptedValue encryptedValue, IIncomingLogicalMessageContext context)
+        {
+            Interlocked.Increment(ref Decrypted);
+            return Reverse(encryptedValue.EncryptedBase64Value);
+        }
+    }
+
+    public sealed class EdgeMemoryDataBus : Bq.Messaging.DataBus.IDataBus
+    {
+        public readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> Values = new System.Collections.Concurrent.ConcurrentDictionary<string, byte[]>();
+        public bool FailGet;
+        public int Gets;
+        public Task Start() => Task.CompletedTask;
+        public Task<string> Put(System.IO.Stream stream, TimeSpan timeToBeReceived)
+        {
+            var key = Guid.NewGuid().ToString("N");
+            using (var copy = new System.IO.MemoryStream()) { stream.CopyTo(copy); Values[key] = copy.ToArray(); }
+            return Task.FromResult(key);
+        }
+        public Task<System.IO.Stream> Get(string key)
+        {
+            Interlocked.Increment(ref Gets);
+            if (FailGet) throw new System.IO.IOException("data bus unavailable");
+            return Task.FromResult<System.IO.Stream>(new System.IO.MemoryStream(Values[key]));
+        }
+    }
+
+    public sealed class EdgeCountingDataBusSerializer : Bq.Messaging.DataBus.IDataBusSerializer
+    {
+        public static int Serialized, Deserialized;
+        public void Serialize(object dataBusProperty, System.IO.Stream stream)
+        {
+            Interlocked.Increment(ref Serialized);
+            var bytes = (byte[])dataBusProperty;
+            stream.Write(bytes, 0, bytes.Length);
+        }
+        public object Deserialize(System.IO.Stream stream)
+        {
+            Interlocked.Increment(ref Deserialized);
+            using (var copy = new System.IO.MemoryStream()) { stream.CopyTo(copy); return copy.ToArray(); }
+        }
+    }
+
     public sealed class EdgeUnit : IManageUnitsOfWork
     {
         public static readonly List<string> Log = new List<string>();
@@ -251,6 +303,74 @@ namespace Bq.Messaging.Tests
                     That(Volatile.Read(ref EdgeConcurrencyProbe.Peak) > 1 && EdgeConcurrencyProbe.Peak <= 4, "peak concurrency was " + EdgeConcurrencyProbe.Peak);
                     That(EdgeConcurrencyProbe.Invoked == 12, "each message passed through the behavior once: " + EdgeConcurrencyProbe.Invoked);
                     lock (EdgeUnit.Log) That(EdgeUnit.Log.Count(l => l == "begin:concurrent") == 12 && EdgeUnit.Log.Count(l => l == "end:concurrent:ok") == 12, "every attempt began and ended its unit of work");
+                }
+            });
+
+            foreach (var viaContainer in new[] { false, true })
+            {
+                var container = viaContainer;
+                await Case("custom encryption service " + (container ? "registered in the container" : "registered with a factory"), async () =>
+                {
+                    EdgeReverseEncryption.Encrypted = EdgeReverseEncryption.Decrypted = 0;
+                    var name = "bq.test.edge.encrypt." + Guid.NewGuid().ToString("N");
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                    if (container) configuration.RegisterComponents(components => components.RegisterSingleton<Bq.Messaging.IEncryptionService>(new EdgeReverseEncryption()));
+                    else configuration.RegisterEncryptionService(() => new EdgeReverseEncryption());
+                    configuration.Route(typeof(SecretMessage), name);
+                    var wire = "";
+                    configuration.MutateOutgoing = transport => { if (transport.TypeName == typeof(SecretMessage).FullName) wire = System.Text.Encoding.UTF8.GetString(transport.Body); };
+                    var seen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    configuration.Handle(() => new Handler<SecretMessage>((m, c) => { seen.TrySetResult(m.Secret.Value); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        await endpoint.Send(new SecretMessage { Label = "l", Secret = new Bq.Messaging.WireEncryptedString { Value = "abc123" } });
+                        That(await Within(seen.Task) == "abc123", "the handler reads the decrypted value");
+                        That(wire.Contains("321cba") && !wire.Contains("abc123"), "the custom service's output is on the wire");
+                        That(EdgeReverseEncryption.Encrypted == 1 && EdgeReverseEncryption.Decrypted == 1, "the service ran once each way");
+                    }
+                });
+            }
+            await Case("a container-registered data bus and serializer carry data bus values", async () =>
+            {
+                EdgeCountingDataBusSerializer.Serialized = EdgeCountingDataBusSerializer.Deserialized = 0;
+                var bus = new EdgeMemoryDataBus();
+                var name = "bq.test.edge.databus." + Guid.NewGuid().ToString("N");
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                configuration.RegisterComponents(components =>
+                {
+                    components.RegisterSingleton<Bq.Messaging.DataBus.IDataBus>(bus);
+                    components.RegisterSingleton<Bq.Messaging.DataBus.IDataBusSerializer>(new EdgeCountingDataBusSerializer());
+                });
+                configuration.Route(typeof(DataBusMessage), name);
+                var seen = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+                configuration.Handle(() => new Handler<DataBusMessage>((m, c) => { seen.TrySetResult(m.Attachment.Value.Length); return Task.CompletedTask; }));
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                {
+                    await endpoint.Send(new DataBusMessage { Text = "t", Attachment = new Bq.Messaging.DataBusProperty<byte[]>(new byte[5000]) });
+                    That(await Within(seen.Task) == 5000, "the value arrives through the container data bus");
+                    That(bus.Values.Count == 1 && bus.Values.Values.Single().Length == 5000, "the value was stored in the custom bus");
+                    That(EdgeCountingDataBusSerializer.Serialized == 1 && EdgeCountingDataBusSerializer.Deserialized == 1, "the custom serializer was used");
+                }
+            });
+            await Case("a data bus download failure goes through recoverability", async () =>
+            {
+                var bus = new EdgeMemoryDataBus();
+                var name = "bq.test.edge.databusfail." + Guid.NewGuid().ToString("N");
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name), ImmediateRetries = 1 };
+                configuration.Recoverability.DelayedRetries = new TimeSpan[0];
+                configuration.RegisterComponents(components => components.RegisterSingleton<Bq.Messaging.DataBus.IDataBus>(bus));
+                configuration.Route(typeof(DataBusMessage), name);
+                var handled = 0;
+                configuration.Handle(() => new Handler<DataBusMessage>((m, c) => { Interlocked.Increment(ref handled); return Task.CompletedTask; }));
+                var errored = new TaskCompletionSource<FailedMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+                configuration.Notifications.Errors.MessageSentToErrorQueue += (sender, message) => errored.TrySetResult(message);
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                {
+                    bus.FailGet = true;
+                    await endpoint.Send(new DataBusMessage { Text = "t", Attachment = new Bq.Messaging.DataBusProperty<byte[]>(new byte[10]) });
+                    var failed = await Within(errored.Task);
+                    That(failed.Exception.Message.Contains("data bus unavailable"), "the download failure is reported: " + failed.Exception.Message);
+                    That(Volatile.Read(ref handled) == 0 && bus.Gets == 2, "the handler never ran and the download was retried once: " + bus.Gets);
                 }
             });
 
