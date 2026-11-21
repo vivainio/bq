@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Bq.Messaging.Features;
+using Bq.Messaging.ObjectBuilder;
+using Bq.Extensions.CastleWindsor;
 using Bq.Messaging.DeliveryConstraints;
 using Bq.Messaging.DelayedDelivery;
 
@@ -126,6 +128,34 @@ namespace Bq.Messaging.Tests
 
     public sealed class EdgeCaseLogProbe { }
     public sealed class EdgeFeatureHolder { }
+    public interface IEdgeService { }
+    public sealed class EdgeServiceOne : IEdgeService { }
+    public sealed class EdgeServiceTwo : IEdgeService { }
+    public interface IEdgeFactoryService { }
+    public sealed class EdgeFactoryService : IEdgeFactoryService { }
+    public sealed class EdgeScopedService : IDisposable
+    {
+        public static int Disposed;
+        public void Dispose() { Disposed++; }
+    }
+    public sealed class EdgeInstallableProvider : IPersistenceProvider, IInstallablePersistence
+    {
+        readonly InMemoryPersistenceProvider inner = new InMemoryPersistenceProvider("edge");
+        public Task Initialize() { EdgePersistenceA.Initialized++; return Task.CompletedTask; }
+        public Task<IPersistenceSession> OpenSession() => inner.OpenSession();
+        public Task<OutgoingMessage> NextOutgoing(string endpoint) => inner.NextOutgoing(endpoint);
+        public Task MarkDispatched(string endpoint, string messageId) => inner.MarkDispatched(endpoint, messageId);
+    }
+    public sealed class EdgePersistenceA : PersistenceDefinition
+    {
+        public static int Initialized;
+        public EdgePersistenceA() { Supports<StorageType.Sagas>(settings => { }); Defaults(settings => settings.Set("edge-default", "applied")); }
+        public override IPersistenceProvider CreateProvider(Bq.Messaging.Settings.ReadOnlySettings settings) => new EdgeInstallableProvider();
+    }
+    public sealed class EdgePersistenceB : PersistenceDefinition
+    {
+        public override IPersistenceProvider CreateProvider(Bq.Messaging.Settings.ReadOnlySettings settings) => new InMemoryPersistenceProvider("b");
+    }
     public sealed class EdgeConstraint : Bq.Messaging.DeliveryConstraints.DeliveryConstraint { }
     public sealed class EdgeSagaData : IContainSagaData
     {
@@ -176,6 +206,7 @@ namespace Bq.Messaging.Tests
             await RunSagaSpiCases();
             await RunSpiTypeCases();
             RunConfigurationCases();
+            await RunContainerAndPersistenceCases();
             await RunInMemoryCases();
             Console.WriteLine("Edge case tests: " + passed + " passed, " + failures.Count + " failed.");
             if (failures.Count > 0) throw new Exception("Failed edge cases:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
@@ -757,6 +788,87 @@ namespace Bq.Messaging.Tests
                 That(coded.ForwardReceivedMessagesAddress == "coded", "code wins");
                 Throws<ArgumentNullException>(() => Configuration("edge-null").CustomConfigurationSource(null), "a null source");
             });
+        }
+
+        static async Task RunContainerAndPersistenceCases()
+        {
+            Case("the Windsor adapter builds all, registers singletons, scopes and releases", () =>
+            {
+                using (var windsor = new Castle.Windsor.WindsorContainer())
+                {
+                    var configuration = Configuration("edge-windsor");
+                    configuration.UseContainer<Bq.Extensions.CastleWindsor.WindsorBuilder>(c => c.ExistingContainer(windsor));
+                    var singleton = new EdgeServiceOne();
+                    configuration.RegisterComponents(components =>
+                    {
+                        components.ConfigureComponent<EdgeServiceTwo>(DependencyLifecycle.SingleInstance);
+                        components.RegisterSingleton<IEdgeService>(singleton);
+                        components.ConfigureComponent<EdgeScopedService>(DependencyLifecycle.InstancePerUnitOfWork);
+                        components.ConfigureComponent<IEdgeFactoryService>(() => new EdgeFactoryService(), DependencyLifecycle.InstancePerCall);
+                        That(components.HasComponent<IEdgeService>() && !components.HasComponent(typeof(string)), "HasComponent reflects registrations");
+                    });
+                    var root = new Bq.Messaging.Container.ContainerBuilder(configuration.BuildContainer());
+                    That(root.BuildAll<IEdgeService>().Count() == 2, "BuildAll returns every registration of a service");
+                    That(root.BuildAll(typeof(IEdgeService)).Contains(singleton), "BuildAll includes the registered singleton");
+                    That(root.Build<IEdgeFactoryService>() != root.Build<IEdgeFactoryService>(), "an instance-per-call factory component is new each time");
+                    var before = EdgeScopedService.Disposed;
+                    using (var child = root.CreateChildBuilder())
+                    {
+                        var scoped = child.Build<EdgeScopedService>();
+                        That(scoped == child.Build<EdgeScopedService>(), "a unit-of-work component is shared within a child builder");
+                        child.Release(scoped);
+                        var seen = new List<object>();
+                        child.BuildAndDispatch(typeof(EdgeScopedService), seen.Add);
+                        That(seen.Count == 1, "BuildAndDispatch hands the instance to the action");
+                    }
+                    That(EdgeScopedService.Disposed > before, "ending the child builder releases scoped components");
+                    root.Release(root.Build<EdgeServiceTwo>());
+                }
+            });
+            Case("the default container resolves, scopes and reports missing components", () =>
+            {
+                var configuration = Configuration("edge-default-container");
+                configuration.RegisterComponents(components =>
+                {
+                    components.ConfigureComponent<EdgeServiceOne>(DependencyLifecycle.InstancePerCall);
+                    components.ConfigureComponent<EdgeServiceTwo>(DependencyLifecycle.InstancePerCall);
+                    components.ConfigureComponent<EdgeScopedService>(DependencyLifecycle.InstancePerUnitOfWork);
+                });
+                var root = new Bq.Messaging.Container.ContainerBuilder(configuration.BuildContainer());
+                That(root.Build<EdgeServiceOne>() != root.Build<EdgeServiceOne>(), "instance per call");
+                That(root.BuildAll<EdgeServiceOne>().Count() == 1, "BuildAll finds a concrete registration");
+                using (var child = root.CreateChildBuilder())
+                    That(child.Build<EdgeScopedService>() == child.Build<EdgeScopedService>(), "scoped within a child");
+                Throws<Exception>(() => root.Build(typeof(string)), "an unregistered component");
+            });
+            Case("UsePersistence selects one definition, applies defaults and runs installers", () =>
+            {
+                EdgePersistenceA.Initialized = 0;
+                var configuration = Configuration("edge-persistence");
+                configuration.UsePersistence<EdgePersistenceA>();
+                configuration.UsePersistence<EdgePersistenceA, StorageType.Sagas>();
+                configuration.UsePersistence(typeof(EdgePersistenceA));
+                Throws<InvalidOperationException>(() => configuration.UsePersistence<EdgePersistenceB>(), "a second definition");
+                Throws<ArgumentException>(() => configuration.UsePersistence(typeof(string)), "a non-definition type");
+                Throws<ArgumentException>(() => configuration.UsePersistence(typeof(PersistenceDefinition)), "the abstract definition");
+                configuration.EnableInstallers();
+                configuration.ApplyPersistenceSettings();
+                That(configuration.Persistence is EdgeInstallableProvider && EdgePersistenceA.Initialized == 1, "the provider is created and its installer runs once");
+                That(SettingsOf(configuration).Get<string>("edge-default") == "applied", "definition defaults apply to the settings");
+                That(new EdgePersistenceA().HasSupportFor<StorageType.Sagas>() && !new EdgePersistenceA().HasSupportFor(typeof(StorageType.Outbox)), "support is reported per storage type");
+                var withoutInstallers = Configuration("edge-no-installers");
+                withoutInstallers.UsePersistence<EdgePersistenceA>();
+                EdgePersistenceA.Initialized = 0;
+                withoutInstallers.ApplyPersistenceSettings();
+                That(EdgePersistenceA.Initialized == 0, "installers do not run unless enabled");
+                var explicitProvider = Configuration("edge-explicit");
+                var memory = new InMemoryPersistenceProvider("edge-explicit");
+                explicitProvider.Persistence = memory;
+                explicitProvider.UsePersistence<EdgePersistenceB>();
+                explicitProvider.ApplyPersistenceSettings();
+                That(explicitProvider.Persistence == memory, "a provider set in code is kept");
+            });
+            await Task.CompletedTask;
         }
 
         static async Task RunInMemoryCases()
