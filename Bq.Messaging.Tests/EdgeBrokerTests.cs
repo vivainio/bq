@@ -135,6 +135,43 @@ namespace Bq.Messaging.Tests
         public Task<bool> ReplayError(string endpoint, string id, RecoveryRecord record) => inner.ReplayError(endpoint, id, record);
     }
 
+    public sealed class EdgeInvokeSender : Behavior<IInvokeHandlerContext>
+    {
+        public static string ForwardTarget;
+        public static int Triggers;
+        public override async Task Invoke(IInvokeHandlerContext context, Func<Task> next)
+        {
+            if (!(context.MessageBeingHandled is EdgeUowMessage trigger) || trigger.Text != "trigger") { await next(); return; }
+            Interlocked.Increment(ref Triggers);
+            EdgeUowMessage Make(string text) => new EdgeUowMessage { Text = text };
+            var destination = context.ReplyToAddress;
+            await context.Send(Make("send"));
+            await context.Send<EdgeUowMessage>(m => m.Text = "send-init");
+            await context.Send(Make("send-opts"), new SendOptions());
+            await context.Send((object)Make("send-object-opts"), new SendOptions());
+            await context.Send<EdgeUowMessage>(m => m.Text = "send-init-opts", new SendOptions());
+            await context.Send(destination, Make("send-dest"));
+            await context.SendLocal(Make("send-local"));
+            await context.Publish(Make("publish"));
+            await context.Publish<EdgeUowMessage>(m => m.Text = "publish-init");
+            await context.Publish(Make("publish-opts"), new PublishOptions());
+            await context.Publish((object)Make("publish-object-opts"), new PublishOptions());
+            await context.Publish<EdgeUowMessage>(m => m.Text = "publish-init-opts", new PublishOptions());
+            await context.Reply(Make("reply"));
+            await context.Reply<EdgeUowMessage>(m => m.Text = "reply-init");
+            await context.Reply(Make("reply-opts"), new ReplyOptions());
+            await context.Reply((object)Make("reply-object-opts"), new ReplyOptions());
+            await context.Reply<EdgeUowMessage>(m => m.Text = "reply-init-opts", new ReplyOptions());
+            var due = DateTimeOffset.UtcNow.AddMilliseconds(200);
+            await context.SendAt(Make("send-at"), due);
+            await context.SendAt(destination, Make("send-at-dest"), due);
+            await context.SendLocalAt(Make("local-at"), due);
+            await context.PublishAt(Make("publish-at"), due);
+            await context.ForwardCurrentMessageTo(ForwardTarget);
+            await next();
+        }
+    }
+
     public sealed class EdgeUnit : IManageUnitsOfWork
     {
         public static readonly List<string> Log = new List<string>();
@@ -533,6 +570,30 @@ namespace Bq.Messaging.Tests
                     });
                     await Eventually(() => seen.Count == 10, "all ten messages to be handled, saw " + string.Join(",", seen.Keys));
                     That(seen["options"] == "from-options" && seen["scoped"] == "scoped", "headers set through options and WithHeader arrive");
+                }
+            });
+
+            await Case("an invoke-handler behavior reaches every context operation", async () =>
+            {
+                EdgeInvokeSender.Triggers = 0;
+                var name = "bq.test.edge.invokectx." + Guid.NewGuid().ToString("N");
+                EdgeInvokeSender.ForwardTarget = name + ".forward";
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                configuration.Route(typeof(EdgeUowMessage), name);
+                configuration.Pipeline.Register("edge-invoke-sender", new EdgeInvokeSender(), "Send from the invoke stage");
+                var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, bool>();
+                configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen[m.Text] = true; return Task.CompletedTask; }));
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var channel = connection.CreateModel())
+                {
+                    channel.QueueDeclare(EdgeInvokeSender.ForwardTarget, true, false, false);
+                    await endpoint.Send(new EdgeUowMessage { Text = "trigger" });
+                    var expected = new[] { "trigger", "send", "send-init", "send-opts", "send-object-opts", "send-init-opts", "send-dest", "send-local",
+                        "reply", "reply-init", "reply-opts", "reply-object-opts", "reply-init-opts", "send-at", "send-at-dest", "local-at" };
+                    await Eventually(() => expected.All(seen.ContainsKey), "every message to be handled; missing " + string.Join(",", expected.Where(e => !seen.ContainsKey(e))));
+                    await Eventually(() => channel.MessageCount(EdgeInvokeSender.ForwardTarget) == 1, "the forwarded copy");
+                    That(Volatile.Read(ref EdgeInvokeSender.Triggers) == 1, "the behavior ran once for the trigger");
                 }
             });
 
