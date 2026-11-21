@@ -128,6 +128,27 @@ namespace Bq.Messaging.Tests
 
     public sealed class EdgeCaseLogProbe { }
     public sealed class EdgeFeatureHolder { }
+    public sealed class EdgeStepLogical : RegisterStep
+    {
+        public EdgeStepLogical() : base("edge-step-logical", typeof(EdgeLogicalBehavior), "a step registered as an object", () => new EdgeLogicalBehavior())
+        {
+            InsertBeforeIfExists("nothing-here");
+            InsertAfterIfExists("nothing-here-either");
+        }
+    }
+    public sealed class EdgeStepWithBuilder : RegisterStep
+    {
+        public EdgeStepWithBuilder() : base("edge-step-builder", typeof(EdgeReceiveBehavior), "a step with a builder factory", builder => new EdgeReceiveBehavior())
+        {
+            InsertBefore("edge-step-logical");
+            InsertAfter("edge-step-logical");
+        }
+    }
+    public sealed class EdgeUnsupportedBehavior : IBehavior<IEdgeUnsupportedContext, IEdgeUnsupportedContext>
+    {
+        public Task Invoke(IEdgeUnsupportedContext context, Func<IEdgeUnsupportedContext, Task> next) => next(context);
+    }
+    public interface IEdgeUnsupportedContext : IBehaviorContext { }
     public sealed class EdgePlainPersistence : IPersistenceProvider
     {
         public Task<IPersistenceSession> OpenSession() => throw new NotSupportedException();
@@ -206,6 +227,7 @@ namespace Bq.Messaging.Tests
             RunConfigurationCases();
             await RunContainerAndPersistenceCases();
             RunStartValidationCases();
+            RunPipelineRegistrationCases();
             await RunInMemoryCases();
             return cases.ToList();
         }
@@ -927,6 +949,43 @@ namespace Bq.Messaging.Tests
             });
             Invalid<ArgumentOutOfRangeException>("zero concurrency", c => c.MaxConcurrency = 0);
             Invalid<ArgumentOutOfRangeException>("negative immediate retries", c => c.ImmediateRetries = -1);
+        }
+
+        static void RunPipelineRegistrationCases()
+        {
+            Case("pipeline registration overloads accept types, factories and steps", () =>
+            {
+                var pipeline = Configuration("edge-registration").Pipeline;
+                pipeline.Register(typeof(EdgeLogicalBehavior), "by type");
+                pipeline.Register("by-type-id", typeof(EdgeInvokeBehavior), "by type with id");
+                pipeline.Register(builder => new EdgeReceiveBehavior(), "by builder factory");
+                pipeline.Register("by-builder-id", builder => new EdgeOutgoingBehavior(), "by builder factory with id");
+                pipeline.Register(() => new EdgeOutgoingSendBehavior(), "by factory");
+                pipeline.Register("by-factory-id", () => new EdgePhysicalBehavior(), "by factory with id");
+                pipeline.Register(new EdgeStepLogical());
+                pipeline.Register<EdgeStepWithBuilder>();
+                pipeline.Replace("by-type-id", typeof(EdgeInvokeBehavior), "replaced by type");
+                pipeline.Replace("by-factory-id", () => new EdgePhysicalBehavior(), "replaced by factory");
+                pipeline.Replace("by-builder-id", builder => new EdgeOutgoingBehavior(), "replaced by builder factory");
+                pipeline.Replace("edge-step-logical", new EdgeLogicalBehavior(), "replaced by instance");
+                Throws<ArgumentNullException>(() => pipeline.Register("x", (Func<EdgeLogicalBehavior>)null, "null factory"), "a null factory");
+                Throws<ArgumentNullException>(() => pipeline.Register("y", (Func<Bq.Messaging.ObjectBuilder.IBuilder, EdgeLogicalBehavior>)null, "null builder factory"), "a null builder factory");
+                Throws<ArgumentException>(() => pipeline.Register("z", typeof(string), "not a behavior"), "a type that is not a behavior");
+                Throws<ArgumentException>(() => pipeline.Register("abstract", typeof(Behavior<IIncomingLogicalMessageContext>), "abstract"), "an abstract behavior");
+                Throws<ArgumentNullException>(() => pipeline.Replace("by-type-id", (Type)null, "null"), "a null replacement type");
+            });
+            Case("incoming behaviors must be physical, logical or native", () =>
+            {
+                var pipeline = Configuration("edge-unsupported").Pipeline;
+                Throws<NotSupportedException>(() => pipeline.Register("odd", new EdgeUnsupportedBehavior(), "odd"), "an unsupported behavior kind");
+            });
+            Case("logical messages require metadata and an instance", () =>
+            {
+                Throws<ArgumentNullException>(() => new LogicalMessage((Bq.Messaging.Unicast.Messages.MessageMetadata)null, new object()), "missing metadata");
+                Throws<ArgumentNullException>(() => new LogicalMessage(new Bq.Messaging.Unicast.Messages.MessageMetadata(typeof(EdgeUowMessage)), null), "a missing instance");
+                var message = new LogicalMessage(new Bq.Messaging.Unicast.Messages.MessageMetadata(typeof(EdgeUowMessage)), new EdgeUowMessage());
+                That(message.MessageType == typeof(EdgeUowMessage) && message.Metadata.MessageHierarchy.Contains(typeof(EdgeUowMessage)), "metadata describes the message type");
+            });
         }
 
         static async Task RunInMemoryCases()

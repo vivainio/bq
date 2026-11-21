@@ -443,7 +443,12 @@ namespace Bq.Messaging.Tests
 
             await Case("a saga with a timeout runs over JSON", async () =>
             {
+                // OrderWorkflow's counters are shared with other groups that run in this process, so leave them as found.
+                var savedTimeouts = OrderWorkflow.TimeoutCalls;
+                var savedStarts = OrderWorkflow.StartAttempts;
                 OrderWorkflow.TimeoutCalls = 0;
+                try
+                {
                 var name = "bq.test.edge.jsonsaga." + Guid.NewGuid().ToString("N");
                 var memory = new InMemoryPersistenceProvider(name);
                 var configuration = new EndpointConfiguration(name, uri) { Persistence = memory };
@@ -461,6 +466,12 @@ namespace Bq.Messaging.Tests
                     using (var session = await memory.OpenSession())
                         await Eventually(() => session.LoadSaga(typeof(OrderWorkflow).FullName, "json-1").GetAwaiter().GetResult() == null, "the completed saga to be deleted");
                     lock (wire) That(wire.Count >= 3 && wire.All(w => w.StartsWith("{")), "every message, the timeout included, is JSON on the wire: " + string.Join(" | ", wire));
+                }
+                }
+                finally
+                {
+                    OrderWorkflow.TimeoutCalls = savedTimeouts;
+                    OrderWorkflow.StartAttempts = savedStarts;
                 }
             });
 
@@ -594,6 +605,48 @@ namespace Bq.Messaging.Tests
                     await Eventually(() => expected.All(seen.ContainsKey), "every message to be handled; missing " + string.Join(",", expected.Where(e => !seen.ContainsKey(e))));
                     await Eventually(() => channel.MessageCount(EdgeInvokeSender.ForwardTarget) == 1, "the forwarded copy");
                     That(Volatile.Read(ref EdgeInvokeSender.Triggers) == 1, "the behavior ran once for the trigger");
+                }
+            });
+
+            await Case("message session extension methods and their static forms send through an endpoint", async () =>
+            {
+                var name = "bq.test.edge.sessionext." + Guid.NewGuid().ToString("N");
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                configuration.Route(typeof(EdgeUowMessage), name);
+                var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, bool>();
+                configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen[m.Text] = true; return Task.CompletedTask; }));
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                {
+                    IMessageSession session = endpoint;
+                    await IMessageSessionExtensions.Send(session, new EdgeUowMessage { Text = "ext-send" });
+                    await IMessageSessionExtensions.Send(session, name, new EdgeUowMessage { Text = "ext-dest" });
+                    await IMessageSessionExtensions.Send<EdgeUowMessage>(session, name, m => m.Text = "ext-dest-init");
+                    await IMessageSessionExtensions.SendLocal(session, new EdgeUowMessage { Text = "ext-local" });
+                    await IMessageSessionExtensions.SendLocal<EdgeUowMessage>(session, m => m.Text = "ext-local-init");
+                    await IMessageSessionExtensions.Send<EdgeUowMessage>(session, m => m.Text = "ext-init");
+                    await IMessageSessionExtensions.Publish(session, new EdgeUowMessage { Text = "ext-publish" });
+                    await IMessageSessionExtensions.Publish<EdgeUowMessage>(session);
+                    await IMessageSessionExtensions.Publish<EdgeUowMessage>(session, m => m.Text = "ext-publish-init");
+                    await MessageOptionsExtensions.Send(session, new EdgeUowMessage { Text = "static-send" });
+                    await MessageOptionsExtensions.Send(session, name, new EdgeUowMessage { Text = "static-dest" });
+                    await MessageOptionsExtensions.Send<EdgeUowMessage>(session, name, m => m.Text = "static-dest-init");
+                    await MessageOptionsExtensions.SendLocal(session, new EdgeUowMessage { Text = "static-local" });
+                    await MessageOptionsExtensions.SendLocal<EdgeUowMessage>(session, m => m.Text = "static-local-init");
+                    await MessageOptionsExtensions.Send<EdgeUowMessage>(session, m => m.Text = "static-init");
+                    await MessageOptionsExtensions.Publish(session, new EdgeUowMessage { Text = "static-publish" });
+                    await MessageOptionsExtensions.Publish<EdgeUowMessage>(session);
+                    await MessageOptionsExtensions.Publish<EdgeUowMessage>(session, m => m.Text = "static-publish-init");
+                    var expected = new[] { "ext-send", "ext-dest", "ext-dest-init", "ext-local", "ext-local-init", "ext-init",
+                        "static-send", "static-dest", "static-dest-init", "static-local", "static-local-init", "static-init" };
+                    await Eventually(() => expected.All(seen.ContainsKey), "every message to be handled; missing " + string.Join(",", expected.Where(e => !seen.ContainsKey(e))));
+                    var send = new SendOptions(); send.SetDestination("d"); send.RouteReplyTo("r"); send.SetMessageId("id"); send.SetHeader("k", "v"); send.DelayDeliveryWith(TimeSpan.FromSeconds(1));
+                    var reply = new ReplyOptions(); reply.SetDestination("d"); reply.RouteReplyTo("r");
+                    var local = new SendOptions(); local.RouteToThisEndpoint(); local.DoNotDeliverBefore(DateTimeOffset.UtcNow);
+                    That(MessageOptionsExtensions.GetDestination(send) == "d" && MessageOptionsExtensions.GetDestination(reply) == "d" &&
+                        MessageOptionsExtensions.GetReplyToRoute(send) == "r" && MessageOptionsExtensions.GetReplyToRoute(reply) == "r", "routing getters");
+                    That(MessageOptionsExtensions.GetMessageId(send) == "id" && MessageOptionsExtensions.GetHeaders(send)["k"] == "v", "id and header getters");
+                    That(MessageOptionsExtensions.GetDeliveryDelay(send) == TimeSpan.FromSeconds(1) && MessageOptionsExtensions.GetDeliveryDate(local).HasValue &&
+                        MessageOptionsExtensions.IsRoutingToThisEndpoint(local), "delivery getters");
                 }
             });
 
