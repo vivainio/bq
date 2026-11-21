@@ -46,8 +46,83 @@ namespace Bq.Messaging
         public IDictionary<string, object> Items { get; } = new Dictionary<string, object>();
     }
 
+    public sealed class IncomingPhysicalContext : IIncomingPhysicalMessageContext
+    {
+        internal IncomingPhysicalContext(RabbitEndpoint.HandlerContext handlerContext, IncomingMessage message)
+        {
+            HandlerContext = handlerContext;
+            Message = message;
+        }
+
+        internal RabbitEndpoint.HandlerContext HandlerContext { get; }
+        public IncomingMessage Message { get; }
+        public void UpdateMessage(byte[] body) => Message.UpdateBody(body);
+        public string MessageId => Message.MessageId;
+        public string ReplyToAddress => HandlerContext.ReplyToAddress;
+        public IReadOnlyDictionary<string, string> MessageHeaders => Message.Headers;
+        public ContextBag Extensions => HandlerContext.Extensions;
+        internal ExceptionDispatchInfo DownstreamFailure { get; set; }
+        public Task Send(object message, SendOptions options) => HandlerContext.Send(message, options);
+        public Task Send<T>(Action<T> initialize, SendOptions options) => HandlerContext.Send(initialize, options);
+        public Task Publish(object message, PublishOptions options) => HandlerContext.Publish(message, options);
+        public Task Publish<T>(Action<T> initialize, PublishOptions options) => HandlerContext.Publish(initialize, options);
+        public Task Reply(object message, ReplyOptions options) => HandlerContext.Reply(message, options);
+        public Task Reply<T>(Action<T> initialize, ReplyOptions options) => HandlerContext.Reply(initialize, options);
+        public Task ForwardCurrentMessageTo(string destination) => HandlerContext.ForwardCurrentMessageTo(destination);
+    }
+
     public sealed class IncomingPipeline
     {
+        readonly List<Func<IncomingPhysicalContext, Func<Task>, Task>> physicalBehaviors =
+            new List<Func<IncomingPhysicalContext, Func<Task>, Task>>();
+
+        internal void UsePhysical(Func<IncomingPhysicalContext, Func<Task>, Task> behavior) =>
+            physicalBehaviors.Add(behavior ?? throw new ArgumentNullException(nameof(behavior)));
+
+        internal void ReplacePhysical(Func<IncomingPhysicalContext, Func<Task>, Task> current,
+            Func<IncomingPhysicalContext, Func<Task>, Task> replacement) =>
+            physicalBehaviors[physicalBehaviors.IndexOf(current)] = replacement;
+
+        internal void RemovePhysical(Func<IncomingPhysicalContext, Func<Task>, Task> behavior) =>
+            physicalBehaviors.Remove(behavior);
+
+        internal bool HasPhysicalBehaviors => physicalBehaviors.Count != 0;
+
+        internal Func<IncomingPhysicalContext, Func<Task>, Task> BuildPhysical(PipelineSettings settings)
+        {
+            var ordered = settings.OrderPhysical(physicalBehaviors).ToArray();
+            Func<IncomingPhysicalContext, Func<Task>, Task> pipeline = (context, terminal) => terminal();
+            for (var index = ordered.Length - 1; index >= 0; index--)
+            {
+                var behavior = ordered[index];
+                var next = pipeline;
+                pipeline = (context, terminal) =>
+                {
+                    var invoked = 0;
+                    return behavior(context, async () =>
+                    {
+                        try
+                        {
+                            if (Interlocked.Exchange(ref invoked, 1) != 0)
+                                throw new InvalidOperationException("An incoming behavior can invoke next only once per attempt.");
+                            await next(context, terminal).ConfigureAwait(false);
+                        }
+                        catch (Exception failure)
+                        {
+                            context.DownstreamFailure = ExceptionDispatchInfo.Capture(failure);
+                            throw;
+                        }
+                    });
+                };
+            }
+
+            return async (context, terminal) =>
+            {
+                await pipeline(context, terminal).ConfigureAwait(false);
+                context.DownstreamFailure?.Throw();
+            };
+        }
+
         readonly List<Func<IncomingMessageContext, Func<Task>, Task>> behaviors =
             new List<Func<IncomingMessageContext, Func<Task>, Task>>();
         readonly List<Func<IncomingMessageContext, IPersistenceSession, Task>> beforeCommit =

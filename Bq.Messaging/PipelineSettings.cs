@@ -17,6 +17,12 @@ namespace Bq.Messaging
         void UpdateMessageInstance(object newInstance);
     }
 
+    public interface IIncomingPhysicalMessageContext : IIncomingContext
+    {
+        IncomingMessage Message { get; }
+        void UpdateMessage(byte[] body);
+    }
+
     public sealed class LogicalMessage
     {
         internal LogicalMessage(Type type, object instance)
@@ -86,6 +92,8 @@ namespace Bq.Messaging
         readonly IncomingPipeline incoming;
         readonly Dictionary<string, Func<IncomingMessageContext, Func<Task>, Task>> steps =
             new Dictionary<string, Func<IncomingMessageContext, Func<Task>, Task>>(StringComparer.Ordinal);
+        readonly Dictionary<string, Func<IncomingPhysicalContext, Func<Task>, Task>> physicalSteps =
+            new Dictionary<string, Func<IncomingPhysicalContext, Func<Task>, Task>>(StringComparer.Ordinal);
         readonly Dictionary<string, (string Id, bool Before, bool Optional)[]> ordering =
             new Dictionary<string, (string Id, bool Before, bool Optional)[]>(StringComparer.Ordinal);
 
@@ -96,7 +104,7 @@ namespace Bq.Messaging
         public void Register(RegisterStep registration)
         {
             if (registration == null) throw new ArgumentNullException(nameof(registration));
-            if (steps.ContainsKey(registration.StepId))
+            if (steps.ContainsKey(registration.StepId) || physicalSteps.ContainsKey(registration.StepId))
                 throw new InvalidOperationException("A pipeline step already uses ID " + registration.StepId);
             var behavior = registration.Factory == null ? CreateBehavior(registration.BehaviorType) : registration.Factory();
             if (!registration.BehaviorType.IsInstanceOfType(behavior))
@@ -126,6 +134,13 @@ namespace Bq.Messaging
         public void Register<T>(string stepId, T behavior, string description) where T : IBehavior
         {
             ValidateNewStepId(stepId);
+            if (IsPhysical(behavior))
+            {
+                var physical = AdaptPhysical(behavior);
+                physicalSteps.Add(stepId, physical);
+                incoming.UsePhysical(physical);
+                return;
+            }
             var invoke = Adapt(behavior);
             steps.Add(stepId, invoke);
             incoming.Use(invoke);
@@ -136,12 +151,26 @@ namespace Bq.Messaging
 
         public void Replace<T>(string stepId, Func<T> factoryMethod, string description = null) where T : IBehavior
         {
-            FindStep(stepId);
+            RequireStep(stepId);
             Replace(stepId, CreateBehavior(factoryMethod), description);
         }
 
         public void Replace<T>(string stepId, T newBehavior, string description = null) where T : IBehavior
         {
+            if (physicalSteps.TryGetValue(stepId ?? string.Empty, out var currentPhysical))
+            {
+                if (!IsPhysical(newBehavior))
+                    throw new InvalidOperationException("Pipeline step " + stepId + " must be replaced by a behavior for the same stage.");
+                var physicalReplacement = AdaptPhysical(newBehavior);
+                incoming.ReplacePhysical(currentPhysical, physicalReplacement);
+                physicalSteps[stepId] = physicalReplacement;
+                return;
+            }
+            if (IsPhysical(newBehavior))
+            {
+                FindStep(stepId);
+                throw new InvalidOperationException("Pipeline step " + stepId + " must be replaced by a behavior for the same stage.");
+            }
             var current = FindStep(stepId);
             var replacement = Adapt(newBehavior);
             incoming.Replace(current, replacement);
@@ -150,40 +179,59 @@ namespace Bq.Messaging
 
         public void Remove(string stepId)
         {
-            incoming.Remove(FindStep(stepId));
-            steps.Remove(stepId);
+            if (physicalSteps.TryGetValue(stepId ?? string.Empty, out var physical))
+            {
+                incoming.RemovePhysical(physical);
+                physicalSteps.Remove(stepId);
+            }
+            else
+            {
+                incoming.Remove(FindStep(stepId));
+                steps.Remove(stepId);
+            }
             ordering.Remove(stepId);
         }
 
-        internal IEnumerable<Func<IncomingMessageContext, Func<Task>, Task>> Order(
-            IReadOnlyList<Func<IncomingMessageContext, Func<Task>, Task>> behaviors)
+        void RequireStep(string stepId)
         {
-            if (ordering.Count == 0) return behaviors;
+            if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
+            if (!steps.ContainsKey(stepId) && !physicalSteps.ContainsKey(stepId))
+                throw new InvalidOperationException("No pipeline step uses ID " + stepId);
+        }
 
-            var predecessors = new Dictionary<Func<IncomingMessageContext, Func<Task>, Task>,
-                List<Func<IncomingMessageContext, Func<Task>, Task>>>();
+        internal IEnumerable<Func<IncomingMessageContext, Func<Task>, Task>> Order(
+            IReadOnlyList<Func<IncomingMessageContext, Func<Task>, Task>> behaviors) => Order(steps, behaviors);
+
+        internal IEnumerable<Func<IncomingPhysicalContext, Func<Task>, Task>> OrderPhysical(
+            IReadOnlyList<Func<IncomingPhysicalContext, Func<Task>, Task>> behaviors) => Order(physicalSteps, behaviors);
+
+        IEnumerable<T> Order<T>(Dictionary<string, T> stageSteps, IReadOnlyList<T> behaviors) where T : class
+        {
+            if (stageSteps.Count == 0) return behaviors;
+
+            var predecessors = new Dictionary<T, List<T>>();
             foreach (var entry in ordering)
             {
-                var step = steps[entry.Key];
+                if (!stageSteps.TryGetValue(entry.Key, out var step)) continue;
                 foreach (var dependency in entry.Value)
                 {
-                    if (!steps.TryGetValue(dependency.Id, out var other))
+                    if (!stageSteps.TryGetValue(dependency.Id, out var other))
                     {
                         if (dependency.Optional) continue;
                         throw new InvalidOperationException("Pipeline step " + entry.Key + " references missing step " + dependency.Id);
                     }
                     var successor = dependency.Before ? other : step;
                     if (!predecessors.TryGetValue(successor, out var required))
-                        predecessors.Add(successor, required = new List<Func<IncomingMessageContext, Func<Task>, Task>>());
+                        predecessors.Add(successor, required = new List<T>());
                     required.Add(dependency.Before ? step : other);
                 }
             }
 
-            var sorted = new List<Func<IncomingMessageContext, Func<Task>, Task>>();
-            var stepIds = steps.ToDictionary(entry => entry.Value, entry => entry.Key);
-            var visiting = new HashSet<Func<IncomingMessageContext, Func<Task>, Task>>();
-            var visited = new HashSet<Func<IncomingMessageContext, Func<Task>, Task>>();
-            void Visit(Func<IncomingMessageContext, Func<Task>, Task> step)
+            var sorted = new List<T>();
+            var stepIds = stageSteps.ToDictionary(entry => entry.Value, entry => entry.Key);
+            var visiting = new HashSet<T>();
+            var visited = new HashSet<T>();
+            void Visit(T step)
             {
                 if (visited.Contains(step)) return;
                 if (!visiting.Add(step))
@@ -213,7 +261,8 @@ namespace Bq.Messaging
         void ValidateNewStepId(string stepId)
         {
             if (string.IsNullOrWhiteSpace(stepId)) throw new ArgumentException("A step ID is required.", nameof(stepId));
-            if (steps.ContainsKey(stepId)) throw new InvalidOperationException("A pipeline step already uses ID " + stepId);
+            if (steps.ContainsKey(stepId) || physicalSteps.ContainsKey(stepId))
+                throw new InvalidOperationException("A pipeline step already uses ID " + stepId);
         }
 
         static T CreateBehavior<T>(Func<T> factoryMethod) where T : IBehavior
@@ -232,6 +281,15 @@ namespace Bq.Messaging
             return (IBehavior)Activator.CreateInstance(behavior);
         }
 
+        static bool IsPhysical(IBehavior behavior) =>
+            behavior is IBehavior<IIncomingPhysicalMessageContext, IIncomingPhysicalMessageContext>;
+
+        static Func<IncomingPhysicalContext, Func<Task>, Task> AdaptPhysical(IBehavior behavior)
+        {
+            var physical = (IBehavior<IIncomingPhysicalMessageContext, IIncomingPhysicalMessageContext>)behavior;
+            return (context, next) => physical.Invoke(context, continuation => Continue(context, continuation, next));
+        }
+
         static Func<IncomingMessageContext, Func<Task>, Task> Adapt(IBehavior behavior)
         {
             if (behavior == null) throw new ArgumentNullException(nameof(behavior));
@@ -245,7 +303,7 @@ namespace Bq.Messaging
                     return logical.Invoke(view, continuation => Continue(view, continuation, next));
                 };
             else
-                throw new NotSupportedException("Register an incoming logical message behavior or a Bq incoming behavior.");
+                throw new NotSupportedException("Register an incoming physical or logical message behavior or a Bq incoming behavior.");
             return invoke;
         }
 

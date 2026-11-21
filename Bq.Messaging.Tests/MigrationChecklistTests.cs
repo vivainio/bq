@@ -121,6 +121,45 @@ namespace Bq.Messaging.Tests
         }
     }
 
+    public sealed class PhysicalPilotBehavior : Behavior<IIncomingPhysicalMessageContext>
+    {
+        public static int Skipped;
+        readonly bool first;
+
+        public PhysicalPilotBehavior(bool first) { this.first = first; }
+
+        public override async Task Invoke(IIncomingPhysicalMessageContext context, Func<Task> next)
+        {
+            var headers = context.Message.Headers;
+            if (headers.ContainsKey("physical-skip"))
+            {
+                Interlocked.Increment(ref Skipped);
+                return;
+            }
+            if (!headers.ContainsKey("migration-source") && !context.MessageHeaders.ContainsKey("migration-source")) { await next(); return; }
+            if (first)
+            {
+                if (headers.ContainsKey("physical-order")) throw new InvalidOperationException("The first physical behavior must run first.");
+                if (headers.ContainsKey("pilot-transport-mutator"))
+                    throw new InvalidOperationException("Physical behaviors must run before transport mutators.");
+                headers["physical-order"] = "first";
+                context.UpdateMessage(context.Message.Body.ToArray());
+            }
+            else if (headers["physical-order"] != "first") throw new InvalidOperationException("The second physical behavior ran out of order.");
+            else headers["physical-stage"] = "applied";
+            await next();
+        }
+    }
+
+    public sealed class PhysicalFirstStep : RegisterStep
+    {
+        public PhysicalFirstStep() : base("physical-first", typeof(PhysicalPilotBehavior), "Run before the second physical behavior",
+            () => new PhysicalPilotBehavior(true))
+        {
+            InsertBefore("physical-second");
+        }
+    }
+
     public sealed class OrderedPilotBehavior : Behavior<IIncomingLogicalMessageContext>
     {
         readonly bool ordered;
@@ -527,6 +566,8 @@ namespace Bq.Messaging.Tests
             windsor.ReplaceBehavior<ObservePilotEvent>(receiver, "second-observer", "Resolve the observer through Windsor");
             receiver.Pipeline.Replace("first-observer", () => new ObservePilotEvent(), "Inspect the declared event contract");
             receiver.Pipeline.Register<OrderedPilotStep>();
+            receiver.Pipeline.Register("physical-second", new PhysicalPilotBehavior(false), "Run after the first physical behavior");
+            receiver.Pipeline.Register<PhysicalFirstStep>();
             var received = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var commandReceived = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             container.Register(Component.For<IHandleMessages<IPilotEvent>>().UsingFactoryMethod(() => new Handler<IPilotEvent>((message, context) =>
@@ -536,6 +577,8 @@ namespace Bq.Messaging.Tests
                     "logical header edits reach the handler while raw AMQP headers retain the received value");
                 Assert(context.GetHeader("migration-source") == "pilot-producer", "endpoint headers reach published events");
                 Assert(context.GetHeader("pilot-mutator") == "applied", "registered mutator headers reach the handler");
+                Assert(context.GetHeader("physical-stage") == "applied" && context.GetHeader("physical-order") == "first",
+                    "ordered physical behavior header edits reach the handler");
                 Assert(context.GetHeader("pilot-transport-mutator") == "applied", "transport mutator headers reach the handler");
                 Assert(message.Count == 7, "interface event properties round-trip through MessagePack");
                 Assert(context.Extensions.Get<int>("pilot-behaviors") == 2, "registered logical behaviors see the declared interface contract");
@@ -550,6 +593,7 @@ namespace Bq.Messaging.Tests
             receiver.Handle(() => new Handler<Command>((message, context) =>
             {
                 Assert(context.GetHeader("migration-group") == "default", "endpoint headers reach sends without an override");
+                Assert(message.Text != "physically skipped", "a short-circuited physical stage never reaches the handler");
                 commandReceived.TrySetResult(message.Text);
                 context.DoNotContinueDispatchingCurrentMessageToHandlers();
                 return Task.CompletedTask;
@@ -622,6 +666,11 @@ namespace Bq.Messaging.Tests
                         Action<Command> initializeCommand = command => command.Text = "pilot command";
                         await producer.Send(initializeCommand);
                         Assert(await Within(commandReceived.Task) == "pilot command", "command convention configures the migrated route");
+                        var skip = new SendOptions();
+                        skip.SetHeader("physical-skip", "1");
+                        await producer.Send(new Command { Text = "physically skipped" }, skip);
+                        await WaitFor(() => Task.FromResult(Volatile.Read(ref PhysicalPilotBehavior.Skipped) == 1),
+                            "a physical behavior short-circuits before deserialization");
                         Assert(await Within(received.Task) == "pilot mutated observed", "the migrated handler receives the replacement event");
                         BasicGetResult forwarded = null;
                         await WaitFor(() =>

@@ -36,6 +36,8 @@ namespace Bq.Messaging
         readonly IMutateOutgoingMessages[] outgoingMessageMutators;
         readonly IMutateOutgoingTransportMessages[] outgoingTransportMutators;
         readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
+        readonly Func<IncomingPhysicalContext, Func<Task>, Task> physical;
+        readonly bool hasPhysicalBehaviors;
         readonly Dictionary<Type, string> wireNames = new Dictionary<Type, string>();
         readonly Dictionary<string, Registration> receivers = new Dictionary<string, Registration>();
         readonly bool sendOnly;
@@ -81,6 +83,8 @@ namespace Bq.Messaging
             outgoingMessageMutators = configuration.OutgoingMessageMutators.ToArray();
             outgoingTransportMutators = configuration.OutgoingTransportMutators.ToArray();
             incoming = configuration.Incoming.Build(configuration.Pipeline);
+            physical = configuration.Incoming.BuildPhysical(configuration.Pipeline);
+            hasPhysicalBehaviors = configuration.Incoming.HasPhysicalBehaviors;
             var owners = new Dictionary<string, Type>();
             var types = configuration.ContractNames.Keys.Concat(configuration.Handlers.Values.Select(handler => handler.Type))
                 .Concat(configuration.Routes.Keys).Distinct();
@@ -742,30 +746,6 @@ namespace Bq.Messaging
                     try { body = DecryptBody(body); }
                     catch { unrecoverable = true; throw; }
                 }
-                if (mutateIncoming != null || incomingTransportMutators.Length != 0)
-                {
-                    // Mutators work on a separate copy so recovery can replay the original wire bytes.
-                    var transport = new TransportMessage(typeName, body.ToArray(),
-                        RecoveryWire.DecodeHeaders(RecoveryWire.EncodeHeaders(headers)));
-                    mutateIncoming?.Invoke(transport);
-                    foreach (var mutator in incomingTransportMutators)
-                    {
-                        var original = MessageHeaders.AsText(transport.Headers);
-                        var mutation = new MutateIncomingTransportMessageContext(transport.Body,
-                            original.ToDictionary(header => header.Key, header => header.Value, StringComparer.Ordinal));
-                        await mutator.MutateIncoming(mutation).ConfigureAwait(false);
-                        RecoveryWire.ApplyTextHeaderEdits(transport.Headers, original, mutation.Headers);
-                        transport.Body = mutation.Body;
-                    }
-                    typeName = transport.TypeName;
-                    headers = transport.Headers;
-                    body = transport.Body ?? throw new InvalidOperationException("An incoming transport message requires a body.");
-                }
-                if (props.ContentType != ContentType || typeName == null || !receivers.TryGetValue(typeName, out var registration))
-                { unrecoverable = true; throw new InvalidOperationException("Unknown message type or content type."); }
-                object message;
-                try { message = DeserializeMessage(registration.Type, body); }
-                catch (Exception ex) { unrecoverable = true; throw new InvalidOperationException("Message deserialization failed.", ex); }
                 for (var attempt = 0; ; attempt++)
                 {
                     HandlerContext context = null;
@@ -783,19 +763,64 @@ namespace Bq.Messaging
                                 uniformScope.Value = scope;
                                 try
                                 {
-                                    var incomingContext = new IncomingMessageContext(message, context, registration.Type, typeName, attempt, cycle);
-                                    await incoming(incomingContext, async () =>
+                                    var attemptContext = context;
+                                    var wireBody = body;
+                                    var needsTransport = mutateIncoming != null || incomingTransportMutators.Length != 0 || hasPhysicalBehaviors;
+                                    var transport = needsTransport
+                                        ? new TransportMessage(typeName, wireBody.ToArray(),
+                                            RecoveryWire.DecodeHeaders(RecoveryWire.EncodeHeaders(props.Headers)))
+                                        : null;
+                                    var wireText = needsTransport ? MessageHeaders.AsText(transport.Headers) : null;
+                                    var physicalMessage = needsTransport
+                                        ? new IncomingMessage(currentId, MessageHeaders.ToTextDictionary(transport.Headers), transport.Body)
+                                        : null;
+                                    Func<Task> terminal = async () =>
                                     {
-                                        await registration.Invoke(incomingContext.Message, context).ConfigureAwait(false);
-                                        incomingContext.MessageHandled = true;
-                                    }).ConfigureAwait(false);
-                                    if (incomingContext.MessageHandled && !incomingContext.IsSagaTimeout)
-                                    {
-                                        if (forwardReceivedMessagesAddress != null)
-                                            await context.ForwardCurrentMessageTo(forwardReceivedMessagesAddress).ConfigureAwait(false);
-                                        if (auditQueue != null)
-                                            await context.ForwardCurrentMessageTo(auditQueue, auditExpiration).ConfigureAwait(false);
-                                    }
+                                        var attemptTypeName = typeName;
+                                        var attemptBody = wireBody;
+                                        if (needsTransport)
+                                        {
+                                            // Mutators work on a separate copy so recovery can replay the original wire bytes.
+                                            RecoveryWire.ApplyTextHeaderEdits(transport.Headers, wireText, physicalMessage.Headers);
+                                            transport.Body = physicalMessage.Body;
+                                            mutateIncoming?.Invoke(transport);
+                                            foreach (var mutator in incomingTransportMutators)
+                                            {
+                                                var original = MessageHeaders.AsText(transport.Headers);
+                                                var mutation = new MutateIncomingTransportMessageContext(transport.Body,
+                                                    original.ToDictionary(header => header.Key, header => header.Value, StringComparer.Ordinal));
+                                                await mutator.MutateIncoming(mutation).ConfigureAwait(false);
+                                                RecoveryWire.ApplyTextHeaderEdits(transport.Headers, original, mutation.Headers);
+                                                transport.Body = mutation.Body;
+                                            }
+                                            attemptTypeName = transport.TypeName;
+                                            headers = transport.Headers;
+                                            attemptBody = transport.Body ?? throw new InvalidOperationException("An incoming transport message requires a body.");
+                                            attemptContext.ReplaceHeaders(headers);
+                                        }
+                                        if (props.ContentType != ContentType || attemptTypeName == null ||
+                                            !receivers.TryGetValue(attemptTypeName, out var registration))
+                                        { unrecoverable = true; throw new InvalidOperationException("Unknown message type or content type."); }
+                                        object message;
+                                        try { message = DeserializeMessage(registration.Type, attemptBody); }
+                                        catch (Exception ex) { unrecoverable = true; throw new InvalidOperationException("Message deserialization failed.", ex); }
+                                        var incomingContext = new IncomingMessageContext(message, attemptContext, registration.Type, attemptTypeName, attempt, cycle);
+                                        await incoming(incomingContext, async () =>
+                                        {
+                                            await registration.Invoke(incomingContext.Message, attemptContext).ConfigureAwait(false);
+                                            incomingContext.MessageHandled = true;
+                                        }).ConfigureAwait(false);
+                                        if (incomingContext.MessageHandled && !incomingContext.IsSagaTimeout)
+                                        {
+                                            if (forwardReceivedMessagesAddress != null)
+                                                await attemptContext.ForwardCurrentMessageTo(forwardReceivedMessagesAddress).ConfigureAwait(false);
+                                            if (auditQueue != null)
+                                                await attemptContext.ForwardCurrentMessageTo(auditQueue, auditExpiration).ConfigureAwait(false);
+                                        }
+                                    };
+                                    await (needsTransport
+                                        ? physical(new IncomingPhysicalContext(attemptContext, physicalMessage), terminal)
+                                        : terminal()).ConfigureAwait(false);
                                 }
                                 finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; }
                             }
@@ -806,6 +831,7 @@ namespace Bq.Messaging
                     }
                     catch (Exception ex) when (!forceStop.IsCancellationRequested)
                     {
+                        if (unrecoverable) throw;
                         action = ChooseRecovery(ex, attempt, cycle, headers, currentId, delivery.Body, context?.Extensions, allowImmediate: true);
                         if (!action.IsImmediate) throw;
                         System.Diagnostics.Trace.TraceWarning("Immediate retry {0} for message {1}: {2}", attempt + 1, currentId, ex);
@@ -824,9 +850,8 @@ namespace Bq.Messaging
                                     currentId, notificationFailure);
                             }
                         }
-                        // Every attempt must deserialize afresh, since a failed handler may mutate the object.
+                        // Every attempt deserializes afresh, since a failed handler may mutate the object.
                         action = null;
-                        message = DeserializeMessage(registration.Type, body);
                     }
                 }
                 AcknowledgeCommittedDelivery(delivery.DeliveryTag);
@@ -1133,6 +1158,10 @@ namespace Bq.Messaging
                 replyTo = properties.ReplyTo;
                 MessageId = properties.MessageId;
                 CorrelationId = properties.CorrelationId ?? properties.MessageId;
+                ReplaceHeaders(headers);
+            }
+            internal void ReplaceHeaders(IDictionary<string, object> headers)
+            {
                 Headers = new System.Collections.ObjectModel.ReadOnlyDictionary<string, object>(
                     new Dictionary<string, object>(headers ?? new Dictionary<string, object>()));
                 LogicalHeaders = Bq.Messaging.MessageHeaders.ToTextDictionary(Headers);
@@ -1144,12 +1173,12 @@ namespace Bq.Messaging
             public SynchronizedStorageSession SynchronizedStorageSession => PersistenceSession;
             public ContextBag Extensions { get; } = new ContextBag();
             public string ReplyToAddress => replyTo;
-            public IReadOnlyDictionary<string, string> MessageHeaders { get; }
+            public IReadOnlyDictionary<string, string> MessageHeaders { get; private set; }
             internal object LogicalMessage { get; set; }
-            internal Dictionary<string, string> LogicalHeaders { get; }
+            internal Dictionary<string, string> LogicalHeaders { get; private set; }
             public string MessageId { get; }
             public string CorrelationId { get; }
-            public IReadOnlyDictionary<string, object> Headers { get; }
+            public IReadOnlyDictionary<string, object> Headers { get; private set; }
             public Task Send<T>(T message, SendOptions options) => UniformSession.Send(message, options);
             public Task Send(object message, SendOptions options) => Send<object>(message, options);
             public Task Send<T>(Action<T> initialize, SendOptions options) =>

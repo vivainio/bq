@@ -68,10 +68,19 @@ namespace Bq.Messaging
             Body = body.ToArray();
         }
 
+        internal IncomingMessage(string messageId, Dictionary<string, string> headers, byte[] body)
+        {
+            MessageId = messageId;
+            Headers = headers;
+            Body = body;
+        }
+
         public string MessageId { get; }
         public string NativeMessageId => MessageId;
         public Dictionary<string, string> Headers { get; }
-        public byte[] Body { get; }
+        public byte[] Body { get; private set; }
+
+        internal void UpdateBody(byte[] body) => Body = body ?? throw new ArgumentNullException(nameof(body));
     }
 
     public sealed class ErrorContext
