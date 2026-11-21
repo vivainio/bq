@@ -126,6 +126,7 @@ namespace Bq.Messaging
             incoming = configuration.Incoming.Build(configuration.Pipeline);
             physical = configuration.Incoming.BuildPhysical(configuration.Pipeline);
             outgoingStages = configuration.Incoming.BuildOutgoing(configuration.Pipeline);
+            configuration.InvokeHandlerChain = configuration.Incoming.BuildInvokeHandler(configuration.Pipeline);
             hasPhysicalBehaviors = configuration.Incoming.HasPhysicalBehaviors;
             var owners = new Dictionary<string, Type>();
             var types = configuration.ContractNames.Keys.Concat(configuration.Handlers.Values.Select(handler => handler.Type))

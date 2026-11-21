@@ -91,6 +91,17 @@ namespace Bq.Messaging
         internal void RemovePhysical(Func<IncomingPhysicalContext, Func<Task>, Task> behavior) =>
             physicalBehaviors.Remove(behavior);
 
+        readonly List<Func<InvokeHandlerContext, Func<Task>, Task>> invokeHandlerBehaviors =
+            new List<Func<InvokeHandlerContext, Func<Task>, Task>>();
+
+        internal void UseInvokeHandler(Func<InvokeHandlerContext, Func<Task>, Task> behavior) => invokeHandlerBehaviors.Add(behavior);
+        internal void ReplaceInvokeHandler(Func<InvokeHandlerContext, Func<Task>, Task> current, Func<InvokeHandlerContext, Func<Task>, Task> replacement) =>
+            invokeHandlerBehaviors[invokeHandlerBehaviors.IndexOf(current)] = replacement;
+        internal void RemoveInvokeHandler(Func<InvokeHandlerContext, Func<Task>, Task> behavior) => invokeHandlerBehaviors.Remove(behavior);
+
+        internal Func<InvokeHandlerContext, Func<Task>, Task> BuildInvokeHandler(PipelineSettings settings) =>
+            invokeHandlerBehaviors.Count == 0 ? null : BuildChain(settings.OrderInvokeHandler(invokeHandlerBehaviors));
+
         internal bool HasPhysicalBehaviors => physicalBehaviors.Count != 0;
 
         internal Func<IncomingPhysicalContext, Func<Task>, Task> BuildPhysical(PipelineSettings settings) =>

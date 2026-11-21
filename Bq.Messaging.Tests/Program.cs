@@ -94,6 +94,17 @@ namespace Bq.Messaging.Tests
     }
     public class ScannedCommand { public string Text { get; set; } }
     public sealed class ScannedDependency { public string Value => "injected"; }
+    public sealed class InvokeProbe : Behavior<IInvokeHandlerContext>
+    {
+        public static readonly TaskCompletionSource<string> Seen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override async Task Invoke(IInvokeHandlerContext context, Func<Task> next)
+        {
+            var before = ScannedHandler.Seen.Task.IsCompleted;
+            await next();
+            Seen.TrySetResult(context.MessageHandler.HandlerType.Name + ":" + context.MessageBeingHandled.GetType().Name + ":" +
+                (!before && ScannedHandler.Seen.Task.IsCompleted) + ":" + (context.Builder != null));
+        }
+    }
     public sealed class ScannedFeature : Feature
     {
         public static readonly TaskCompletionSource<bool> Started = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1352,6 +1363,7 @@ namespace Bq.Messaging.Tests
             await store.Initialize();
             var config = new EndpointConfiguration(name, uri) { Persistence = store };
             config.Route(typeof(ScannedCommand), name);
+            config.Pipeline.Register("invoke-probe", new InvokeProbe(), "Observe handler invocation");
             // The test assembly holds many unrelated handlers and sagas; scan only the one under test.
             config.AssemblyScanner().ExcludeTypes(typeof(Program).Assembly.GetTypes()
                 .Where(type => type != typeof(ScannedHandler) && !type.IsAbstract &&
@@ -1365,6 +1377,8 @@ namespace Bq.Messaging.Tests
                 await endpoint.Send(new ScannedCommand { Text = "scanned" });
                 Assert(await Within(ScannedHandler.Seen.Task) == "scanned:injected",
                     "scanned handlers are resolved from the container with their dependencies");
+                Assert(await Within(InvokeProbe.Seen.Task) == "ScannedHandler:ScannedCommand:True:True",
+                    "handler invocation behaviors wrap the handler and see its type, message and builder");
                 await endpoint.Stop();
                 Assert(await Within(ScannedFeature.Stopped.Task), "feature startup tasks stop with the endpoint");
             }

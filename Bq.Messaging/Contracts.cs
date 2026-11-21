@@ -249,7 +249,13 @@ namespace Bq.Messaging
             AddRegistration(key, new Registration(typeof(T), subscribe == true, async (message, context) =>
             {
                 var handler = factory(context) ?? throw new InvalidOperationException("Handler factory returned null.");
-                try { await handler.Handle((T)message, context).ConfigureAwait(false); }
+                try
+                {
+                    var chain = InvokeHandlerChain;
+                    if (chain == null) await handler.Handle((T)message, context).ConfigureAwait(false);
+                    else await chain(new InvokeHandlerContext(context, handler, message, () => RabbitEndpoint.BuilderFor(context)),
+                        () => handler.Handle((T)message, context)).ConfigureAwait(false);
+                }
                 finally { (handler as IDisposable)?.Dispose(); }
             }, useEventConvention: !subscribe.HasValue));
         }
