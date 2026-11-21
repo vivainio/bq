@@ -99,7 +99,7 @@ namespace Bq.Messaging
         Task PublishAt<T>(T message, DateTimeOffset dueAt);
     }
 
-    public sealed class EndpointConfiguration
+    public sealed class EndpointConfiguration : Bq.Messaging.Configuration.AdvancedExtensibility.ExposeSettings
     {
         internal readonly Dictionary<Type, string> Routes = new Dictionary<Type, string>();
         internal readonly Dictionary<string, Registration> Handlers = new Dictionary<string, Registration>();
@@ -107,7 +107,51 @@ namespace Bq.Messaging
         internal bool HasSagas;
         internal bool IsSendOnly { get; private set; }
         public void SendOnly() => IsSendOnly = true;
-        public EndpointConfiguration(string name, Uri rabbitMqUri)
+
+        Bq.Messaging.ObjectBuilder.Common.IContainer container;
+        Type containerDefinition;
+        readonly List<Action<Bq.Messaging.ObjectBuilder.IConfigureComponents>> componentRegistrations =
+            new List<Action<Bq.Messaging.ObjectBuilder.IConfigureComponents>>();
+
+        public void UseContainer(Bq.Messaging.ObjectBuilder.Common.IContainer existingContainer)
+        {
+            container = existingContainer ?? throw new ArgumentNullException(nameof(existingContainer));
+            containerDefinition = null;
+        }
+
+        public void UseContainer(Type definitionType)
+        {
+            if (definitionType == null) throw new ArgumentNullException(nameof(definitionType));
+            if (!typeof(Bq.Messaging.Container.ContainerDefinition).IsAssignableFrom(definitionType) || definitionType.IsAbstract)
+                throw new ArgumentException("A concrete ContainerDefinition type is required.", nameof(definitionType));
+            containerDefinition = definitionType;
+            container = null;
+        }
+
+        public void UseContainer(Action<Bq.Messaging.Container.ContainerCustomizations> customization) =>
+            (customization ?? throw new ArgumentNullException(nameof(customization)))(
+                new Bq.Messaging.Container.ContainerCustomizations(Settings));
+
+        public void RegisterComponents(Action<Bq.Messaging.ObjectBuilder.IConfigureComponents> registration) =>
+            componentRegistrations.Add(registration ?? throw new ArgumentNullException(nameof(registration)));
+
+        /// <summary>Creates the endpoint container and applies <see cref="RegisterComponents"/> registrations.</summary>
+        internal bool OwnsContainer => container == null;
+
+        internal Bq.Messaging.ObjectBuilder.Common.IContainer BuildContainer()
+        {
+            var built = container;
+            if (built == null)
+            {
+                var definition = (Bq.Messaging.Container.ContainerDefinition)Activator.CreateInstance(
+                    containerDefinition ?? typeof(Bq.Messaging.Container.DefaultContainerDefinition));
+                built = definition.CreateContainer(Settings);
+            }
+            var components = new Bq.Messaging.Container.ContainerBuilder(built);
+            foreach (var registration in componentRegistrations) registration(components);
+            return built;
+        }
+        public EndpointConfiguration(string name, Uri rabbitMqUri) : base(new Bq.Messaging.Settings.SettingsHolder())
         {
             if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("An endpoint name is required.", nameof(name));
             Name = name;

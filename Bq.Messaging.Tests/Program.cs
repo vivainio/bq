@@ -423,6 +423,7 @@ namespace Bq.Messaging.Tests
             Assert(emptyTimeout.Timeouts.Count == 1 && emptyTimeout.Timeouts[0].State is OrderTimeout,
                 "timeout overload constructs its state");
             OrderWorkflow.TimeoutCalls = 0;
+            ContainerTests();
             Console.WriteLine("Transport-free handler and saga tests passed.");
         }
 
@@ -1236,6 +1237,53 @@ namespace Bq.Messaging.Tests
             if (await Task.WhenAny(task, Task.Delay(10000)) != task) throw new Exception("Timed out waiting for delivery.");
             return await task;
         }
+        public interface IContainerDependency { }
+        public sealed class ContainerDependency : IContainerDependency, IDisposable
+        {
+            public static int Disposed;
+            public void Dispose() { Disposed++; }
+        }
+        public sealed class ContainerConsumer
+        {
+            public ContainerConsumer(IContainerDependency dependency, Bq.Messaging.ObjectBuilder.IBuilder builder)
+            {
+                Dependency = dependency;
+                Builder = builder;
+            }
+            public IContainerDependency Dependency { get; }
+            public Bq.Messaging.ObjectBuilder.IBuilder Builder { get; }
+        }
+
+        static void ContainerTests()
+        {
+            var configuration = new EndpointConfiguration("container-test", new Uri("amqp://localhost/"));
+            configuration.RegisterComponents(components =>
+            {
+                components.ConfigureComponent<ContainerDependency>(DependencyLifecycle.InstancePerUnitOfWork);
+                components.ConfigureComponent<ContainerConsumer>(DependencyLifecycle.InstancePerCall);
+                components.ConfigureComponent(builder => "from-factory:" + builder.Build<IContainerDependency>().GetType().Name,
+                    DependencyLifecycle.SingleInstance);
+                Assert(components.HasComponent<IContainerDependency>(), "components register under their interfaces");
+            });
+            var container = configuration.BuildContainer();
+            var root = new Bq.Messaging.Container.ContainerBuilder(container);
+            using (var child = root.CreateChildBuilder())
+            {
+                var first = child.Build<ContainerConsumer>();
+                Assert(first.Dependency == child.Build<IContainerDependency>(), "per-unit-of-work components are shared in a child builder");
+                Assert(first != child.Build<ContainerConsumer>(), "per-call components are created each time");
+                Assert(first.Builder != null, "constructor injection supplies the builder");
+                Assert(child.BuildAll<IContainerDependency>().Count() == 1, "BuildAll returns each registration");
+            }
+            Assert(ContainerDependency.Disposed == 1, "disposing a child builder disposes its instances");
+            Assert(root.Build<string>() == "from-factory:ContainerDependency", "factories receive a builder");
+            var other = new ContainerBuilder_Probe();
+            Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(configuration).Set("probe", other);
+            Assert(Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(configuration).Get<ContainerBuilder_Probe>("probe") == other, "settings round-trip");
+            container.Dispose();
+        }
+        sealed class ContainerBuilder_Probe { }
+
         static void Assert(bool value, string name) { if (!value) throw new Exception("Failed: " + name); }
     }
 }

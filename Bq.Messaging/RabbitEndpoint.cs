@@ -38,6 +38,9 @@ namespace Bq.Messaging
         readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
         readonly Func<IncomingPhysicalContext, Func<Task>, Task> physical;
         readonly bool hasPhysicalBehaviors;
+        readonly Bq.Messaging.ObjectBuilder.Common.IContainer rootContainer;
+        readonly Bq.Messaging.ObjectBuilder.IBuilder rootBuilder;
+        readonly bool ownsContainer;
         readonly Dictionary<Type, string> wireNames = new Dictionary<Type, string>();
         readonly Dictionary<string, Registration> receivers = new Dictionary<string, Registration>();
         readonly bool sendOnly;
@@ -82,6 +85,9 @@ namespace Bq.Messaging
             mutateOutgoing = configuration.MutateOutgoing;
             outgoingMessageMutators = configuration.OutgoingMessageMutators.ToArray();
             outgoingTransportMutators = configuration.OutgoingTransportMutators.ToArray();
+            rootContainer = configuration.BuildContainer();
+            rootBuilder = new Bq.Messaging.Container.ContainerBuilder(rootContainer);
+            ownsContainer = configuration.OwnsContainer;
             incoming = configuration.Incoming.Build(configuration.Pipeline);
             physical = configuration.Incoming.BuildPhysical(configuration.Pipeline);
             hasPhysicalBehaviors = configuration.Incoming.HasPhysicalBehaviors;
@@ -822,7 +828,7 @@ namespace Bq.Messaging
                                         ? physical(new IncomingPhysicalContext(attemptContext, physicalMessage), terminal)
                                         : terminal()).ConfigureAwait(false);
                                 }
-                                finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; }
+                                finally { Volatile.Write(ref scope.Active, 0); uniformScope.Value = previous; context.DisposeBuilder(); }
                             }
                             forceStop.Token.ThrowIfCancellationRequested();
                             session.Commit();
@@ -1052,6 +1058,7 @@ namespace Bq.Messaging
             stopping.Cancel();
             if (forced) connection.Abort(TimeSpan.FromMilliseconds(500));
             else connection.Dispose();
+            if (ownsContainer) rootContainer.Dispose();
         }
         // Dispose is immediate; use StopAsync to drain active handlers.
         public void Dispose() => Close(true);
@@ -1167,6 +1174,9 @@ namespace Bq.Messaging
                 LogicalHeaders = Bq.Messaging.MessageHeaders.ToTextDictionary(Headers);
                 MessageHeaders = new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(LogicalHeaders);
             }
+            Bq.Messaging.ObjectBuilder.IBuilder builder;
+            internal Bq.Messaging.ObjectBuilder.IBuilder Builder => builder ?? (builder = endpoint.rootBuilder.CreateChildBuilder());
+            internal void DisposeBuilder() { builder?.Dispose(); builder = null; }
             public IUniformSession UniformSession => endpoint.CreateUniformSession();
             public CancellationToken CancellationToken => endpoint.forceStop.Token;
             public IPersistenceSession PersistenceSession { get; }

@@ -41,6 +41,7 @@ namespace Bq.Messaging
         public IMessageHandlerContext HandlerContext { get; }
         internal Dictionary<string, string> LogicalHeaders { get; }
         public ContextBag Extensions => HandlerContext.Extensions;
+        public Bq.Messaging.ObjectBuilder.IBuilder Builder => handlerContext.Builder;
         internal ExceptionDispatchInfo DownstreamFailure { get; set; }
         internal bool MessageHandled { get; set; }
         public IDictionary<string, object> Items { get; } = new Dictionary<string, object>();
@@ -61,6 +62,7 @@ namespace Bq.Messaging
         public string ReplyToAddress => HandlerContext.ReplyToAddress;
         public IReadOnlyDictionary<string, string> MessageHeaders => Message.Headers;
         public ContextBag Extensions => HandlerContext.Extensions;
+        public Bq.Messaging.ObjectBuilder.IBuilder Builder => HandlerContext.Builder;
         internal ExceptionDispatchInfo DownstreamFailure { get; set; }
         public Task Send(object message, SendOptions options) => HandlerContext.Send(message, options);
         public Task Send<T>(Action<T> initialize, SendOptions options) => HandlerContext.Send(initialize, options);

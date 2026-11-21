@@ -5,7 +5,10 @@ using System.Threading.Tasks;
 
 namespace Bq.Messaging
 {
-    public interface IBehaviorContext : IExtendable { }
+    public interface IBehaviorContext : IExtendable
+    {
+        Bq.Messaging.ObjectBuilder.IBuilder Builder { get; }
+    }
 
     public interface IIncomingContext : IBehaviorContext, IMessageProcessingContext { }
 
@@ -337,6 +340,7 @@ namespace Bq.Messaging
             public string ReplyToAddress => context.HandlerContext.ReplyToAddress;
             public IReadOnlyDictionary<string, string> MessageHeaders => context.HandlerContext.MessageHeaders;
             public ContextBag Extensions => context.Extensions;
+            public Bq.Messaging.ObjectBuilder.IBuilder Builder => context.Builder;
             public Task Send(object message, SendOptions options) => context.HandlerContext.Send(message, options);
             public Task Send<T>(Action<T> initialize, SendOptions options) => context.HandlerContext.Send(initialize, options);
             public Task Publish(object message, PublishOptions options) => context.HandlerContext.Publish(message, options);
