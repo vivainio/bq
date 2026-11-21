@@ -88,6 +88,14 @@ namespace Bq.Testing
         public Task SendAt<T>(string destination, T message, DateTimeOffset dueAt) => UniformSession.SendAt(destination, message, dueAt);
         public Task SendLocalAt<T>(T message, DateTimeOffset dueAt) => UniformSession.SendLocalAt(message, dueAt);
         public Task PublishAt<T>(T message, DateTimeOffset dueAt) => UniformSession.PublishAt(message, dueAt);
+        public bool HandleCurrentMessageLaterCalled { get; private set; }
+
+        public Task HandleCurrentMessageLater()
+        {
+            HandleCurrentMessageLaterCalled = true;
+            return Task.CompletedTask;
+        }
+
         public Task ForwardCurrentMessageTo(string destination)
         {
             if (string.IsNullOrWhiteSpace(destination)) throw new ArgumentException("Destination is required.", nameof(destination));

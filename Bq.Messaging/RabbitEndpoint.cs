@@ -1220,16 +1220,18 @@ namespace Bq.Messaging
             }
             public Task ForwardCurrentMessageTo(string destination) => ForwardCurrentMessageTo(destination, null);
 
-            internal Task ForwardCurrentMessageTo(string destination, string expiration)
+            // Queues a copy of the received message on the local input queue under a new message ID,
+            // so the inbox does not treat it as a duplicate of the message being handled.
+            public Task HandleCurrentMessageLater() => ForwardCurrentMessageTo(endpoint.localAddress, null, newMessageId: true);
+
+            internal Task ForwardCurrentMessageTo(string destination, string expiration, bool newMessageId = false)
             {
                 var scope = endpoint.uniformScope.Value;
                 if (scope == null || !ReferenceEquals(scope.Context, this) || Volatile.Read(ref scope.Active) == 0)
                     throw new InvalidOperationException("Forwarding requires the active message handling scope.");
                 RequireDestination(destination);
-                var headers = new Dictionary<string, object>(wireProperties.Headers ?? new Dictionary<string, object>())
-                {
-                    [MessageOptions.WireIdHeader] = MessageId
-                };
+                var headers = new Dictionary<string, object>(wireProperties.Headers ?? new Dictionary<string, object>());
+                if (!newMessageId) headers[MessageOptions.WireIdHeader] = MessageId;
                 headers.Remove(OutboxExpirationHeader);
                 if (expiration != null) headers[OutboxExpirationHeader] = expiration;
                 return PersistenceSession.StoreOutgoing(new OutgoingMessage

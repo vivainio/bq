@@ -607,10 +607,20 @@ namespace Bq.Messaging.Tests
             Assert(senderConventions.IsMessageType(typeof(WorkflowBarrier)) && senderConventions.IsMessageType(typeof(Command)),
                 "custom message and command conventions classify contracts");
             if (sender.Conventions().Conventions.IsCommandType(typeof(Command))) sender.Route(typeof(Command), receiverName);
+            var laterIds = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var laterDone = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             receiver.Handle(() => new Handler<Command>((message, context) =>
             {
                 Assert(context.GetHeader("migration-group") == "default", "endpoint headers reach sends without an override");
                 Assert(message.Text != "physically skipped", "a short-circuited physical stage never reaches the handler");
+                if (message.Text == "handle later")
+                {
+                    context.DoNotContinueDispatchingCurrentMessageToHandlers();
+                    laterIds.Enqueue(context.MessageId);
+                    if (laterIds.Count == 1) return context.HandleCurrentMessageLater();
+                    laterDone.TrySetResult(true);
+                    return Task.CompletedTask;
+                }
                 commandReceived.TrySetResult(message.Text);
                 context.DoNotContinueDispatchingCurrentMessageToHandlers();
                 return Task.CompletedTask;
@@ -687,6 +697,9 @@ namespace Bq.Messaging.Tests
                             "units of work end after the handler");
                         Assert(string.Join(",", RecordingUnit.Log.Skip(Volatile.Read(ref RecordingUnit.AtHandler)).Take(2)) == "b.end,a.end",
                             "units of work end in reverse order");
+                        await producer.Send(new Command { Text = "handle later" });
+                        await Within(laterDone.Task);
+                        Assert(laterIds.Distinct().Count() == 2, "HandleCurrentMessageLater redelivers the message under a new message ID");
                         var skip = new SendOptions();
                         skip.SetHeader("physical-skip", "1");
                         await producer.Send(new Command { Text = "physically skipped" }, skip);

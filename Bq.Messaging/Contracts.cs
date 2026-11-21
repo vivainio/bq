@@ -74,6 +74,7 @@ namespace Bq.Messaging
         IPersistenceSession PersistenceSession { get; }
         SynchronizedStorageSession SynchronizedStorageSession { get; }
         void DoNotContinueDispatchingCurrentMessageToHandlers();
+        Task HandleCurrentMessageLater();
         Task Send<T>(T message);
         Task Send<T>(Action<T> initialize);
         Task Send<T>(T message, SendOptions options);
