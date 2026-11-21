@@ -39,8 +39,8 @@ namespace Bq.Messaging
     {
         T Get<T>();
         T Get<T>(string key);
-        bool TryGet<T>(out T value);
-        bool TryGet<T>(string key, out T value);
+        bool TryGet<T>(out T result);
+        bool TryGet<T>(string key, out T result);
     }
 
     public class ContextBag : ReadOnlyContextBag
@@ -58,17 +58,18 @@ namespace Bq.Messaging
             throw new KeyNotFoundException("No extension is registered for " + key);
         }
 
-        public bool TryGet<T>(out T value) => TryGet(TypeKey<T>(), out value);
+        public bool TryGet<T>(out T result) => TryGet(TypeKey<T>(), out result);
 
-        public bool TryGet<T>(string key, out T value)
+        public bool TryGet<T>(string key, out T result)
         {
+            ValidateKey(key);
             if (values.TryGetValue(key, out var existing))
             {
-                value = (T)existing;
+                result = (T)existing;
                 return true;
             }
-            if (parent != null) return parent.TryGet(key, out value);
-            value = default;
+            if (parent != null) return parent.TryGet(key, out result);
+            result = default;
             return false;
         }
 
@@ -80,10 +81,25 @@ namespace Bq.Messaging
             return value;
         }
 
-        public void Set<T>(T value) => Set(TypeKey<T>(), value);
-        public void Set<T>(string key, T value) => values[key] = value;
+        public void Set<T>(T t) => Set(TypeKey<T>(), t);
+
+        public void Set<T>(string key, T t)
+        {
+            ValidateKey(key);
+            values[key] = t;
+        }
+
         public void Remove<T>() => Remove(TypeKey<T>());
-        public void Remove(string key) => values.Remove(key);
+        public void Remove(string key)
+        {
+            ValidateKey(key);
+            values.Remove(key);
+        }
+
+        static void ValidateKey(string key)
+        {
+            if (string.IsNullOrWhiteSpace(key)) throw new ArgumentNullException(nameof(key));
+        }
 
         static string TypeKey<T>() => typeof(T).FullName;
     }

@@ -131,7 +131,7 @@ The object-based `IMessageSession` overloads resolve the contract from the concr
 
 ## Handler context and message copies
 
-Bq provides the string-valued `MessageHeaders` view and `ReplyToAddress`. Use `Headers` for raw AMQP values and `PersistenceSession` for the shared transaction. Use the typed `Extensions` bag to share state between an incoming behavior, handler, and before-commit callbacks. Each retry gets a fresh bag. `ForwardCurrentMessageTo` queues the original wire body, contract, headers, and message ID in the outbox for another queue.
+Bq provides the string-valued `MessageHeaders` view and `ReplyToAddress`. Use `Headers` for raw AMQP values and `PersistenceSession` for the shared transaction. Use the typed `Extensions` bag to share state between an incoming behavior, handler, and before-commit callbacks. Use type-based keys or nonblank string keys. Each retry gets a fresh bag. `ForwardCurrentMessageTo` queues the original wire body, contract, headers, and message ID in the outbox for another queue.
 
 Messages sent from a handler inherit the incoming `MessageHeaders.ConversationId` and carry the incoming message ID in `MessageHeaders.RelatedTo`. Root messages get a generated conversation ID by default. Call `sendOptions.StartNewConversation()` to generate a new ID or pass an explicit ID. When a handler starts a new conversation, the outgoing message carries the inherited ID in `MessageHeaders.PreviousConversationId`.
 

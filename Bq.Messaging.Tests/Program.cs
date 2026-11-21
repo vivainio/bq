@@ -315,11 +315,30 @@ namespace Bq.Messaging.Tests
             IMessageHandlerContext handler = context;
             handler.Extensions.Set("shared", 4);
             var child = new ContextBag(handler.Extensions);
-            child.Set("shared", 5);
-            Assert(child.Get<int>("shared") == 5 && handler.Extensions.Get<int>("shared") == 4, "child bag shadows parent values");
+            child.Set(key: "shared", t: 5);
+            ReadOnlyContextBag readableChild = child;
+            Assert(readableChild.TryGet<int>(key: "shared", result: out var shared) && shared == 5 &&
+                handler.Extensions.Get<int>("shared") == 4, "child bag shadows parent values");
             child.Remove("shared");
             Assert(child.Get<int>("shared") == 4 && ReferenceEquals(child.GetOrCreate<Command>(), child.Get<Command>()),
                 "context bag supports inherited values and typed creation");
+            foreach (var invalidKey in new[] { null, "", " " })
+            {
+                var keyedOperations = new Action[]
+                {
+                    () => child.Set(invalidKey, 1),
+                    () => child.Get<int>(invalidKey),
+                    () => readableChild.TryGet<int>(invalidKey, out _),
+                    () => child.Remove(invalidKey)
+                };
+                foreach (var operation in keyedOperations)
+                {
+                    var rejected = false;
+                    try { operation(); }
+                    catch (ArgumentNullException exception) when (exception.ParamName == "key") { rejected = true; }
+                    Assert(rejected, "context bag rejects blank keys for all keyed operations");
+                }
+            }
             var dueAt = DateTimeOffset.UtcNow.AddMinutes(5);
             var send = new SendOptions();
             send.DoNotDeliverBefore(dueAt);
