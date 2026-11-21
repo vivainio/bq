@@ -79,6 +79,9 @@ namespace Bq.Messaging
 
     public class ImmediateRetryMessage
     {
+        public ImmediateRetryMessage(Dictionary<string, string> headers, byte[] body, Exception exception, int retryAttempt)
+            : this(null, headers, body, exception, retryAttempt) { }
+
         public ImmediateRetryMessage(string messageId, Dictionary<string, string> headers, byte[] body,
             Exception exception, int retryAttempt)
         {
@@ -98,6 +101,9 @@ namespace Bq.Messaging
 
     public class DelayedRetryMessage
     {
+        public DelayedRetryMessage(Dictionary<string, string> headers, byte[] body, Exception exception, int retryAttempt)
+            : this(null, headers, body, exception, retryAttempt) { }
+
         public DelayedRetryMessage(string messageId, Dictionary<string, string> headers, byte[] body,
             Exception exception, int retryAttempt)
         {

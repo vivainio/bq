@@ -107,6 +107,7 @@ namespace Bq.Messaging
         internal bool HasSagas;
         internal bool IsSendOnly { get; private set; }
         public void SendOnly() => IsSendOnly = true;
+        public Notifications Notifications { get; } = new Notifications();
 
         Bq.Messaging.ObjectBuilder.Common.IContainer container;
         Type containerDefinition;

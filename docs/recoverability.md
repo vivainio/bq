@@ -39,3 +39,5 @@ Use `Failed(settings => settings.OnMessageSentToErrorQueue(...))` for notificati
 Use `CustomPolicy((config, error) => ...)` for immediate or delayed retry, discard, and per-message error queues. Use `AddUnrecoverableException<T>()` to classify failures in the default policy. A custom policy can delegate to `DefaultRecoverabilityPolicy.Invoke`. Bq also retains its native `Policy` callback. A custom error queue must already exist.
 
 Use `DefineCriticalErrorAction` for an infrastructure failure callback that can stop the endpoint through its context.
+
+`EndpointConfiguration.Notifications.Errors` raises `MessageHasFailedAnImmediateRetryAttempt`, `MessageHasBeenSentToDelayedRetries` and `MessageSentToErrorQueue` events, alongside any callbacks configured through `Recoverability()`. Subscribe before starting the endpoint.

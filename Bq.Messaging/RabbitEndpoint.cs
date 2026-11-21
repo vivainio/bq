@@ -38,6 +38,9 @@ namespace Bq.Messaging
         readonly Func<IncomingMessageContext, Func<Task>, Task> incoming;
         readonly Func<IncomingPhysicalContext, Func<Task>, Task> physical;
         readonly bool hasPhysicalBehaviors;
+        readonly Func<FailedMessage, Task> errorQueueNotification;
+        readonly Func<ImmediateRetryMessage, Task> immediateRetryNotification;
+        readonly Func<DelayedRetryMessage, Task> delayedRetryNotification;
         readonly Dictionary<OutgoingStage, Func<OutgoingContext, Func<Task>, Task>> outgoingStages;
         readonly Bq.Messaging.ObjectBuilder.Common.IContainer rootContainer;
         readonly Bq.Messaging.ObjectBuilder.IBuilder rootBuilder;
@@ -93,6 +96,26 @@ namespace Bq.Messaging
             mutateOutgoing = configuration.MutateOutgoing;
             outgoingMessageMutators = configuration.OutgoingMessageMutators.ToArray();
             outgoingTransportMutators = configuration.OutgoingTransportMutators.ToArray();
+            var errorEvents = configuration.Notifications.Errors;
+            var recovery = configuration.Recoverability;
+            errorQueueNotification = recovery.ErrorQueueNotification == null && !errorEvents.HasErrorQueueHandlers ? null
+                : new Func<FailedMessage, Task>(async message =>
+                {
+                    errorEvents.Raise(message);
+                    if (recovery.ErrorQueueNotification != null) await recovery.ErrorQueueNotification(message).ConfigureAwait(false);
+                });
+            immediateRetryNotification = recovery.ImmediateRetryNotification == null && !errorEvents.HasImmediateRetryHandlers ? null
+                : new Func<ImmediateRetryMessage, Task>(async message =>
+                {
+                    errorEvents.Raise(message);
+                    if (recovery.ImmediateRetryNotification != null) await recovery.ImmediateRetryNotification(message).ConfigureAwait(false);
+                });
+            delayedRetryNotification = recovery.DelayedRetryNotification == null && !errorEvents.HasDelayedRetryHandlers ? null
+                : new Func<DelayedRetryMessage, Task>(async message =>
+                {
+                    errorEvents.Raise(message);
+                    if (recovery.DelayedRetryNotification != null) await recovery.DelayedRetryNotification(message).ConfigureAwait(false);
+                });
             rootContainer = configuration.BuildContainer();
             rootBuilder = new Bq.Messaging.Container.ContainerBuilder(rootContainer);
             ownsContainer = configuration.OwnsContainer;
@@ -687,7 +710,7 @@ namespace Bq.Messaging
 
         async Task NotifyErrorQueue(RecoveryRecord record)
         {
-            var notification = configuration.Recoverability.ErrorQueueNotification;
+            var notification = errorQueueNotification;
             if (!record.IsError || notification == null) return;
             try
             {
@@ -894,7 +917,7 @@ namespace Bq.Messaging
                         action = ChooseRecovery(ex, attempt, cycle, headers, currentId, delivery.Body, context?.Extensions, allowImmediate: true);
                         if (!action.IsImmediate) throw;
                         System.Diagnostics.Trace.TraceWarning("Immediate retry {0} for message {1}: {2}", attempt + 1, currentId, ex);
-                        var notification = configuration.Recoverability.ImmediateRetryNotification;
+                        var notification = immediateRetryNotification;
                         if (notification != null)
                         {
                             try
@@ -962,7 +985,7 @@ namespace Bq.Messaging
                     session.Commit();
                 }
                 System.Diagnostics.Trace.TraceError("Message {0} failed; {1}: {2}", currentId, isError ? "error queue" : "delayed retry", failure);
-                var notification = options.DelayedRetryNotification;
+                var notification = delayedRetryNotification;
                 if (!isError && notification != null)
                 {
                     try

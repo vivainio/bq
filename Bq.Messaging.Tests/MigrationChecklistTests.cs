@@ -265,6 +265,8 @@ namespace Bq.Messaging.Tests
             };
             config.Recoverability.DelayedRetries = new[] { TimeSpan.FromHours(1) };
             ImmediateRetryMessage retryNotification = null;
+            ImmediateRetryMessage retryEvent = null;
+            config.Notifications.Errors.MessageHasFailedAnImmediateRetryAttempt += (sender, retry) => retryEvent = retry;
             config.Recoverability()
                 .Immediate(settings => settings.OnMessageBeingRetried(retry =>
                 {
@@ -316,9 +318,13 @@ namespace Bq.Messaging.Tests
                 {
                     incoming.Items.Add("retry", incoming.ImmediateRetries);
                     if (incoming.ImmediateRetries == 1)
+                    {
+                        Assert(retryEvent?.RetryAttempt == 1 && retryEvent.Exception.Message == "retry the unit",
+                            "Notifications.Errors raises immediate retry events");
                         Assert(retryNotification?.RetryAttempt == 1 && retryNotification.MessageId == incoming.HandlerContext.MessageId &&
                             retryNotification.Exception.Message == "retry the unit" && retryNotification.Body.Length > 0,
                             "retry notification receives the failure and its snapshot before the next attempt");
+                    }
                 }
                 incoming.Items.Add("unit", message.Text);
                 try
