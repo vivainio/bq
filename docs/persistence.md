@@ -56,3 +56,7 @@ Use `await store.ListReadyDispatches()` to inspect rows eligible for dispatch no
 ## NServiceBus-style configuration
 
 `config.UsePersistence<SqlitePersistenceDefinition>().ConnectionFactory(() => connection)` creates the provider when the endpoint starts, unless `config.Persistence` is already set. `UsePersistence<T, S>()` with a `StorageType` is accepted, but Bq keeps the inbox, outbox, sagas, timeouts and recovery records in one provider, so selecting a different definition twice throws. `EnableInstallers()` runs the schema creation of providers implementing `IInstallablePersistence` (SQLite does) at start. Oracle schemas stay under the host's migration scripts.
+
+## In-memory persistence
+
+`config.UsePersistence<InMemoryPersistence>()` keeps the inbox, outbox, timeouts, sagas and recovery records in memory, with the same commit and rollback behavior as the database providers: writes are staged in the session, claims deduplicate across sessions, and saga versions are checked. Nothing survives a restart, and sessions have no database `Connection` or `Transaction`, so use it for tests and local runs only.

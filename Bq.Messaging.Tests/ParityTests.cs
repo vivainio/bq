@@ -165,6 +165,32 @@ namespace Bq.Messaging.Tests
                 new Bq.Messaging.Transport.TransportTransaction(), 3);
             Assert(error.ImmediateProcessingFailures == 3 && error.Message.MessageId == "m1" && error.TransportTransaction != null,
                 "ErrorContext constructs from transport data");
+            var memory = new InMemoryPersistenceProvider("memory-probe");
+            using (var first = memory.OpenSession().GetAwaiter().GetResult())
+            using (var second = memory.OpenSession().GetAwaiter().GetResult())
+            {
+                Assert(first.TryClaimMessage("memory-probe", "m1").GetAwaiter().GetResult(), "an in-memory session claims a message");
+                Assert(!second.TryClaimMessage("memory-probe", "m1").GetAwaiter().GetResult(), "a second session cannot claim it while the first holds it");
+                first.StoreOutgoing(new OutgoingMessage { Id = "o1", Type = "t", Exchange = "", RoutingKey = "q", Body = new byte[] { 1 } }).GetAwaiter().GetResult();
+                first.SaveSaga("saga", "k", new byte[] { 1 }, null).GetAwaiter().GetResult();
+                Assert(memory.NextOutgoing("memory-probe").GetAwaiter().GetResult() == null, "staged writes are invisible before commit");
+                first.Commit();
+                Assert(memory.NextOutgoing("memory-probe").GetAwaiter().GetResult()?.Id == "o1", "committed writes become visible");
+            }
+            using (var third = memory.OpenSession().GetAwaiter().GetResult())
+            {
+                Assert(!third.TryClaimMessage("memory-probe", "m1").GetAwaiter().GetResult(), "committed claims deduplicate later messages");
+                var saga = third.LoadSaga("saga", "k").GetAwaiter().GetResult();
+                Assert(saga != null && saga.Version == 1, "committed sagas load with their version");
+                var conflict = false;
+                try { third.SaveSaga("saga", "k", new byte[] { 2 }, 5).GetAwaiter().GetResult(); } catch (SagaConcurrencyException) { conflict = true; }
+                Assert(conflict, "a stale saga version fails");
+            }
+            using (var abandoned = memory.OpenSession().GetAwaiter().GetResult())
+                Assert(abandoned.TryClaimMessage("memory-probe", "m2").GetAwaiter().GetResult(), "a new message claims");
+            using (var retry = memory.OpenSession().GetAwaiter().GetResult())
+                Assert(retry.TryClaimMessage("memory-probe", "m2").GetAwaiter().GetResult(), "an uncommitted session releases its claims");
+            Assert(Bq.Messaging.Faults.FaultsHeaderKeys.FailedQ == "x-bq-failed-endpoint", "fault header keys exist");
             var outgoing = new Bq.Messaging.Transport.OutgoingMessage("id", new System.Collections.Generic.Dictionary<string, string>(), new byte[0]);
             Assert(outgoing.MessageId == "id", "the transport outgoing message type constructs");
 
@@ -345,6 +371,23 @@ namespace Bq.Messaging.Tests
                 Assert(await Within(sendSeen.Task) == "11", "send and physical stage behaviors run for sends");
                 Assert(await Within(publishSeen.Task) == "11", "publish and physical stage behaviors run for publishes");
                 Assert(Volatile.Read(ref OutgoingBodyRewriter.Rewrites) == 2, "the physical stage accepts body updates");
+            }
+
+            // The whole endpoint runs on in-memory persistence, selected like any NServiceBus persistence.
+            var memoryName = "bq.test.parity.memory." + Guid.NewGuid().ToString("N");
+            var memoryConfig = new EndpointConfiguration(memoryName, uri);
+            memoryConfig.UsePersistence<InMemoryPersistence>();
+            memoryConfig.Route(typeof(SendProbe), memoryName);
+            var memoryHandled = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            memoryConfig.Handle(() => new Handler<SendProbe>((message, context) =>
+            {
+                memoryHandled.TrySetResult(message.Text);
+                return Task.CompletedTask;
+            }));
+            using (var endpoint = RabbitEndpoint.Start(memoryConfig))
+            {
+                await endpoint.Send(new SendProbe { Text = "in-memory" });
+                Assert(await Within(memoryHandled.Task) == "in-memory", "an endpoint runs end to end on in-memory persistence");
             }
 
             // Aborting the receive operation rolls back and redelivers the message without a failure.

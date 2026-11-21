@@ -12,6 +12,12 @@ namespace Bq.Messaging
 
 namespace Bq.Messaging.Faults
 {
+    public static class FaultsHeaderKeys
+    {
+        /// <summary>The endpoint queue the message failed in. Bq writes this on failed message copies.</summary>
+        public const string FailedQ = "x-bq-failed-endpoint";
+    }
+
     public class ErrorsNotifications
     {
         public event EventHandler<FailedMessage> MessageSentToErrorQueue;
