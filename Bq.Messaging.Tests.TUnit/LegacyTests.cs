@@ -67,6 +67,10 @@ namespace Bq.Messaging.Tests.TUnitRunner
         public async Task Group(string name)
         {
             var body = Program.LegacyGroups(BrokerUri()).Single(g => g.Name == name).Body;
+            // OrderWorkflow's counters are shared by several groups. Each group expects to start from zero, as it did in the
+            // original fixed order, so a group that ran earlier (the Oracle endpoint one fires a timeout) must not leak into it.
+            OrderWorkflow.StartAttempts = 0;
+            OrderWorkflow.TimeoutCalls = 0;
             SoftChecks.Begin();
             Exception thrown = null;
             try { await body(); }

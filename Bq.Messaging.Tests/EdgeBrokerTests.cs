@@ -198,6 +198,25 @@ namespace Bq.Messaging.Tests
         }
     }
 
+    // Counts what an Oracle provider hands to the dispatcher, so duplicate publishing is visible and not hidden by the inbox.
+    public sealed class EdgeCountingOracle : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence
+    {
+        readonly Bq.Persistence.Oracle.OraclePersistence inner;
+        readonly int[] published;
+        public EdgeCountingOracle(Bq.Persistence.Oracle.OraclePersistence inner, int[] published) { this.inner = inner; this.published = published; }
+        public Task<IPersistenceSession> OpenSession() => inner.OpenSession();
+        public Task<OutgoingMessage> NextOutgoing(string endpoint) => inner.NextOutgoing(endpoint);
+        public Task MarkDispatched(string endpoint, string messageId) => inner.MarkDispatched(endpoint, messageId);
+        public Task<RecoveryRecord> NextRecovery(string endpoint) => inner.NextRecovery(endpoint);
+        public Task MarkRecoveryDispatched(string endpoint, string recoveryId) => inner.MarkRecoveryDispatched(endpoint, recoveryId);
+        public Task<RecoveryRecord> GetError(string endpoint, string recoveryId) => inner.GetError(endpoint, recoveryId);
+        public Task<IReadOnlyList<RecoveryRecord>> ListErrors(string endpoint, int limit) => inner.ListErrors(endpoint, limit);
+        public Task<bool> ReplayError(string endpoint, string recoveryId, RecoveryRecord replay) => inner.ReplayError(endpoint, recoveryId, replay);
+        public Task<bool> DispatchOutgoing(string endpoint, Action<OutgoingMessage> publish) =>
+            inner.DispatchOutgoing(endpoint, message => { Interlocked.Increment(ref published[0]); publish(message); });
+        public Task<bool> DispatchRecovery(string endpoint, Action<RecoveryRecord> publish) => inner.DispatchRecovery(endpoint, publish);
+    }
+
     static class EdgeOutbox
     {
         public static string NewPath(string name) => System.IO.Path.Combine(System.IO.Path.GetTempPath(), name + ".db");
@@ -889,6 +908,41 @@ namespace Bq.Messaging.Tests
                     }
                 }
                 finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("two dispatchers on Oracle publish every row exactly once", async () =>
+            {
+                var connectionString = Environment.GetEnvironmentVariable("BQ_ORACLE_CONNECTION_STRING");
+                if (string.IsNullOrEmpty(connectionString)) { Console.WriteLine("Oracle two-dispatcher test skipped: set BQ_ORACLE_*."); return; }
+                var assembly = System.Reflection.Assembly.LoadFrom(Environment.GetEnvironmentVariable("BQ_ORACLE_DRIVER_ASSEMBLY"));
+                var connectionType = assembly.GetType(Environment.GetEnvironmentVariable("BQ_ORACLE_CONNECTION_TYPE"), throwOnError: true);
+                System.Data.Common.DbConnection Connect()
+                {
+                    var connection = (System.Data.Common.DbConnection)Activator.CreateInstance(connectionType);
+                    connection.ConnectionString = connectionString;
+                    return connection;
+                }
+                var name = "bq-oracle-twonodes-" + Guid.NewGuid().ToString("N");
+                const int total = 150;
+                var seeding = new Bq.Persistence.Oracle.OraclePersistence(Connect, name);
+                await EdgeOutbox.Seed(seeding, name, Enumerable.Range(0, total).Select(i => "o" + i));
+                var published = new int[1];
+                var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
+                EndpointConfiguration Node()
+                {
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = new EdgeCountingOracle(new Bq.Persistence.Oracle.OraclePersistence(Connect, name), published) };
+                    configuration.DispatchPollInterval = TimeSpan.FromMilliseconds(50);
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen.AddOrUpdate(m.Text, 1, (key, n) => n + 1); return Task.CompletedTask; }));
+                    return configuration;
+                }
+                using (var first = RabbitEndpoint.Start(Node()))
+                using (var second = RabbitEndpoint.Start(Node()))
+                {
+                    for (var i = 0; i < 600 && seen.Count < total; i++) await Task.Delay(100);
+                    That(seen.Count == total, "every row was handled, got " + seen.Count + " of " + total);
+                    await Task.Delay(1500);
+                    That(Volatile.Read(ref published[0]) == total, "row locking kept each row to one publish, saw " + published[0] + " publishes for " + total + " rows");
+                    That(seen.Values.All(n => n == 1), "and each was handled once");
+                }
             });
             await Case("an unroutable row at the head of the outbox holds back the rows behind it until it can be routed", async () =>
             {
