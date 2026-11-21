@@ -248,6 +248,7 @@ namespace Bq.Messaging.Tests
             await PhasedMigrationTests(new Uri(uri));
             await ScannerTests(new Uri(uri));
             await InstanceRoutingTests(new Uri(uri));
+            await ParityIntegrationTests(new Uri(uri));
             await OrderWorkflowEndToEndTest(new Uri(uri));
             await LifecycleTests.Run(new Uri(uri));
             await UniformSessionTests.Run(new Uri(uri), Sqlite);
