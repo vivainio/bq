@@ -44,7 +44,7 @@ New tests go into the registered-case files (`EdgeCaseTests.cs` for tests withou
 
 ## Oracle
 
-When `BQ_ORACLE_CONNECTION_STRING`, `BQ_ORACLE_DRIVER_ASSEMBLY` and `BQ_ORACLE_CONNECTION_TYPE` are set, the same run also checks the Oracle provider and a whole endpoint on Oracle. The `oracle` job in the messaging workflow does this against an Oracle Database Free container. `Bq.Persistence.Oracle/README.md` in the repository describes the local setup, including the Oracle Database Free container.
+When `BQ_ORACLE_CONNECTION_STRING`, `BQ_ORACLE_DRIVER_ASSEMBLY` and `BQ_ORACLE_CONNECTION_TYPE` are set, the same run also checks the Oracle provider and a whole endpoint on Oracle. The messaging workflow does not run these checks. `Bq.Persistence.Oracle/README.md` in the repository describes the local setup, including the Oracle Database Free container.
 
 ## Two runtimes
 
