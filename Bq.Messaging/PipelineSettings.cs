@@ -468,6 +468,8 @@ namespace Bq.Messaging
             return next();
         }
 
+        internal static IIncomingLogicalMessageContext LogicalViewOf(IncomingMessageContext context) => new LogicalContext(context);
+
         sealed class LogicalContext : IIncomingLogicalMessageContext
         {
             readonly IncomingMessageContext context;

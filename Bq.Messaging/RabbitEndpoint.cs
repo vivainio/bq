@@ -52,6 +52,7 @@ namespace Bq.Messaging
         readonly bool ownsContainer;
         readonly IDataBus dataBus;
         readonly IDataBusSerializer dataBusSerializer;
+        readonly IEncryptionService encryptionService;
         readonly Dictionary<Type, string> wireNames = new Dictionary<Type, string>();
         readonly Dictionary<string, Registration> receivers = new Dictionary<string, Registration>();
         readonly bool sendOnly;
@@ -148,6 +149,8 @@ namespace Bq.Messaging
             dataBusSerializer = rootContainer != null && rootContainer.HasComponent(typeof(IDataBusSerializer))
                 ? (IDataBusSerializer)rootContainer.Build(typeof(IDataBusSerializer)) : null;
             dataBus?.Start().GetAwaiter().GetResult();
+            encryptionService = (rootContainer != null && rootContainer.HasComponent(typeof(IEncryptionService)) ? (IEncryptionService)rootContainer.Build(typeof(IEncryptionService)) : null)
+                ?? configuration.CreateEncryptionService();
             rootContainer?.RegisterSingleton(typeof(CriticalError), new CriticalError(async context =>
             {
                 if (configuration.CriticalErrorAction != null)
@@ -638,6 +641,8 @@ namespace Bq.Messaging
                 outgoingMessage = mutation.OutgoingMessage;
             }
             await StoreDataBusProperties(outgoingMessage, contract, declaredLifetime).ConfigureAwait(false);
+            EncryptWireStrings(outgoingMessage, contract, stage);
+            SyncFromStage();
             var serializationType = InterfaceMessage.SerializationType(contract);
             var value = InterfaceMessage.SerializationValue(contract, serializationType, outgoingMessage);
             var serialized = MessagePackSerializer.Serialize(serializationType, value, SerializerOptions);
@@ -966,6 +971,7 @@ namespace Bq.Messaging
                                         // Fetching can fail for transient storage reasons, so a failure here goes through recoverability.
                                         await FetchDataBusProperties(message, registration.Type).ConfigureAwait(false);
                                         var incomingContext = new IncomingMessageContext(message, attemptContext, registration.Type, attemptTypeName, attempt, cycle);
+                                        DecryptWireStrings(message, registration.Type, PipelineSettings.LogicalViewOf(incomingContext));
                                         await incoming(incomingContext, async () =>
                                         {
                                             await registration.Invoke(incomingContext.Message, attemptContext).ConfigureAwait(false);

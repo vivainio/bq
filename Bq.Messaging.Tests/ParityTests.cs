@@ -79,6 +79,27 @@ namespace Bq.Messaging.Tests
         public void Customize(EndpointConfiguration configuration) => Interlocked.Increment(ref Customized);
     }
 
+    sealed class FakeLogicalContext : IIncomingLogicalMessageContext
+    {
+        public FakeLogicalContext(System.Collections.Generic.Dictionary<string, string> headers) { Headers = headers; }
+        public System.Collections.Generic.Dictionary<string, string> Headers { get; }
+        public LogicalMessage Message => null;
+        public bool MessageHandled { get; set; }
+        public void UpdateMessageInstance(object newInstance) { }
+        public string MessageId => null;
+        public string ReplyToAddress => null;
+        public System.Collections.Generic.IReadOnlyDictionary<string, string> MessageHeaders => Headers;
+        public ContextBag Extensions { get; } = new ContextBag();
+        public Bq.Messaging.ObjectBuilder.IBuilder Builder => null;
+        public Task Send(object message, SendOptions options) => Task.CompletedTask;
+        public Task Send<T>(Action<T> initialize, SendOptions options) => Task.CompletedTask;
+        public Task Publish(object message, PublishOptions options) => Task.CompletedTask;
+        public Task Publish<T>(Action<T> initialize, PublishOptions options) => Task.CompletedTask;
+        public Task Reply(object message, ReplyOptions options) => Task.CompletedTask;
+        public Task Reply<T>(Action<T> initialize, ReplyOptions options) => Task.CompletedTask;
+        public Task ForwardCurrentMessageTo(string destination) => Task.CompletedTask;
+    }
+
     sealed class XmlConfigurationSource : Bq.Messaging.Config.ConfigurationSource.IConfigurationSource
     {
         readonly System.Collections.Generic.Dictionary<string, string> sections;
@@ -108,6 +129,12 @@ namespace Bq.Messaging.Tests
     {
         public string Text { get; set; }
         public DataBusProperty<byte[]> Attachment { get; set; }
+    }
+
+    public class SecretMessage
+    {
+        public string Label { get; set; }
+        public WireEncryptedString Secret { get; set; }
     }
 
     public class OrderedMessage { public string Text { get; set; } }
@@ -272,6 +299,40 @@ namespace Bq.Messaging.Tests
                 Bq.Messaging.Configuration.AdvancedExtensibility.AdvancedExtensibilityExtensions.GetSettings(fromFile)).QueueName == "audit.queue",
                 "features read sections through the settings");
 
+            var keyOne = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
+            var keyTwo = Enumerable.Range(101, 32).Select(i => (byte)i).ToArray();
+            var rijndael = new EndpointConfiguration("rijndael-test", new Uri("amqp://localhost/"));
+            rijndael.RijndaelEncryptionService("k1", keyOne, new System.Collections.Generic.List<byte[]> { keyTwo });
+            var rijndaelService = rijndael.CreateEncryptionService();
+            var stage = new OutgoingContext(null, () => null, "id", typeof(SecretMessage), new SecretMessage(),
+                new System.Collections.Generic.Dictionary<string, string>(), new ContextBag(), new Bq.Messaging.Routing.RoutingStrategy[0]);
+            var encrypted = rijndaelService.Encrypt("top secret", stage);
+            Assert(encrypted.EncryptedBase64Value != "top secret" && stage.Headers["NServiceBus.RijndaelKeyIdentifier"] == "k1", "encryption hides the value and names the key");
+            Assert(rijndaelService.Decrypt(encrypted, new FakeLogicalContext(stage.Headers)) == "top secret", "decryption restores the value");
+            var retired = new EndpointConfiguration("rijndael-old", new Uri("amqp://localhost/"));
+            retired.RijndaelEncryptionService("k2", keyTwo);
+            var oldStage = new OutgoingContext(null, () => null, "id", typeof(SecretMessage), new SecretMessage(),
+                new System.Collections.Generic.Dictionary<string, string>(), new ContextBag(), new Bq.Messaging.Routing.RoutingStrategy[0]);
+            var oldValue = retired.CreateEncryptionService().Encrypt("from the old key", oldStage);
+            Assert(rijndaelService.Decrypt(oldValue, new FakeLogicalContext(new System.Collections.Generic.Dictionary<string, string>())) == "from the old key",
+                "expired keys still decrypt messages that are in flight");
+            var badKey = false;
+            try { new EndpointConfiguration("rijndael-bad", new Uri("amqp://localhost/")).RijndaelEncryptionService("k", new byte[5]); } catch (ArgumentException) { badKey = true; }
+            Assert(badKey, "keys of the wrong size are rejected");
+            var rijndaelSections = new System.Collections.Generic.Dictionary<string, string>
+            {
+                ["RijndaelEncryptionServiceConfig"] = @"<RijndaelEncryptionServiceConfig Key=""gdgdOq4ZZTLlJRa4pZjS1TXKEf/kRMu5e8Wy3x4AwpU="" KeyFormat=""Base64"" KeyIdentifier=""cfg"">
+  <ExpiredKeys><add Key=""abcdefghijklmnop"" /></ExpiredKeys>
+</RijndaelEncryptionServiceConfig>"
+            };
+            var fromSection = new EndpointConfiguration("rijndael-section", new Uri("amqp://localhost/"));
+            fromSection.CustomConfigurationSource(new XmlConfigurationSource(rijndaelSections));
+            fromSection.RijndaelEncryptionService();
+            var sectionStage = new OutgoingContext(null, () => null, "id", typeof(SecretMessage), new SecretMessage(),
+                new System.Collections.Generic.Dictionary<string, string>(), new ContextBag(), new Bq.Messaging.Routing.RoutingStrategy[0]);
+            fromSection.CreateEncryptionService().Encrypt("x", sectionStage);
+            Assert(sectionStage.Headers["NServiceBus.RijndaelKeyIdentifier"] == "cfg", "the Rijndael section supplies the key and identifier");
+
             var outgoing = new Bq.Messaging.Transport.OutgoingMessage("id", new System.Collections.Generic.Dictionary<string, string>(), new byte[0]);
             Assert(outgoing.MessageId == "id", "the transport outgoing message type constructs");
 
@@ -420,6 +481,32 @@ namespace Bq.Messaging.Tests
             {
                 await endpoint.Send(new SendProbe { Text = "critical" });
                 Assert(await Within(criticalRaised.Task) == "behavior failure:critical probe", "CriticalError.Raise reaches the configured critical error action");
+            }
+
+            // A WireEncryptedString property is encrypted on the wire and decrypted for the handler.
+            var secretName = "bq.test.parity.secret." + Guid.NewGuid().ToString("N");
+            var secretPath = Path.Combine(Path.GetTempPath(), secretName + ".db");
+            var secretStore = new SqlitePersistence(() => Sqlite(secretPath), secretName);
+            await secretStore.Initialize();
+            var secretConfig = new EndpointConfiguration(secretName, uri) { Persistence = secretStore };
+            secretConfig.RijndaelEncryptionService("k1", Enumerable.Range(1, 32).Select(i => (byte)i).ToArray());
+            secretConfig.Route(typeof(SecretMessage), secretName);
+            var wireText = string.Empty;
+            secretConfig.MutateOutgoing = transport =>
+            {
+                if (transport.TypeName == typeof(SecretMessage).FullName) wireText = System.Text.Encoding.UTF8.GetString(transport.Body);
+            };
+            var secretSeen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            secretConfig.Handle(() => new Handler<SecretMessage>((message, context) =>
+            {
+                secretSeen.TrySetResult(message.Secret.Value + ":" + context.GetHeader("NServiceBus.RijndaelKeyIdentifier"));
+                return Task.CompletedTask;
+            }));
+            using (var endpoint = RabbitEndpoint.Start(secretConfig))
+            {
+                await endpoint.Send(new SecretMessage { Label = "s", Secret = new WireEncryptedString { Value = "launch codes" } });
+                Assert(await Within(secretSeen.Task) == "launch codes:k1", "the handler reads the decrypted value");
+                Assert(!wireText.Contains("launch codes") && wireText.Contains("EncryptedBase64Value"), "only the encrypted value goes on the wire");
             }
 
             // Large values travel through the file share data bus, and only their keys go on the wire.
