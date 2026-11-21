@@ -172,6 +172,81 @@ namespace Bq.Messaging.Tests
         }
     }
 
+    // Delegates to a provider but fails the first MarkDispatched calls, as a crash after publishing would.
+    public sealed class EdgeMarkFailsPersistence : IPersistenceProvider, IRecoveryPersistence
+    {
+        readonly Bq.Persistence.Sqlite.SqlitePersistence inner;
+        int failures;
+        public int Handed;
+        public EdgeMarkFailsPersistence(Bq.Persistence.Sqlite.SqlitePersistence inner, int failures) { this.inner = inner; this.failures = failures; }
+        public Task<RecoveryRecord> NextRecovery(string endpoint) => inner.NextRecovery(endpoint);
+        public Task MarkRecoveryDispatched(string endpoint, string recoveryId) => inner.MarkRecoveryDispatched(endpoint, recoveryId);
+        public Task<RecoveryRecord> GetError(string endpoint, string recoveryId) => inner.GetError(endpoint, recoveryId);
+        public Task<IReadOnlyList<RecoveryRecord>> ListErrors(string endpoint, int limit) => inner.ListErrors(endpoint, limit);
+        public Task<bool> ReplayError(string endpoint, string recoveryId, RecoveryRecord replay) => inner.ReplayError(endpoint, recoveryId, replay);
+        public Task<IPersistenceSession> OpenSession() => inner.OpenSession();
+        public async Task<OutgoingMessage> NextOutgoing(string endpoint)
+        {
+            var message = await inner.NextOutgoing(endpoint);
+            if (message != null) Interlocked.Increment(ref Handed);
+            return message;
+        }
+        public Task MarkDispatched(string endpoint, string messageId)
+        {
+            if (Interlocked.Decrement(ref failures) >= 0) throw new InvalidOperationException("simulated crash before the dispatch was recorded");
+            return inner.MarkDispatched(endpoint, messageId);
+        }
+    }
+
+    static class EdgeOutbox
+    {
+        public static string NewPath(string name) => System.IO.Path.Combine(System.IO.Path.GetTempPath(), name + ".db");
+
+        public static System.Data.Common.DbConnection Connect(string path)
+        {
+            var type = Type.GetType("Mono.Data.Sqlite.SqliteConnection, Mono.Data.Sqlite, Version=4.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756", true);
+            var connection = (System.Data.Common.DbConnection)Activator.CreateInstance(type);
+            connection.ConnectionString = "Data Source=" + path + ";Default Timeout=5";
+            return connection;
+        }
+
+        public static async Task<Bq.Persistence.Sqlite.SqlitePersistence> Store(string path, string endpoint)
+        {
+            var store = new Bq.Persistence.Sqlite.SqlitePersistence(() => Connect(path), endpoint);
+            await store.Initialize();
+            return store;
+        }
+
+        // Writes committed outbox rows without dispatching them, in the order given.
+        public static async Task Seed(IPersistenceProvider store, string queue, IEnumerable<string> texts, bool mandatory = true)
+        {
+            var format = new Bq.Messaging.Serialization.MessagePackSerialization().CreateWireFormat();
+            using (var session = await store.OpenSession())
+            {
+                foreach (var text in texts)
+                    await session.StoreOutgoing(new OutgoingMessage
+                    {
+                        Id = Guid.NewGuid().ToString("N"), Type = EndpointConfiguration.MessageType(typeof(EdgeUowMessage)), Exchange = "", RoutingKey = queue,
+                        Mandatory = mandatory, Headers = new Dictionary<string, object>(), Body = format.Serialize(typeof(EdgeUowMessage), new EdgeUowMessage { Text = text })
+                    });
+                session.Commit();
+            }
+        }
+
+        public static async Task<long> Count(string path, string table)
+        {
+            using (var connection = Connect(path))
+            {
+                await connection.OpenAsync();
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "SELECT COUNT(*) FROM " + table;
+                    return Convert.ToInt64(await command.ExecuteScalarAsync());
+                }
+            }
+        }
+    }
+
     public sealed class EdgeUnit : IManageUnitsOfWork
     {
         public static readonly List<string> Log = new List<string>();
@@ -715,6 +790,135 @@ namespace Bq.Messaging.Tests
                     }
                 });
             }
+
+            await Case("seeded outbox rows are published in the order they were stored", async () =>
+            {
+                var name = "bq.test.edge.outbox.order." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    var expected = Enumerable.Range(0, 200).Select(i => i.ToString("D4")).ToList();
+                    await EdgeOutbox.Seed(store, name, expected);
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
+                    var received = new List<string>();
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { lock (received) received.Add(m.Text); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        await Eventually(() => { lock (received) return received.Count == expected.Count; }, "all 200 rows to be handled");
+                        lock (received) That(received.SequenceEqual(expected), "rows arrive in stored order, first out of order: " + string.Join(",", received.Where((t, i) => t != expected[i]).Take(3)));
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the dispatched rows to leave the outbox");
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("a large outbox backlog drains completely and exactly once", async () =>
+            {
+                var name = "bq.test.edge.outbox.volume." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    const int total = 1500;
+                    await EdgeOutbox.Seed(store, name, Enumerable.Range(0, total).Select(i => "v" + i));
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store, MaxConcurrency = 8 };
+                    var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen.AddOrUpdate(m.Text, 1, (key, n) => n + 1); return Task.CompletedTask; }));
+                    var started = DateTime.UtcNow;
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        for (var i = 0; i < 600 && seen.Count < total; i++) await Task.Delay(100);
+                        That(seen.Count == total, "all rows were handled, got " + seen.Count + " of " + total);
+                        Console.WriteLine("Outbox backlog of " + total + " drained in " + (DateTime.UtcNow - started).TotalSeconds.ToString("0.0") + "s.");
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");
+                        await Task.Delay(500);
+                        That(seen.Values.All(n => n == 1), "no row was handled twice: " + string.Join(",", seen.Where(p => p.Value != 1).Take(3).Select(p => p.Key)));
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("a crash between publishing and recording the dispatch causes a duplicate publish that the inbox absorbs", async () =>
+            {
+                var name = "bq.test.edge.outbox.crash." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    await EdgeOutbox.Seed(store, name, new[] { "only-once" });
+                    var crashing = new EdgeMarkFailsPersistence(store, failures: 2);
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = crashing };
+                    var handled = 0;
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { Interlocked.Increment(ref handled); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    {
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the row to be recorded as dispatched on the third attempt");
+                        await Eventually(() => Volatile.Read(ref handled) >= 1, "the message to be handled");
+                        await Task.Delay(1000);
+                        That(crashing.Handed >= 3, "the same row was handed to the dispatcher again after each failed recording: " + crashing.Handed);
+                        That(Volatile.Read(ref handled) == 1, "the receiver's inbox absorbed the duplicate publishes, handled " + handled);
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("two dispatchers on one database deliver every row exactly once", async () =>
+            {
+                var name = "bq.test.edge.outbox.twonodes." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var storeOne = await EdgeOutbox.Store(path, name);
+                    var storeTwo = await EdgeOutbox.Store(path, name);
+                    const int total = 120;
+                    await EdgeOutbox.Seed(storeOne, name, Enumerable.Range(0, total).Select(i => "n" + i));
+                    var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
+                    EndpointConfiguration Node(IPersistenceProvider store)
+                    {
+                        var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
+                        configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen.AddOrUpdate(m.Text, 1, (key, n) => n + 1); return Task.CompletedTask; }));
+                        return configuration;
+                    }
+                    using (var first = RabbitEndpoint.Start(Node(storeOne)))
+                    using (var second = RabbitEndpoint.Start(Node(storeTwo)))
+                    {
+                        for (var i = 0; i < 300 && seen.Count < total; i++) await Task.Delay(100);
+                        That(seen.Count == total, "every row was handled, got " + seen.Count + " of " + total);
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");
+                        await Task.Delay(1000);
+                        That(seen.Values.All(n => n == 1), "the inbox kept each row to one handling: " + string.Join(",", seen.Where(p => p.Value != 1).Take(3).Select(p => p.Key + "x" + p.Value)));
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("an unroutable row at the head of the outbox holds back the rows behind it until it can be routed", async () =>
+            {
+                // The outbox is a queue: a failed publish leaves its row pending, so nothing behind it is sent until it succeeds.
+                var name = "bq.test.edge.outbox.poison." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    await EdgeOutbox.Seed(store, name + ".nowhere", new[] { "unroutable" });
+                    var expected = Enumerable.Range(0, 5).Select(i => "behind" + i).ToList();
+                    await EdgeOutbox.Seed(store, name, expected);
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
+                    var received = new List<string>();
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { lock (received) received.Add(m.Text); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    using (var channel = connection.CreateModel())
+                    {
+                        await Task.Delay(2000);
+                        lock (received) That(received.Count == 0, "rows behind the unroutable head are held back, saw " + received.Count);
+                        That(await EdgeOutbox.Count(path, "bq_outbox") == 6, "every row is still pending, nothing was lost");
+                        channel.QueueDeclare(name + ".nowhere", true, false, false);
+                        await Eventually(() => { lock (received) return received.Count == 5; }, "the held rows to be sent once the head can be routed");
+                        lock (received) That(received.SequenceEqual(expected), "they arrive in stored order");
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
 
             foreach (var mode in new[] { "immediate", "delayed", "discard", "error" })
             {
