@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Bq.Messaging.Features;
+using Bq.Messaging.DeliveryConstraints;
+using Bq.Messaging.DelayedDelivery;
 
 namespace Bq.Messaging.Tests
 {
@@ -124,6 +126,7 @@ namespace Bq.Messaging.Tests
 
     public sealed class EdgeCaseLogProbe { }
     public sealed class EdgeFeatureHolder { }
+    public sealed class EdgeConstraint : Bq.Messaging.DeliveryConstraints.DeliveryConstraint { }
     public sealed class EdgeSagaData : IContainSagaData
     {
         public Guid Id { get; set; }
@@ -171,6 +174,7 @@ namespace Bq.Messaging.Tests
             await RunSettingsAndTestingCases();
             RunSerializationCases();
             await RunSagaSpiCases();
+            await RunSpiTypeCases();
             await RunInMemoryCases();
             Console.WriteLine("Edge case tests: " + passed + " passed, " + failures.Count + " failed.");
             if (failures.Count > 0) throw new Exception("Failed edge cases:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
@@ -589,6 +593,108 @@ namespace Bq.Messaging.Tests
             catch (T) { return; }
             catch (Exception ex) { throw new Exception(name + " threw " + ex.GetType().Name + " instead of " + typeof(T).Name); }
             throw new Exception(name + " did not throw " + typeof(T).Name);
+        }
+
+        sealed class EdgeStorageSession : Bq.Messaging.Persistence.CompletableSynchronizedStorageSession
+        {
+            public bool Completed, Disposed;
+            public System.Data.Common.DbConnection Connection => null;
+            public System.Data.Common.DbTransaction Transaction => null;
+            public Task CompleteAsync() { Completed = true; return Task.CompletedTask; }
+            public void Dispose() { Disposed = true; }
+        }
+
+        sealed class EdgeStorage : Bq.Messaging.Persistence.ISynchronizedStorage, Bq.Messaging.Persistence.ISynchronizedStorageAdapter
+        {
+            public readonly EdgeStorageSession Session = new EdgeStorageSession();
+            public bool AdaptOutbox, AdaptTransport;
+            public Task<Bq.Messaging.Persistence.CompletableSynchronizedStorageSession> OpenSession(ContextBag contextBag) =>
+                Task.FromResult<Bq.Messaging.Persistence.CompletableSynchronizedStorageSession>(Session);
+            public Task<Bq.Messaging.Persistence.CompletableSynchronizedStorageSession> TryAdapt(Bq.Messaging.Outbox.OutboxTransaction transaction, ContextBag context) =>
+                Task.FromResult<Bq.Messaging.Persistence.CompletableSynchronizedStorageSession>(AdaptOutbox ? Session : null);
+            public Task<Bq.Messaging.Persistence.CompletableSynchronizedStorageSession> TryAdapt(Bq.Messaging.Transport.TransportTransaction transaction, ContextBag context) =>
+                Task.FromResult<Bq.Messaging.Persistence.CompletableSynchronizedStorageSession>(AdaptTransport ? Session : null);
+        }
+
+        static async Task RunSpiTypeCases()
+        {
+            Case("delivery constraints live on the operation's context bag", () =>
+            {
+                var bag = new ContextBag();
+                var delay = new Bq.Messaging.DelayedDelivery.DelayDeliveryWith(TimeSpan.FromSeconds(5));
+                var at = new Bq.Messaging.DelayedDelivery.DoNotDeliverBefore(DateTime.UtcNow);
+                var ttl = new Bq.Messaging.Performance.TimeToBeReceived.DiscardIfNotReceivedBefore(TimeSpan.FromMinutes(1));
+                bag.AddDeliveryConstraint(delay); bag.AddDeliveryConstraint(at); bag.AddDeliveryConstraint(ttl);
+                That(bag.GetDeliveryConstraints().Count == 3 && delay.Delay == TimeSpan.FromSeconds(5) && ttl.MaxTime == TimeSpan.FromMinutes(1), "constraints are added");
+                That(bag.TryGetDeliveryConstraint<Bq.Messaging.DelayedDelivery.DelayedDeliveryConstraint>(out var first) && first == delay, "the first matching constraint is returned");
+                That(!bag.TryGetDeliveryConstraint<EdgeConstraint>(out var none) && none == null, "a missing constraint is absent");
+                bag.RemoveDeliveryConstraint(delay);
+                bag.RemoveDeliveryConstaint(at);
+                That(bag.GetDeliveryConstraints().Count == 1, "constraints are removed");
+                That(bag.TryRemoveDeliveryConstraint<Bq.Messaging.Performance.TimeToBeReceived.DiscardIfNotReceivedBefore>(out var removed) && removed == ttl, "TryRemove removes a match");
+                That(!bag.TryRemoveDeliveryConstraint<Bq.Messaging.Performance.TimeToBeReceived.DiscardIfNotReceivedBefore>(out _), "TryRemove reports a miss");
+                Throws<ArgumentNullException>(() => bag.AddDeliveryConstraint(null), "a null constraint");
+                Throws<ArgumentNullException>(() => ((ContextBag)null).GetDeliveryConstraints(), "a null bag");
+                Throws<NotSupportedException>(() => new EndpointConfiguration("x", new Uri("amqp://localhost/")).UseExternalTimeoutManager("tm"), "an external timeout manager");
+            });
+            Case("timeout SPI data types", () =>
+            {
+                var data = new Bq.Messaging.Timeout.Core.TimeoutData { Id = "t", Time = DateTime.UtcNow, Destination = "d", SagaId = Guid.NewGuid(), State = new byte[1], OwningTimeoutManager = "m", Headers = new Dictionary<string, string>() };
+                That(data.ToString().StartsWith("Timeout t due "), "timeout data describes itself");
+                var timeout = new Bq.Messaging.Timeout.Core.Timeout("t", data.Time);
+                var chunk = new Bq.Messaging.Timeout.Core.TimeoutsChunk(new[] { timeout }, data.Time);
+                That(chunk.DueTimeouts[0].Id == "t" && chunk.NextTimeToQuery == data.Time && timeout.DueTime == data.Time, "chunks carry timeouts");
+            });
+            await CaseAsync("synchronized storage adapter opens, adapts and completes sessions", async () =>
+            {
+                var storage = new EdgeStorage();
+                var adapter = new Bq.Messaging.Persistence.CompletableSynchronizedStorageSessionAdapter(storage, storage);
+                That(adapter.Connection == null && adapter.Transaction == null && adapter.AdaptedSession == null, "an unopened adapter has no session");
+                await adapter.CompleteAsync();
+                await adapter.Open(new ContextBag());
+                That(adapter.AdaptedSession == storage.Session, "Open uses the synchronized storage");
+                await adapter.CompleteAsync();
+                adapter.Dispose();
+                That(storage.Session.Completed && storage.Session.Disposed, "complete and dispose reach the session");
+                That(!await adapter.TryOpen((Bq.Messaging.Outbox.OutboxTransaction)null, new ContextBag()), "no outbox adaptation");
+                storage.AdaptOutbox = true;
+                That(await adapter.TryOpen((Bq.Messaging.Outbox.OutboxTransaction)null, new ContextBag()), "outbox adaptation");
+                storage.AdaptOutbox = false; storage.AdaptTransport = true;
+                That(await adapter.TryOpen(new Bq.Messaging.Transport.TransportTransaction(), new ContextBag()), "transport adaptation");
+                await Bq.Messaging.Persistence.CompletableSynchronizedStorageSessionAdapterExtensions.Open(adapter, null, new Bq.Messaging.Transport.TransportTransaction(), new ContextBag());
+                That(adapter.AdaptedSession != null, "the combined open falls back to the transport transaction");
+                var withoutAdapter = new Bq.Messaging.Persistence.CompletableSynchronizedStorageSessionAdapter(null, storage);
+                That(!await withoutAdapter.TryOpen(new Bq.Messaging.Transport.TransportTransaction(), new ContextBag()) &&
+                    !await withoutAdapter.TryOpen((Bq.Messaging.Outbox.OutboxTransaction)null, new ContextBag()), "no adapter adapts nothing");
+                Throws<ArgumentNullException>(() => new Bq.Messaging.Persistence.PersistenceSynchronizedStorage(null), "a missing provider");
+                var memory = new Bq.Messaging.Persistence.PersistenceSynchronizedStorage(new InMemoryPersistenceProvider("edge-sync"));
+                That(await memory.TryAdapt((Bq.Messaging.Outbox.OutboxTransaction)null, null) == null, "persistence storage adapts no outbox transaction");
+                using (var owned = await memory.OpenSession(new ContextBag())) { await owned.CompleteAsync(); }
+            });
+            await CaseAsync("pipeline context extension methods send, publish and reply with options", async () =>
+            {
+                var context = new Bq.Testing.TestableMessageHandlerContext { ReplyToAddress = "back" };
+                var message = new EdgeUowMessage();
+                await IPipelineContextExtensions.Send(context, "d", message);
+                await IPipelineContextExtensions.Send<EdgeUowMessage>(context, "d", m => m.Text = "x");
+                await IPipelineContextExtensions.SendLocal(context, message);
+                await IPipelineContextExtensions.SendLocal<EdgeUowMessage>(context, m => m.Text = "x");
+                await IPipelineContextExtensions.Send(context, message);
+                await IPipelineContextExtensions.Publish(context, message);
+                await IPipelineContextExtensions.Publish<EdgeUowMessage>(context);
+                await IPipelineContextExtensions.Send<EdgeUowMessage>(context, m => m.Text = "x");
+                await IPipelineContextExtensions.Publish<EdgeUowMessage>(context, m => m.Text = "x");
+                await IMessageProcessingContextExtensions.Reply(context, message);
+                await IMessageProcessingContextExtensions.Reply<EdgeUowMessage>(context, m => m.Text = "x");
+                await MessageOptionsExtensions.Send(context, "d", message);
+                await MessageOptionsExtensions.SendLocal(context, message);
+                await MessageOptionsExtensions.Publish<EdgeUowMessage>(context);
+                await MessageOptionsExtensions.Reply(context, message);
+                var recorded = context.Messages;
+                That(recorded.Count == 15, "recorded " + recorded.Count);
+                That(recorded[0].Destination == "d" && recorded[2].Operation == Bq.Testing.MessageOperation.SendLocal && recorded[6].Operation == Bq.Testing.MessageOperation.Publish, "operations are recorded");
+                That(recorded[9].Operation == Bq.Testing.MessageOperation.Reply && recorded[9].Destination == "back", "replies go to the reply address");
+            });
         }
 
         static async Task RunInMemoryCases()
