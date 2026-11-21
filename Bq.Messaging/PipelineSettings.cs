@@ -92,8 +92,8 @@ namespace Bq.Messaging
         }
 
         public string StepId { get; }
-        public Type BehaviorType { get; }
-        public string Description { get; }
+        public Type BehaviorType { get; protected set; }
+        public string Description { get; protected set; }
         internal Func<IBehavior> Factory { get; }
         public void InsertBefore(string id) => AddDependency(id, before: true, optional: false);
         public void InsertBeforeIfExists(string id) => AddDependency(id, before: true, optional: true);

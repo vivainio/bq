@@ -94,6 +94,19 @@ namespace Bq.Messaging
 
     public sealed class ErrorContext
     {
+        public ErrorContext(Exception exception, Dictionary<string, string> headers, string messageId, byte[] body,
+            Transport.TransportTransaction transportTransaction, int immediateProcessingFailures)
+            : this(exception, headers, messageId, body, transportTransaction, immediateProcessingFailures, new ContextBag()) { }
+
+        public ErrorContext(Exception exception, Dictionary<string, string> headers, string messageId, byte[] body,
+            Transport.TransportTransaction transportTransaction, int immediateProcessingFailures, ReadOnlyContextBag context)
+            : this(exception, immediateProcessingFailures - 1, 0, new IncomingMessage(messageId, headers, body), context)
+        {
+            TransportTransaction = transportTransaction;
+        }
+
+        public Transport.TransportTransaction TransportTransaction { get; }
+
         internal ErrorContext(Exception exception, int attempt, int cycle, IncomingMessage message, ReadOnlyContextBag extensions)
         {
             Exception = exception;

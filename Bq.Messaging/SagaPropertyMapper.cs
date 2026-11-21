@@ -6,6 +6,18 @@ using System.Reflection;
 
 namespace Bq.Messaging
 {
+    /// <summary>The pre-7 mapping hook passed to <c>ConfigureHowToFindSaga(IConfigureHowToFindSagaWithMessage)</c>.</summary>
+    public interface IConfigureHowToFindSagaWithMessage
+    {
+        void ConfigureMapping<TSagaEntity, TMessage>(Expression<Func<TSagaEntity, object>> sagaEntityProperty,
+            Expression<Func<TMessage, object>> messageProperty);
+    }
+
+    public interface IConfigureHowToFindSagaWithMessageHeaders
+    {
+        void ConfigureMapping<TSagaEntity>(Expression<Func<TSagaEntity, object>> sagaEntityProperty, string headerName);
+    }
+
     public interface IToSagaExpression<TData> where TData : class
     {
         void ToSaga(Expression<Func<TData, object>> sagaEntityProperty);
@@ -105,6 +117,24 @@ namespace Bq.Messaging
             type == typeof(byte) || type == typeof(sbyte) || type == typeof(short) || type == typeof(ushort) ||
             type == typeof(int) || type == typeof(uint) || type == typeof(long) || type == typeof(ulong);
 
+        internal IConfigureHowToFindSagaWithMessage AsLegacyConfiguration() => new LegacyConfiguration(this);
+
+        sealed class LegacyConfiguration : IConfigureHowToFindSagaWithMessage
+        {
+            readonly SagaPropertyMapper<TData> owner;
+            public LegacyConfiguration(SagaPropertyMapper<TData> owner) { this.owner = owner; }
+
+            public void ConfigureMapping<TSagaEntity, TMessage>(Expression<Func<TSagaEntity, object>> sagaEntityProperty,
+                Expression<Func<TMessage, object>> messageProperty)
+            {
+                if (typeof(TSagaEntity) != typeof(TData))
+                    throw new ArgumentException("Saga mappings must select properties of " + typeof(TData).FullName + ".");
+                var typed = (Expression<Func<TData, object>>)(object)sagaEntityProperty;
+                typeof(SagaPropertyMapper<TData>).GetMethod(nameof(Add), System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .MakeGenericMethod(typeof(TMessage)).Invoke(owner, new object[] { typed, messageProperty });
+            }
+        }
+
         internal void Apply<TSaga>(SagaMappings<TSaga, TData> target) where TSaga : Saga<TData>
         {
             foreach (var mapping in mappings.Values) mapping.Apply(target);
@@ -154,6 +184,14 @@ namespace Bq.Messaging
     {
         readonly Expression<Func<TMessage, object>> message;
         readonly Action<Expression<Func<TData, object>>, Expression<Func<TMessage, object>>> add;
+
+        public ToSagaExpression(IConfigureHowToFindSagaWithMessage sagaMessageFindingConfiguration, Expression<Func<TMessage, object>> messageProperty)
+        {
+            if (sagaMessageFindingConfiguration == null) throw new ArgumentNullException(nameof(sagaMessageFindingConfiguration));
+            message = messageProperty ?? throw new ArgumentNullException(nameof(messageProperty));
+            add = (sagaProperty, messageSelector) => typeof(IConfigureHowToFindSagaWithMessage).GetMethod(nameof(IConfigureHowToFindSagaWithMessage.ConfigureMapping))
+                .MakeGenericMethod(typeof(TData), typeof(TMessage)).Invoke(sagaMessageFindingConfiguration, new object[] { sagaProperty, messageSelector });
+        }
 
         internal ToSagaExpression(Expression<Func<TMessage, object>> message,
             Action<Expression<Func<TData, object>>, Expression<Func<TMessage, object>>> add)

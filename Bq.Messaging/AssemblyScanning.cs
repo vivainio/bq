@@ -48,7 +48,7 @@ namespace Bq.Messaging
         /// </summary>
         internal void ApplyAssemblyScanning()
         {
-            var excluded = new HashSet<string>(Scanner.ExcludedAssemblies.Select(Path.GetFileNameWithoutExtension), StringComparer.OrdinalIgnoreCase);
+            var excluded = new HashSet<string>(Scanner.ExcludedAssemblies.Select(AssemblyName), StringComparer.OrdinalIgnoreCase);
             var types = ScannedAssemblies(excluded).SelectMany(TypesOf)
                 .Where(type => type.IsClass && !type.IsAbstract && !type.IsGenericTypeDefinition && !Scanner.ExcludedTypes.Contains(type))
                 .Distinct().ToList();
@@ -116,7 +116,7 @@ namespace Bq.Messaging
                 () => (TSaga)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(TSaga)),
                 saga => { });
 
-        IEnumerable<Assembly> ScannedAssemblies(HashSet<string> excluded)
+        internal IEnumerable<Assembly> ScannedAssemblies(HashSet<string> excluded)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             bool Include(string name) => !string.IsNullOrEmpty(name) && !excluded.Contains(name) && seen.Add(name) &&
@@ -133,7 +133,7 @@ namespace Bq.Messaging
             foreach (var directory in directories.Where(Directory.Exists))
                 foreach (var file in Directory.GetFiles(directory, "*.dll", option))
                 {
-                    if (!Include(Path.GetFileNameWithoutExtension(file))) continue;
+                    if (!Include(AssemblyName(Path.GetFileName(file)))) continue;
                     Assembly loaded = null;
                     try { loaded = Assembly.LoadFrom(file); }
                     catch (Exception) when (!Scanner.ThrowExceptions) { }
@@ -142,6 +142,11 @@ namespace Bq.Messaging
                     if (loaded != null) yield return loaded;
                 }
         }
+
+        // Only .dll and .exe are file extensions; "Company.Product.Tests" is an assembly name with dots.
+        static string AssemblyName(string nameOrFile) =>
+            nameOrFile.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) || nameOrFile.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                ? nameOrFile.Substring(0, nameOrFile.Length - 4) : nameOrFile;
 
         static IEnumerable<Type> TypesOf(Assembly assembly)
         {

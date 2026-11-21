@@ -90,6 +90,9 @@ namespace Bq.Messaging
         internal void Initialize(TData data, Func<DateTimeOffset, object, Type, Task> request) { Data = data; BindTimeoutScheduler(request); }
         protected virtual void ConfigureHowToFindSaga(SagaPropertyMapper<TData> mapper) { }
 
+        /// <summary>The pre-7 mapping hook. It runs after <see cref="ConfigureHowToFindSaga(SagaPropertyMapper{TData})"/>, so a saga can use either.</summary>
+        protected virtual void ConfigureHowToFindSaga(IConfigureHowToFindSagaWithMessage sagaMessageFindingConfiguration) { }
+
         protected ToSagaExpression<TData, TMessage> ConfigureMapping<TMessage>(
             System.Linq.Expressions.Expression<Func<TMessage, object>> property) where TMessage : class =>
             new ToSagaExpression<TData, TMessage>(property,
@@ -100,7 +103,7 @@ namespace Bq.Messaging
         internal void ConfigureMappings(SagaPropertyMapper<TData> mapper)
         {
             configuringMapper = mapper;
-            try { ConfigureHowToFindSaga(mapper); }
+            try { ConfigureHowToFindSaga(mapper); ConfigureHowToFindSaga(mapper.AsLegacyConfiguration()); }
             finally { configuringMapper = null; }
         }
 

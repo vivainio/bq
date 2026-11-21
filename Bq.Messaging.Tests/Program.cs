@@ -1322,6 +1322,7 @@ namespace Bq.Messaging.Tests
                 {
                     seen[message.Text] = discriminator;
                     if (message.Text == "reply-to-this-instance") await context.Reply(new Response { Text = "answer" });
+                    if (message.Text == "reply-to-any-instance") await context.Reply(new Response { Text = "answer-any" });
                 }));
                 instanceConfig.Handle(() => new Handler<Response>((message, context) =>
                 {
@@ -1347,11 +1348,17 @@ namespace Bq.Messaging.Tests
                 var withReply = new SendOptions();
                 withReply.RouteReplyToThisInstance();
                 await first.Send(new Command { Text = "reply-to-this-instance" }, withReply);
+                var anyReply = new SendOptions();
+                anyReply.RouteReplyToAnyInstance();
+                Assert(anyReply.IsRoutingReplyToAnyInstance(), "reply-to-any-instance routing is readable from the options");
+                await WaitFor(() => Task.FromResult(seen.ContainsKey("response:answer")), "the reply to this instance arrives");
+                await first.Send(new Command { Text = "reply-to-any-instance" }, anyReply);
                 await WaitFor(() => Task.FromResult(seen.ContainsKey("to-b") && seen.ContainsKey("to-a") && seen.ContainsKey("response:answer")),
                     "instance-routed messages are delivered; saw " + string.Join(",", seen.Select(pair => pair.Key + "=" + pair.Value)));
                 Assert(seen["to-b"] == "b", "RouteToSpecificInstance delivers to the named instance");
                 Assert(seen["to-a"] == "a", "RouteToThisInstance delivers to the sending instance");
                 Assert(seen["response:answer"] == "a", "RouteReplyToThisInstance returns the reply to the sending instance");
+                await WaitFor(() => Task.FromResult(seen.ContainsKey("response:answer-any")), "RouteReplyToAnyInstance returns the reply to the shared queue");
             }
             Console.WriteLine("Instance routing tests passed.");
         }

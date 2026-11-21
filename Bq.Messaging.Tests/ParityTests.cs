@@ -52,6 +52,14 @@ namespace Bq.Messaging.Tests
         }
     }
 
+    public class LegacyState { public string OrderId { get; set; } }
+    public sealed class LegacyMappedSaga : Saga<LegacyState>, IAmStartedByMessages<StartOrder>
+    {
+        protected override void ConfigureHowToFindSaga(IConfigureHowToFindSagaWithMessage mapper) =>
+            new ToSagaExpression<LegacyState, StartOrder>(mapper, message => message.OrderId).ToSaga(data => data.OrderId);
+        public Task Handle(StartOrder message, IMessageHandlerContext context) => Task.CompletedTask;
+    }
+
     public class OrderedMessage { public string Text { get; set; } }
     public sealed class OrderedHandlerA : IHandleMessages<OrderedMessage>
     {
@@ -129,8 +137,62 @@ namespace Bq.Messaging.Tests
                 (typeof(Saga).IsAssignableFrom(type) || type.GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IHandleMessages<>))))
             .ToArray();
 
+        static void ParityUnitTests()
+        {
+            var legacy = Bq.Messaging.Sagas.SagaMetadata.Create(typeof(LegacyMappedSaga));
+            Assert(legacy.TryGetCorrelationProperty(out var legacyCorrelation) && legacyCorrelation.Name == "OrderId",
+                "the pre-7 ConfigureHowToFindSaga hook maps messages to saga properties");
+
+            var error = new ErrorContext(new InvalidOperationException("x"), new System.Collections.Generic.Dictionary<string, string>(), "m1", new byte[] { 1 },
+                new Bq.Messaging.Transport.TransportTransaction(), 3);
+            Assert(error.ImmediateProcessingFailures == 3 && error.Message.MessageId == "m1" && error.TransportTransaction != null,
+                "ErrorContext constructs from transport data");
+            var outgoing = new Bq.Messaging.Transport.OutgoingMessage("id", new System.Collections.Generic.Dictionary<string, string>(), new byte[0]);
+            Assert(outgoing.MessageId == "id", "the transport outgoing message type constructs");
+
+            var conventions = new EndpointConfiguration("conv-databus", new Uri("amqp://localhost/")).Conventions();
+            Assert(!conventions.Conventions.IsDataBusProperty(typeof(Response).GetProperty("Text")), "no property is a DataBus property");
+            var refused = false;
+            try { conventions.DefiningDataBusPropertiesAs(property => true); } catch (NotSupportedException) { refused = true; }
+            Assert(refused, "DataBus conventions fail at configuration time");
+            refused = false;
+            try { new EndpointConfiguration("conv-source", new Uri("amqp://localhost/")).CustomConfigurationSource(null); } catch (NotSupportedException) { refused = true; }
+            Assert(refused, "configuration sources fail at configuration time");
+
+            // Scanner options: assembly exclusion, and nested directory scanning of a copy of an assembly.
+            var excludedScan = new EndpointConfiguration("scan-exclude", new Uri("amqp://localhost/"));
+            excludedScan.AssemblyScanner().ScanFileSystemAssemblies = false;
+            excludedScan.AssemblyScanner().ExcludeTypes(AllHandlersExcept(typeof(OrderedHandlerA)));
+            excludedScan.ExcludeAssemblies("Bq.Messaging.Tests");
+            excludedScan.ApplyAssemblyScanning();
+            Assert(excludedScan.Handlers.Count == 0, "ExcludeAssemblies keeps an assembly out of the scan");
+            var includedScan = new EndpointConfiguration("scan-include", new Uri("amqp://localhost/"));
+            includedScan.AssemblyScanner().ScanFileSystemAssemblies = false;
+            includedScan.AssemblyScanner().ExcludeTypes(AllHandlersExcept(typeof(OrderedHandlerA)));
+            includedScan.ApplyAssemblyScanning();
+            Assert(includedScan.Handlers.Count == 1, "the same scan finds the handler when the assembly is not excluded");
+
+            var scanRoot = Path.Combine(Path.GetTempPath(), "bq-scan-" + Guid.NewGuid().ToString("N"));
+            var nested = Path.Combine(scanRoot, "plugins", "deep");
+            Directory.CreateDirectory(nested);
+            File.Copy(typeof(SqlitePersistence).Assembly.Location, Path.Combine(nested, "Nested.Copy.dll"));
+            System.Collections.Generic.List<string> Scan(bool nestedDirectories)
+            {
+                var scan = new EndpointConfiguration("scan-nested", new Uri("amqp://localhost/"));
+                scan.AssemblyScanner().ScanAppDomainAssemblies = false;
+                scan.AssemblyScanner().AdditionalAssemblyScanningPath = scanRoot;
+                scan.AssemblyScanner().ScanAssembliesInNestedDirectories = nestedDirectories;
+                return scan.ScannedAssemblies(new System.Collections.Generic.HashSet<string> { "Bq.Persistence.Sqlite" })
+                    .Select(assembly => assembly.GetName().Name).ToList();
+            }
+            Assert(!Scan(false).Contains("Bq.Persistence.Sqlite"), "nested directories are not scanned by default");
+            Assert(Scan(true).Contains("Bq.Persistence.Sqlite"), "ScanAssembliesInNestedDirectories scans below the path");
+            Directory.Delete(scanRoot, true);
+        }
+
         static async Task ParityIntegrationTests(Uri uri)
         {
+            ParityUnitTests();
             // Scanned saga and handlers, configured only through NServiceBus-style entry points, with file system scanning on.
             var sagaName = "bq.test.parity.saga." + Guid.NewGuid().ToString("N");
             var sagaPath = Path.Combine(Path.GetTempPath(), sagaName + ".db");
