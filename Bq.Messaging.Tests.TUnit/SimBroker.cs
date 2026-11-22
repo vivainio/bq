@@ -46,8 +46,8 @@ namespace Bq.Messaging.Tests.TUnitRunner
             var port = FreePort();
             var httpPort = FreePort();
             var data = Path.Combine(Path.GetTempPath(), "bq-sim-" + Guid.NewGuid().ToString("N") + ".db");
-            // Emulate RabbitMQ 4's stricter checks when this rabbit-sim can.
-            var strict = SupportsRabbitMqOption(executable) ? " --rabbitmq 4" : "";
+            // Emulate RabbitMQ 4.4: its stricter checks, and delayed messages on quorum queues.
+            const string strict = " --rabbitmq 4";
             var info = new ProcessStartInfo(executable, "--bind 127.0.0.1 --port " + port + " --http-port " + httpPort + strict + " --data \"" + data + "\"")
             {
                 UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
@@ -77,21 +77,6 @@ namespace Bq.Messaging.Tests.TUnitRunner
                 catch (SocketException) { Thread.Sleep(100); }
             }
             throw new InvalidOperationException("rabbit-sim did not listen on port " + port + ".");
-        }
-
-        static bool SupportsRabbitMqOption(string executable)
-        {
-            try
-            {
-                var info = new ProcessStartInfo(executable, "--help") { UseShellExecute = false, RedirectStandardError = true, RedirectStandardOutput = true, CreateNoWindow = true };
-                using (var help = Process.Start(info))
-                {
-                    var text = help.StandardError.ReadToEnd() + help.StandardOutput.ReadToEnd();
-                    help.WaitForExit(5000);
-                    return text.Contains("--rabbitmq");
-                }
-            }
-            catch (Exception) { return false; }
         }
 
         static string FindOnPath(string name)

@@ -390,7 +390,7 @@ namespace Bq.Messaging.Tests
         static bool OnSimulator => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BQ_RABBITSIM_HTTP"));
 
         // Sets rabbit-sim's fault injection to the behaviour in the JSON body; what it leaves out is off, so Chaos() turns it all off.
-        // False when there is no simulator, or this one does not have the endpoint.
+        // False when there is no simulator (a real broker). The simulator is always the latest one, so a refusal is an error.
         static async Task<bool> Chaos(string json = "{}")
         {
             var http = Environment.GetEnvironmentVariable("BQ_RABBITSIM_HTTP");
@@ -398,7 +398,8 @@ namespace Bq.Messaging.Tests
             using (var client = new System.Net.Http.HttpClient())
             {
                 var response = await client.PostAsync(http + "/chaos", new System.Net.Http.StringContent(json, System.Text.Encoding.UTF8, "application/json"));
-                return response.StatusCode != System.Net.HttpStatusCode.NotFound && response.IsSuccessStatusCode;
+                if (!response.IsSuccessStatusCode) throw new InvalidOperationException("rabbit-sim refused POST /chaos " + json + ": " + (int)response.StatusCode);
+                return true;
             }
         }
 
@@ -413,7 +414,8 @@ namespace Bq.Messaging.Tests
             using (var client = new System.Net.Http.HttpClient())
             {
                 var response = await client.PostAsync(http + path, null);
-                return response.IsSuccessStatusCode;
+                if (!response.IsSuccessStatusCode) throw new InvalidOperationException("rabbit-sim refused POST " + path + ": " + (int)response.StatusCode);
+                return true;
             }
         }
 
@@ -620,7 +622,7 @@ namespace Bq.Messaging.Tests
 
             await Case("slow acks and slow delivery keep concurrency within MaxConcurrency and handle every message once", async () =>
             {
-                if (!await Chaos()) { Console.WriteLine("Slow-ack test skipped: needs rabbit-sim with POST /chaos."); return; }
+                if (!await Chaos()) { Console.WriteLine("Slow-ack test skipped: needs rabbit-sim (BQ_RABBITSIM_HTTP)."); return; }
                 try
                 {
                     await Chaos("{\"deliver_delay_ms\":40,\"ack_delay_ms\":250}");
@@ -632,7 +634,7 @@ namespace Bq.Messaging.Tests
             });
             await Case("prefetch bounds the messages in flight even when MaxConcurrency is higher", async () =>
             {
-                if (!await Chaos()) { Console.WriteLine("Prefetch test skipped: needs rabbit-sim with POST /chaos."); return; }
+                if (!await Chaos()) { Console.WriteLine("Prefetch test skipped: needs rabbit-sim (BQ_RABBITSIM_HTTP)."); return; }
                 try
                 {
                     await Chaos("{\"deliver_delay_ms\":30,\"ack_delay_ms\":150}");
@@ -644,7 +646,7 @@ namespace Bq.Messaging.Tests
             });
             await Case("a handler slower than the delivery delay neither loses nor repeats a message", async () =>
             {
-                if (!await Chaos()) { Console.WriteLine("Slow-handler test skipped: needs rabbit-sim with POST /chaos."); return; }
+                if (!await Chaos()) { Console.WriteLine("Slow-handler test skipped: needs rabbit-sim (BQ_RABBITSIM_HTTP)."); return; }
                 try
                 {
                     await Chaos("{\"deliver_delay_ms\":50}");
@@ -661,21 +663,6 @@ namespace Bq.Messaging.Tests
                 Uri OnVhost(string vhost) => new UriBuilder(uri) { Path = "/" + vhost }.Uri;
                 var suffix = Guid.NewGuid().ToString("N");
                 var (hostA, hostB) = ("bq-a-" + suffix, "bq-b-" + suffix);
-                // An older simulator accepts any virtual host but keeps one namespace, so a queue declared on one shows on the other.
-                var probe = "bq.test.edge.vhostprobe." + suffix;
-                using (var a = new ConnectionFactory { Uri = OnVhost(hostA) }.CreateConnection())
-                using (var b = new ConnectionFactory { Uri = OnVhost(hostB) }.CreateConnection())
-                using (var ma = a.CreateModel())
-                {
-                    ma.QueueDeclare(probe, true, false, false);
-                    var shared = true;
-                    using (var mb = b.CreateModel())
-                    {
-                        try { mb.QueueDeclarePassive(probe); } catch (global::RabbitMQ.Client.Exceptions.OperationInterruptedException) { shared = false; }
-                    }
-                    ma.QueueDelete(probe);
-                    if (shared) { Console.WriteLine("Virtual host test skipped: needs rabbit-sim with virtual hosts."); return; }
-                }
                 var name = "bq.test.edge.vhost." + suffix;
                 var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
                 RabbitEndpoint Start(string vhost)
@@ -1288,7 +1275,7 @@ namespace Bq.Messaging.Tests
 
             await Case("batching beats one confirm per row when confirms are slow", async () =>
             {
-                if (!await Chaos()) { Console.WriteLine("Slow-confirm test skipped: needs rabbit-sim with POST /chaos."); return; }
+                if (!await Chaos()) { Console.WriteLine("Slow-confirm test skipped: needs rabbit-sim (BQ_RABBITSIM_HTTP)."); return; }
                 async Task<double> Drain(int batchSize)
                 {
                     var name = "bq.test.edge.slowconfirm." + batchSize + "." + Guid.NewGuid().ToString("N");
@@ -1322,7 +1309,7 @@ namespace Bq.Messaging.Tests
             });
             await Case("a batch the broker declines stays pending and is published again, and the inbox absorbs the duplicates", async () =>
             {
-                if (!await Chaos("{\"nack_next\":0}")) { Console.WriteLine("Nack test skipped: needs rabbit-sim with POST /chaos."); return; }
+                if (!await Chaos("{\"nack_next\":0}")) { Console.WriteLine("Nack test skipped: needs rabbit-sim (BQ_RABBITSIM_HTTP)."); return; }
                 var name = "bq.test.edge.nackbatch." + Guid.NewGuid().ToString("N");
                 var path = EdgeOutbox.NewPath(name);
                 try
@@ -1348,7 +1335,7 @@ namespace Bq.Messaging.Tests
             });
             await Case("a confirm that never comes in time raises the critical error and recovers when confirms are fast again", async () =>
             {
-                if (!await Chaos()) { Console.WriteLine("Stalled-confirm test skipped: needs rabbit-sim with POST /chaos."); return; }
+                if (!await Chaos()) { Console.WriteLine("Stalled-confirm test skipped: needs rabbit-sim (BQ_RABBITSIM_HTTP)."); return; }
                 var name = "bq.test.edge.stalledconfirm." + Guid.NewGuid().ToString("N");
                 var path = EdgeOutbox.NewPath(name);
                 try
