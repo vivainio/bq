@@ -8,7 +8,7 @@ using Bq.Messaging;
 
 namespace Bq.Persistence.Oracle
 {
-    public sealed partial class OraclePersistence : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence, IOutgoingFailureTracking
+    public sealed partial class OraclePersistence : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence, IOutgoingFailureTracking, IRetentionPersistence
     {
         const string Outbox = "bq_outbox";
         const string Scheduled = "bq_saga_timeout";
@@ -220,6 +220,35 @@ namespace Bq.Persistence.Oracle
                 "WHERE endpoint = :endpoint AND id = :id",
                 ("now", DateTime.UtcNow.Ticks), ("max", OutgoingRetry.MaxDelay.Ticks), ("base", OutgoingRetry.BaseDelay.Ticks), ("error", OutgoingRetry.Describe(failure)),
                 ("endpoint", endpoint), ("id", id));
+
+        public async Task<int> PurgeInbox(string name, DateTime claimedBeforeUtc, int maxRows)
+        {
+            CheckEndpoint(name);
+            using (var connection = await Open().ConfigureAwait(false))
+            using (var transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted))
+            {
+                var removed = await Execute(connection, transaction,
+                    "DELETE FROM bq_inbox WHERE endpoint = :endpoint AND claimed_ticks < :cutoff AND ROWNUM <= :max",
+                    ("endpoint", endpoint), ("cutoff", claimedBeforeUtc.Ticks), ("max", maxRows)).ConfigureAwait(false);
+                transaction.Commit();
+                return removed;
+            }
+        }
+
+        public async Task<int> PurgeRecovery(string name, DateTime failedBeforeUtc, int maxRows)
+        {
+            CheckEndpoint(name);
+            using (var connection = await Open().ConfigureAwait(false))
+            using (var transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted))
+            {
+                var removed = await Execute(connection, transaction,
+                    "DELETE FROM bq_recovery WHERE endpoint = :endpoint AND dispatched = 1 AND failed_ticks < :cutoff " +
+                    "AND (is_error = 0 OR replayed = 1) AND ROWNUM <= :max",
+                    ("endpoint", endpoint), ("cutoff", failedBeforeUtc.Ticks), ("max", maxRows)).ConfigureAwait(false);
+                transaction.Commit();
+                return removed;
+            }
+        }
 
         public async Task RecordOutgoingFailure(string name, string messageId, Exception failure)
         {

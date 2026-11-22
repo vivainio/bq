@@ -7,7 +7,7 @@ using Bq.Messaging;
 namespace Bq.Persistence.Sqlite
 {
     // Accepts an ADO.NET SQLite connection factory; the host selects the driver.
-    public sealed class SqlitePersistence : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence, IOutgoingFailureTracking
+    public sealed class SqlitePersistence : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence, IOutgoingFailureTracking, IRetentionPersistence
     {
         readonly Func<DbConnection> factory;
         readonly string endpoint;
@@ -28,7 +28,7 @@ namespace Bq.Persistence.Sqlite
             using (var c = await Open().ConfigureAwait(false))
             using (var cmd = c.CreateCommand())
             {
-                cmd.CommandText = @"CREATE TABLE IF NOT EXISTS bq_inbox (endpoint TEXT NOT NULL, message_id TEXT NOT NULL, PRIMARY KEY(endpoint,message_id));
+                cmd.CommandText = @"CREATE TABLE IF NOT EXISTS bq_inbox (endpoint TEXT NOT NULL, message_id TEXT NOT NULL, claimed_ticks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(endpoint,message_id));
 CREATE TABLE IF NOT EXISTS bq_outbox (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, headers BLOB, attempts INTEGER NOT NULL DEFAULT 0, retry_after_ticks INTEGER NOT NULL DEFAULT 0, last_error TEXT, PRIMARY KEY(endpoint,id));
 CREATE TABLE IF NOT EXISTS bq_saga_timeout (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, due_ticks INTEGER NOT NULL, headers BLOB, attempts INTEGER NOT NULL DEFAULT 0, retry_after_ticks INTEGER NOT NULL DEFAULT 0, last_error TEXT, PRIMARY KEY(endpoint,id));
 CREATE INDEX IF NOT EXISTS bq_saga_timeout_due ON bq_saga_timeout(endpoint,due_ticks);
@@ -166,6 +166,24 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             using (var c = await Open().ConfigureAwait(false))
             using (var cmd = Command(c, null, "DELETE FROM bq_outbox WHERE endpoint=@e AND id=@id; DELETE FROM bq_saga_timeout WHERE endpoint=@e AND id=@id", "@e", endpoint, "@id", id)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
+        public async Task<int> PurgeInbox(string name, DateTime claimedBeforeUtc, int maxRows)
+        {
+            CheckEndpoint(name);
+            using (var c = await Open().ConfigureAwait(false))
+            using (var cmd = Command(c, null, "DELETE FROM bq_inbox WHERE rowid IN (SELECT rowid FROM bq_inbox WHERE endpoint=@e AND claimed_ticks<@cutoff LIMIT @n)",
+                "@e", endpoint, "@cutoff", claimedBeforeUtc.Ticks, "@n", maxRows))
+                return await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+
+        public async Task<int> PurgeRecovery(string name, DateTime failedBeforeUtc, int maxRows)
+        {
+            CheckEndpoint(name);
+            using (var c = await Open().ConfigureAwait(false))
+            using (var cmd = Command(c, null, "DELETE FROM bq_recovery WHERE rowid IN (SELECT rowid FROM bq_recovery WHERE endpoint=@e AND dispatched=1 AND failed_ticks<@cutoff AND (is_error=0 OR replayed=1) LIMIT @n)",
+                "@e", endpoint, "@cutoff", failedBeforeUtc.Ticks, "@n", maxRows))
+                return await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+
         /// <summary>
         /// Defers an outgoing row whose publish was rejected. The row stays pending with its attempt count and the reason, and
         /// <see cref="NextOutgoing"/> skips it until the retry time so the rows behind it are sent first.
@@ -279,7 +297,7 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             {
                 if (name != endpoint) throw new InvalidOperationException("Persistence endpoint mismatch.");
                 if (string.IsNullOrEmpty(id)) throw new InvalidOperationException("A message ID is required for deduplication.");
-                using (var cmd = Command(Connection, Transaction, "INSERT OR IGNORE INTO bq_inbox(endpoint,message_id) VALUES(@e,@id)", "@e", endpoint, "@id", id)) return await cmd.ExecuteNonQueryAsync().ConfigureAwait(false) == 1;
+                using (var cmd = Command(Connection, Transaction, "INSERT OR IGNORE INTO bq_inbox(endpoint,message_id,claimed_ticks) VALUES(@e,@id,@now)", "@e", endpoint, "@id", id, "@now", DateTime.UtcNow.Ticks)) return await cmd.ExecuteNonQueryAsync().ConfigureAwait(false) == 1;
             }
             public async Task StoreOutgoing(OutgoingMessage m)
             {

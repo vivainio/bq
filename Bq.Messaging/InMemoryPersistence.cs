@@ -18,11 +18,11 @@ namespace Bq.Messaging
             new InMemoryPersistenceProvider(settings.Get<string>(EndpointConfiguration.EndpointNameKey));
     }
 
-    public sealed class InMemoryPersistenceProvider : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence, IOutgoingFailureTracking
+    public sealed class InMemoryPersistenceProvider : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence, IOutgoingFailureTracking, IRetentionPersistence
     {
         readonly object gate = new object();
         readonly string endpoint;
-        readonly HashSet<string> inbox = new HashSet<string>(StringComparer.Ordinal);
+        readonly Dictionary<string, DateTime> inbox = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         readonly HashSet<string> reserved = new HashSet<string>(StringComparer.Ordinal);
         readonly List<OutgoingMessage> outbox = new List<OutgoingMessage>();
         readonly List<(OutgoingMessage Message, DateTime Due)> timeouts = new List<(OutgoingMessage, DateTime)>();
@@ -73,6 +73,29 @@ namespace Bq.Messaging
                 rejected.Remove(id);
             }
             return Task.CompletedTask;
+        }
+
+        public Task<int> PurgeInbox(string name, DateTime claimedBeforeUtc, int maxRows)
+        {
+            Check(name);
+            lock (gate)
+            {
+                var old = inbox.Where(entry => entry.Value < claimedBeforeUtc).Take(maxRows).Select(entry => entry.Key).ToList();
+                foreach (var id in old) inbox.Remove(id);
+                return Task.FromResult(old.Count);
+            }
+        }
+
+        public Task<int> PurgeRecovery(string name, DateTime failedBeforeUtc, int maxRows)
+        {
+            Check(name);
+            lock (gate)
+            {
+                var old = recovery.Values.Where(record => record.Dispatched && record.FailedAtUtc < failedBeforeUtc && (!record.IsError || replayed.Contains(record.RecoveryId)))
+                    .Take(maxRows).Select(record => record.RecoveryId).ToList();
+                foreach (var id in old) { recovery.Remove(id); replayed.Remove(id); }
+                return Task.FromResult(old.Count);
+            }
         }
 
         /// <summary>Defers a row whose publish was rejected, so <see cref="NextOutgoing"/> offers the rows behind it first.</summary>
@@ -161,7 +184,7 @@ namespace Bq.Messaging
                 if (string.IsNullOrEmpty(messageId)) throw new InvalidOperationException("A message ID is required for deduplication.");
                 lock (owner.gate)
                 {
-                    if (owner.inbox.Contains(messageId) || owner.reserved.Contains(messageId)) return Task.FromResult(false);
+                    if (owner.inbox.ContainsKey(messageId) || owner.reserved.Contains(messageId)) return Task.FromResult(false);
                     owner.reserved.Add(messageId);
                     claims.Add(messageId);
                     return Task.FromResult(true);
@@ -236,7 +259,7 @@ namespace Bq.Messaging
                         var committed = owner.sagas.TryGetValue(pair.Key, out var stored) ? stored.Version : (long?)null;
                         if (committed != pair.Value.CommittedVersion) throw new SagaConcurrencyException("Saga was changed concurrently.");
                     }
-                    foreach (var claim in claims) { owner.reserved.Remove(claim); owner.inbox.Add(claim); }
+                    foreach (var claim in claims) { owner.reserved.Remove(claim); owner.inbox[claim] = DateTime.UtcNow; }
                     claims.Clear();
                     owner.outbox.AddRange(outgoing);
                     owner.timeouts.AddRange(scheduled.Select(entry => (entry.Item1, entry.Item2)));

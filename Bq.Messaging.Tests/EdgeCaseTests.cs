@@ -271,6 +271,7 @@ namespace Bq.Messaging.Tests
             RunSoftCheckCases();
             await RunSagaApiCases();
             await RunOutgoingRetryCases();
+            await RunRetentionCases();
             RunSagaSpiDetailCases();
             await RunInMemoryCases();
             return cases.ToList();
@@ -1198,6 +1199,73 @@ namespace Bq.Messaging.Tests
                     That((await store.ListPendingDispatches(10)).Single().Attempts == 4, "initializing again keeps the retry state");
                 }
                 finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+        }
+
+        static RecoveryRecord Recovered(string id, bool isError, DateTime failedAt) => new RecoveryRecord
+        {
+            RecoveryId = id, MessageId = "message-" + id, Cycle = 1, IsError = isError, ErrorQueue = isError ? "errors" : null, DueAtUtc = failedAt, FailedAtUtc = failedAt,
+            Payload = new byte[] { 1 }, ExceptionType = "t", ExceptionMessage = "m", ExceptionDetail = "d"
+        };
+
+        // The same expectations for every provider that can remove old inbox and recovery records.
+        public static async Task RetentionScenario<T>(T store, string endpoint) where T : IPersistenceProvider, IRecoveryPersistence, IRetentionPersistence
+        {
+            var old = DateTime.UtcNow.AddDays(-40);
+            using (var session = await store.OpenSession())
+            {
+                That(await session.TryClaimMessage(endpoint, "m1") && await session.TryClaimMessage(endpoint, "m2"), "two messages are claimed");
+                var recovery = (IRecoverySession)session;
+                await recovery.StoreRecovery(endpoint, Recovered("retry-sent", false, old));
+                await recovery.StoreRecovery(endpoint, Recovered("retry-waiting", false, old));
+                await recovery.StoreRecovery(endpoint, Recovered("error-listed", true, old));
+                await recovery.StoreRecovery(endpoint, Recovered("error-replayed", true, old));
+                session.Commit();
+            }
+            await store.MarkRecoveryDispatched(endpoint, "retry-sent");
+            await store.MarkRecoveryDispatched(endpoint, "error-listed");
+            await store.MarkRecoveryDispatched(endpoint, "error-replayed");
+            That(await store.ReplayError(endpoint, "error-replayed", Recovered("replay-copy", false, DateTime.UtcNow)), "one error is replayed");
+
+            That(await store.PurgeInbox(endpoint, DateTime.UtcNow.AddMinutes(-1), 100) == 0, "recent inbox rows stay");
+            That(await store.PurgeInbox(endpoint, DateTime.UtcNow.AddMinutes(1), 1) == 1, "a purge removes at most the batch size");
+            That(await store.PurgeInbox(endpoint, DateTime.UtcNow.AddMinutes(1), 100) == 1, "and the next purge removes the rest");
+            using (var session = await store.OpenSession())
+                That(await session.TryClaimMessage(endpoint, "m1"), "a purged message ID can be claimed again");
+
+            That(await store.PurgeRecovery(endpoint, DateTime.UtcNow.AddDays(-30), 100) == 2, "a sent retry and a replayed error are removed once old");
+            That(await store.PurgeRecovery(endpoint, DateTime.UtcNow.AddDays(1), 100) == 0, "a retry still waiting, a copy not yet sent and an error nobody replayed stay");
+            var errors = await store.ListErrors(endpoint, 10);
+            That(errors.Count == 1 && errors[0].RecoveryId == "error-listed", "the unreplayed error is still listed");
+            That(await store.GetError(endpoint, "error-replayed") == null, "the replayed error is gone");
+        }
+
+        static async Task RunRetentionCases()
+        {
+            await CaseAsync("the in-memory provider removes old inbox and finished recovery records", async () =>
+                await RetentionScenario(new InMemoryPersistenceProvider("edge-retention"), "edge-retention"));
+            await CaseAsync("SQLite removes old inbox and finished recovery records", async () =>
+            {
+                var name = "edge-retention-sqlite-" + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try { await RetentionScenario(await EdgeOutbox.Store(path, name), name); }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            Case("retention settings are validated and default to thirty days", () =>
+            {
+                var configuration = Configuration("edge-retention-defaults");
+                That(configuration.Retention.InboxRetention == TimeSpan.FromDays(30) && configuration.Retention.RecoveryRetention == TimeSpan.FromDays(30) &&
+                    configuration.Retention.CleanupInterval == TimeSpan.FromHours(1), "defaults");
+                foreach (var change in new Action<RetentionOptions>[]
+                {
+                    r => r.InboxRetention = TimeSpan.Zero, r => r.InboxRetention = TimeSpan.FromSeconds(-1),
+                    r => r.RecoveryRetention = TimeSpan.Zero, r => r.CleanupInterval = TimeSpan.Zero
+                })
+                {
+                    var invalid = new EndpointConfiguration("edge-retention-invalid", new Uri("amqp://localhost:1/")) { Persistence = new InMemoryPersistenceProvider("edge-retention-invalid") };
+                    change(invalid.Retention);
+                    Throws<ArgumentOutOfRangeException>(() => RabbitEndpoint.Start(invalid), "an invalid retention setting");
+                }
             });
         }
 

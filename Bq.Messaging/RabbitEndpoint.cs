@@ -264,6 +264,8 @@ namespace Bq.Messaging
 
                 var outbox = Task.Run(() => DispatchPending(false, stopping.Token));
                 dispatcher = sendOnly ? outbox : Task.WhenAll(outbox, Task.Run(() => DispatchPending(true, stopping.Token)));
+                if (configuration.Retention.Enabled && configuration.Persistence is IRetentionPersistence retention)
+                    dispatcher = Task.WhenAll(dispatcher, Task.Run(() => PurgeRetained(retention, configuration.Retention, stopping.Token)));
                 // A host callback can stop the endpoint, so shutdown must not wait for the callback.
                 if (criticalErrors != null) _ = Task.Run(() => criticalErrors.Run(() => connection.IsOpen));
             }
@@ -303,6 +305,7 @@ namespace Bq.Messaging
             if ((configuration.OnCriticalError != null || configuration.CriticalErrorAction != null) &&
                 configuration.CriticalErrorThreshold <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(configuration.CriticalErrorThreshold));
+            configuration.Retention.Validate();
             if (configuration.MaxConcurrency == 0) throw new ArgumentOutOfRangeException(nameof(configuration.MaxConcurrency));
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));
             var endpoint = new RabbitEndpoint(configuration);
@@ -744,6 +747,35 @@ namespace Bq.Messaging
                 if (returned) throw new OutgoingMessageRejectedException(message.Id, "Message was unroutable: " + message.RoutingKey);
             }
         }
+        // Removes old inbox and finished recovery records in batches. A failure is logged and tried again on the next round, because
+        // a record that lingers does no harm.
+        async Task PurgeRetained(IRetentionPersistence store, RetentionOptions options, CancellationToken cancellation)
+        {
+            const int batch = 5000;
+            var delay = options.CleanupInterval < TimeSpan.FromMinutes(1) ? options.CleanupInterval : TimeSpan.FromMinutes(1);
+            while (!cancellation.IsCancellationRequested)
+            {
+                try { await Task.Delay(delay, cancellation).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+                delay = options.CleanupInterval;
+                try
+                {
+                    var now = DateTime.UtcNow;
+                    int removed;
+                    if (options.InboxRetention.HasValue)
+                        do { removed = await store.PurgeInbox(configuration.Name, now - options.InboxRetention.Value, batch).ConfigureAwait(false); }
+                        while (removed >= batch && !cancellation.IsCancellationRequested);
+                    if (options.RecoveryRetention.HasValue)
+                        do { removed = await store.PurgeRecovery(configuration.Name, now - options.RecoveryRetention.Value, batch).ConfigureAwait(false); }
+                        while (removed >= batch && !cancellation.IsCancellationRequested);
+                }
+                catch (Exception ex)
+                {
+                    if (!cancellation.IsCancellationRequested) System.Diagnostics.Trace.TraceError("Retention cleanup failed: {0}", ex);
+                }
+            }
+        }
+
         async Task DispatchPending(bool recoveries, CancellationToken cancellation)
         {
             var probe = recoveries ? criticalErrors?.Recovery : criticalErrors?.Outbox;

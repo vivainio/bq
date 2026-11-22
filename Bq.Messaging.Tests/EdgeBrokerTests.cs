@@ -218,6 +218,13 @@ namespace Bq.Messaging.Tests
         public Task<bool> DispatchRecovery(string endpoint, Action<RecoveryRecord> publish) => inner.DispatchRecovery(endpoint, publish);
     }
 
+    // Lets the broker cases reach the shared retention scenario in EdgeCaseTests.
+    static class RetentionCheck
+    {
+        public static Task Run<T>(T store, string endpoint) where T : IPersistenceProvider, IRecoveryPersistence, IRetentionPersistence =>
+            EdgeCaseTests.RetentionScenario(store, endpoint);
+    }
+
     static class EdgeOutbox
     {
         public static string NewPath(string name) => System.IO.Path.Combine(System.IO.Path.GetTempPath(), name + ".db");
@@ -880,10 +887,9 @@ namespace Bq.Messaging.Tests
                         await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");
                         await Task.Delay(500);
                         That(seen.Values.All(n => n == 1), "no row was handled twice: " + string.Join(",", seen.Where(p => p.Value != 1).Take(3).Select(p => p.Key)));
-                        // Retention today: delivered outbox rows are removed, but there is no cleanup of the inbox, so it keeps one row per
-                        // handled message. When cleanup is added this is the assertion to change.
+                        // Delivered outbox rows are removed at once. Inbox rows stay for the retention period, 30 days by default.
                         That(await EdgeOutbox.Count(path, "bq_outbox") == 0, "delivered rows leave the outbox");
-                        That(await EdgeOutbox.Count(path, "bq_inbox") == total, "the inbox keeps a row for every handled message, found " + await EdgeOutbox.Count(path, "bq_inbox"));
+                        That(await EdgeOutbox.Count(path, "bq_inbox") == total, "the inbox keeps a row for every handled message within the retention period, found " + await EdgeOutbox.Count(path, "bq_inbox"));
                         That(await EdgeOutbox.Count(path, "bq_recovery") == 0, "no recovery records were created by successful handling");
                     }
                 }
@@ -1066,6 +1072,80 @@ namespace Bq.Messaging.Tests
                     channel.QueueDeclare(name + ".nowhere", true, false, false);
                     await Eventually(() => channel.MessageCount(name + ".nowhere") == 1, "the deferred row to be delivered after its retry time");
                 }
+            });
+
+            await Case("an endpoint removes old inbox and finished recovery rows in the background", async () =>
+            {
+                var name = "bq.test.edge.retention." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
+                    configuration.Recoverability.DelayedRetries = new[] { TimeSpan.FromMilliseconds(100) };
+                    configuration.DispatchPollInterval = TimeSpan.FromMilliseconds(50);
+                    configuration.Retention.InboxRetention = TimeSpan.FromSeconds(1);
+                    configuration.Retention.RecoveryRetention = TimeSpan.FromSeconds(1);
+                    configuration.Retention.CleanupInterval = TimeSpan.FromMilliseconds(100);
+                    configuration.Route(typeof(EdgeUowMessage), name);
+                    var handled = 0;
+                    var failedOnce = 0;
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) =>
+                    {
+                        if (m.Text == "flaky" && Interlocked.Increment(ref failedOnce) == 1) throw new ApplicationException("first attempt fails");
+                        Interlocked.Increment(ref handled);
+                        return Task.CompletedTask;
+                    }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        for (var i = 0; i < 3; i++) await endpoint.Send(new EdgeUowMessage { Text = "ok" + i });
+                        await endpoint.Send(new EdgeUowMessage { Text = "flaky" });
+                        await Eventually(() => Volatile.Read(ref handled) == 4, "all four messages to be handled");
+                        That(await EdgeOutbox.Count(path, "bq_inbox") > 0, "handled messages are in the inbox at first");
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_inbox").GetAwaiter().GetResult() == 0, "old inbox rows to be removed");
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_recovery").GetAwaiter().GetResult() == 0, "the sent retry record to be removed");
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("retention can be switched off so the inbox keeps every row", async () =>
+            {
+                var name = "bq.test.edge.retentionoff." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
+                    configuration.Retention.InboxRetention = null;
+                    configuration.Retention.RecoveryRetention = null;
+                    configuration.Retention.CleanupInterval = TimeSpan.FromMilliseconds(100);
+                    configuration.Route(typeof(EdgeUowMessage), name);
+                    var handled = 0;
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { Interlocked.Increment(ref handled); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        await endpoint.Send(new EdgeUowMessage { Text = "kept" });
+                        await Eventually(() => Volatile.Read(ref handled) == 1, "the message to be handled");
+                        await Task.Delay(1500);
+                        That(await EdgeOutbox.Count(path, "bq_inbox") == 1, "the inbox row is kept");
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("Oracle removes old inbox and finished recovery records", async () =>
+            {
+                var connectionString = Environment.GetEnvironmentVariable("BQ_ORACLE_CONNECTION_STRING");
+                if (string.IsNullOrEmpty(connectionString)) { Console.WriteLine("Oracle retention test skipped: set BQ_ORACLE_*."); return; }
+                var assembly = System.Reflection.Assembly.LoadFrom(Environment.GetEnvironmentVariable("BQ_ORACLE_DRIVER_ASSEMBLY"));
+                var connectionType = assembly.GetType(Environment.GetEnvironmentVariable("BQ_ORACLE_CONNECTION_TYPE"), throwOnError: true);
+                System.Data.Common.DbConnection Connect()
+                {
+                    var connection = (System.Data.Common.DbConnection)Activator.CreateInstance(connectionType);
+                    connection.ConnectionString = connectionString;
+                    return connection;
+                }
+                var name = "bq-oracle-retention-" + Guid.NewGuid().ToString("N");
+                await RetentionCheck.Run(new Bq.Persistence.Oracle.OraclePersistence(Connect, name), name);
             });
 
             foreach (var mode in new[] { "immediate", "delayed", "discard", "error" })

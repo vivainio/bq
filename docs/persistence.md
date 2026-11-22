@@ -51,6 +51,20 @@ This is an alternative transport design. Sharing a database in the current Rabbi
 
 Use `await store.GetDispatchBacklog()` to count pending outbox messages, due and scheduled saga timeouts, and due and scheduled recovery records for the SQLite endpoint. Counts include records awaiting publisher confirmation. Use `await store.ListPendingDispatches(limit: 100)` to inspect message IDs, dispatch kinds, exchanges, routing keys, and scheduled UTC times. Pass a `DispatchKind` such as `DispatchKind.Error` as the first argument to filter before applying the limit. The listing omits message bodies and its order is for inspection.
 
+## Retention
+
+An endpoint removes the records that only make delivery safe once they are old, so the tables do not grow without end. `config.Retention` sets how long each kind is kept:
+
+```csharp
+config.Retention.InboxRetention = TimeSpan.FromDays(14);    // default 30 days, null keeps every row
+config.Retention.RecoveryRetention = TimeSpan.FromDays(7);  // default 30 days, null keeps every row
+config.Retention.CleanupInterval = TimeSpan.FromHours(1);   // the default
+```
+
+- **Inbox rows** are removed when they are older than `InboxRetention`. The inbox is what stops a redelivered message from running twice, so keep it longer than any redelivery can take. A message that is redelivered after its inbox row is gone runs again.
+- **Recovery records** are removed when they are older than `RecoveryRetention` and finished: a retry that was sent, or a failed message that was replayed. A failed message nobody has replayed is never removed.
+- The cleanup runs in the background, in batches of 5,000 rows, first about a minute after start and then every `CleanupInterval`. A failure is logged and tried again on the next round. Outbox rows and scheduled rows leave the tables when they are published, so they need no cleanup.
+
 Delivery behavior of the outbox, each of which a test checks:
 
 - Rows are published in the order they were stored. A row that cannot be published because of the message itself, such as a mandatory message no queue accepts, is deferred: it stays pending with its attempt count and reason, and the rows behind it are sent. It is retried after a delay that starts at 100 milliseconds and doubles up to 30 seconds, and it is never dropped. A queue that appears a moment later is found quickly, and a row that never succeeds is tried every 30 seconds. A broker outage is not blamed on any row, so rows keep their place while the broker is away.
@@ -58,7 +72,7 @@ Delivery behavior of the outbox, each of which a test checks:
 - Several endpoint instances can dispatch from one database. With SQLite two dispatchers may each publish a row, and the inbox keeps each message to one handling. The Oracle provider locks the row while it publishes, so each row is published once.
 - A backlog of thousands of rows drains completely, and delivered rows leave the outbox.
 
-The inbox and recovery ledger currently have no retention cleanup, and the outbox has no dead-letter policy: a persistently unroutable command is retried every 30 seconds for as long as it exists, and `ListPendingDispatches` shows its `Attempts`, `LastError` and `RetryAfterUtc`. The SQLite dispatcher alternates preference between ordinary outbox messages and due saga timeouts on each poll. The SQLite provider is a first implementation intended for local or low-concurrency use, not a claim that SQLite supports distributed multi-host deployment. Run the provider against the exact filesystem, SQLite driver and Mono version used in production. Handler external effects, other databases, and sends made outside the handler context are not part of the transaction.
+The outbox has no dead-letter policy: a persistently unroutable command is retried every 30 seconds for as long as it exists, and `ListPendingDispatches` shows its `Attempts`, `LastError` and `RetryAfterUtc`. The SQLite dispatcher alternates preference between ordinary outbox messages and due saga timeouts on each poll. The SQLite provider is a first implementation intended for local or low-concurrency use, not a claim that SQLite supports distributed multi-host deployment. Run the provider against the exact filesystem, SQLite driver and Mono version used in production. Handler external effects, other databases, and sends made outside the handler context are not part of the transaction.
 
 Use `await store.ListReadyDispatches()` to inspect rows eligible for dispatch now. It accepts the same kind filter and limit. A row stays visible until Bq records confirmation, so the list can include a publish in flight.
 
