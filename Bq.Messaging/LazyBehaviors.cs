@@ -24,7 +24,7 @@ namespace Bq.Messaging
         static readonly Type[] ContextTypes =
         {
             typeof(IIncomingLogicalMessageContext), typeof(IIncomingPhysicalMessageContext), typeof(IInvokeHandlerContext),
-            typeof(ITransportReceiveContext), typeof(IOutgoingSendContext), typeof(IOutgoingPublishContext),
+            typeof(ITransportReceiveContext), typeof(IDeliveryContext), typeof(IOutgoingSendContext), typeof(IOutgoingPublishContext),
             typeof(IOutgoingReplyContext), typeof(IOutgoingLogicalMessageContext), typeof(IOutgoingPhysicalMessageContext)
         };
 

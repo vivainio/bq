@@ -16,6 +16,7 @@
     <ProjectReference Include="../Bq.Extensions.CastleWindsor/Bq.Extensions.CastleWindsor.csproj" />
     <ProjectReference Include="../Bq.Persistence.Oracle/Bq.Persistence.Oracle.csproj" />
     <ProjectReference Include="../Bq.Persistence.Sqlite/Bq.Persistence.Sqlite.csproj" />
+    <ProjectReference Include="../Bq.Messaging.MultiTenant/Bq.Messaging.MultiTenant.csproj" />
     <Reference Include="System.Transactions" />
     <Reference Include="System.Net.Http" />
     <PackageReference Include="TUnit" Version="*" />

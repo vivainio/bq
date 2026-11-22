@@ -29,6 +29,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Bq.Messaging.Tests.TUnit", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Bq.Reference.Net10", "Bq.Reference.Net10\Bq.Reference.Net10.csproj", "{CCA72F11-5518-4B37-83FC-61267A1E08C3}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Bq.Messaging.MultiTenant", "Bq.Messaging.MultiTenant\Bq.Messaging.MultiTenant.csproj", "{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -195,6 +197,18 @@ Global
 		{CCA72F11-5518-4B37-83FC-61267A1E08C3}.Release|x64.Build.0 = Release|Any CPU
 		{CCA72F11-5518-4B37-83FC-61267A1E08C3}.Release|x86.ActiveCfg = Release|Any CPU
 		{CCA72F11-5518-4B37-83FC-61267A1E08C3}.Release|x86.Build.0 = Release|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Debug|x64.Build.0 = Debug|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Debug|x86.Build.0 = Debug|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Release|x64.ActiveCfg = Release|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Release|x64.Build.0 = Release|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Release|x86.ActiveCfg = Release|Any CPU
+		{EA3A7D60-BFAE-4E79-988C-D16F6BA83077}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

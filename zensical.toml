@@ -18,6 +18,7 @@ nav = [
     { "Database schema" = "schema.md" },
     { "Sagas and timeouts" = "sagas.md" },
     { "Delayed delivery" = "delayed-delivery.md" },
+    { "Multi-tenant endpoints" = "multi-tenant.md" },
     { "Retries and replay" = "recoverability.md" },
     { "Troubleshooting" = "troubleshooting.md" },
   ] },

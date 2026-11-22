@@ -1,4 +1,5 @@
 using System;
+using Bq.Messaging.MultiTenant;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -260,6 +261,25 @@ namespace Bq.Messaging.Tests
     {
         public static Task Run<T>(T store, string endpoint) where T : IPersistenceProvider, IRecoveryPersistence, IRetentionPersistence =>
             EdgeCaseTests.RetentionScenario(store, endpoint);
+    }
+
+    // The ambient value a delivery behavior sets, as a tenant would be.
+    public static class EdgeAmbient { public static readonly System.Threading.AsyncLocal<string> Value = new System.Threading.AsyncLocal<string>(); }
+
+    public sealed class EdgeAmbientBehavior : Behavior<IDeliveryContext>
+    {
+        public static int Calls;
+        public static string Mode = "pass";
+        public override async Task Invoke(IDeliveryContext context, Func<Task> next)
+        {
+            System.Threading.Interlocked.Increment(ref Calls);
+            context.Headers.TryGetValue("tenant", out var tenant);
+            if (Mode == "reject" || tenant == null) throw new InvalidOperationException("no tenant on message " + context.MessageId);
+            if (Mode == "skip") return;
+            EdgeAmbient.Value.Value = tenant;
+            try { await next(); }
+            finally { EdgeAmbient.Value.Value = null; }
+        }
     }
 
     static class EdgeOutbox
@@ -835,6 +855,293 @@ namespace Bq.Messaging.Tests
                 try { RabbitEndpoint.Start(configuration).Dispose(); } catch (InvalidOperationException ex) { refused = ex.Message.Contains("quorum"); }
                 That(refused, "start-up fails and names quorum queues");
                 return Task.CompletedTask;
+            });
+
+            await Case("a delivery behavior's ambient value reaches the session, the handler and the failure handling", async () =>
+            {
+                var name = "bq.test.edge.delivery." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var opened = new System.Collections.Concurrent.ConcurrentQueue<string>();
+                    var recording = false;
+                    var store = new Bq.Persistence.Sqlite.SqlitePersistence(() => { if (recording) opened.Enqueue(EdgeAmbient.Value.Value ?? "(none)"); return EdgeOutbox.Connect(path); }, name);
+                    await store.Initialize();
+                    recording = true;
+                    EdgeAmbientBehavior.Mode = "pass"; EdgeAmbientBehavior.Calls = 0;
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store, ImmediateRetries = 0 };
+                    configuration.Recoverability.DelayedRetries = new TimeSpan[0];
+                    configuration.Pipeline.Register("edge-ambient", new EdgeAmbientBehavior(), "Set an ambient value");
+                    var handled = new System.Collections.Concurrent.ConcurrentQueue<string>();
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) =>
+                    {
+                        handled.Enqueue(m.Text + "@" + EdgeAmbient.Value.Value);
+                        if (m.Text == "fail") throw new ApplicationException("handler failed");
+                        return Task.CompletedTask;
+                    }));
+                    var errored = new TaskCompletionSource<FailedMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    configuration.Notifications.Errors.MessageSentToErrorQueue += (sender, message) => errored.TrySetResult(message);
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    using (var channel = connection.CreateModel())
+                    {
+                        var format = new Bq.Messaging.Serialization.MessagePackSerialization().CreateWireFormat();
+                        void Deliver(string text, string tenant)
+                        {
+                            var props = channel.CreateBasicProperties();
+                            props.MessageId = Guid.NewGuid().ToString("N"); props.Type = EndpointConfiguration.MessageType(typeof(EdgeUowMessage));
+                            props.ContentType = format.ContentType; props.Persistent = true;
+                            if (tenant != null) props.Headers = new Dictionary<string, object> { ["tenant"] = tenant };
+                            channel.BasicPublish("", name, props, format.Serialize(typeof(EdgeUowMessage), new EdgeUowMessage { Text = text }));
+                        }
+                        Deliver("ok", "acme");
+                        await Eventually(() => handled.Count == 1, "the first message", 10);
+                        That(handled.Single() == "ok@acme", "the handler sees the tenant the behavior set: " + handled.Single());
+                        Deliver("fail", "globex");
+                        var failed = await Task.WhenAny(errored.Task, Task.Delay(10000));
+                        That(failed == errored.Task, "the failed message goes to the error queue");
+                        // The dispatcher's own polling opens connections too, with no tenant, so look only at the tenants that were set.
+                        That(opened.Count(tenant => tenant == "acme") >= 1, "the session for the first message saw its tenant: " + string.Join(",", opened));
+                        That(opened.Count(tenant => tenant == "globex") >= 2,
+                            "the failing message's processing session and the one that records its failure both saw its tenant: " + string.Join(",", opened));
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("a delivery behavior that throws sends the message to the error queue without opening the database", async () =>
+            {
+                var name = "bq.test.edge.deliveryreject." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var opened = 0;
+                    var store = new Bq.Persistence.Sqlite.SqlitePersistence(() => { System.Threading.Interlocked.Increment(ref opened); return EdgeOutbox.Connect(path); }, name);
+                    await store.Initialize();
+                    EdgeAmbientBehavior.Mode = "pass"; EdgeAmbientBehavior.Calls = 0;
+                    // Polling is slowed so that, once it has started, the only thing that could open a connection is the delivery.
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store, DispatchPollInterval = TimeSpan.FromHours(1) };
+                    configuration.Pipeline.Register("edge-ambient", new EdgeAmbientBehavior(), "Set an ambient value");
+                    var handled = 0;
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { System.Threading.Interlocked.Increment(ref handled); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    using (var channel = connection.CreateModel())
+                    {
+                        await Task.Delay(800);
+                        var baseline = opened;
+                        var format = new Bq.Messaging.Serialization.MessagePackSerialization().CreateWireFormat();
+                        var props = channel.CreateBasicProperties();
+                        props.MessageId = "no-tenant-1"; props.Type = EndpointConfiguration.MessageType(typeof(EdgeUowMessage));
+                        props.ContentType = format.ContentType; props.Persistent = true;
+                        channel.BasicPublish("", name, props, format.Serialize(typeof(EdgeUowMessage), new EdgeUowMessage { Text = "x" }));
+                        BasicGetResult failed = null;
+                        await Eventually(() => (failed = channel.BasicGet(name + ".error", true)) != null, "the message in the error queue", 10);
+                        var headers = failed.BasicProperties.Headers;
+                        That(headers.ContainsKey("x-bq-failure-message") && System.Text.Encoding.UTF8.GetString((byte[])headers["x-bq-failure-message"]).Contains("no tenant"),
+                            "the reason is in the headers of the error copy");
+                        That(System.Text.Encoding.UTF8.GetString((byte[])headers[Bq.Messaging.Faults.FaultsHeaderKeys.FailedQ]) == name, "the failing endpoint is named");
+                        That(failed.BasicProperties.MessageId == "no-tenant-1", "the message ID is kept");
+                        await Task.Delay(500);
+                        That(handled == 0 && opened == baseline, "the handler never ran and the database was not opened for the delivery: handled " + handled + ", opened " + (opened - baseline) + " more");
+                        That(channel.MessageCount(name) == 0, "the delivery was acknowledged, so it is not redelivered");
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("a delivery behavior that returns without calling next discards the message", async () =>
+            {
+                var name = "bq.test.edge.deliveryskip." + Guid.NewGuid().ToString("N");
+                EdgeAmbientBehavior.Mode = "skip"; EdgeAmbientBehavior.Calls = 0;
+                try
+                {
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                    configuration.Pipeline.Register("edge-ambient", new EdgeAmbientBehavior(), "Skip the message");
+                    var handled = 0;
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { System.Threading.Interlocked.Increment(ref handled); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    using (var channel = connection.CreateModel())
+                    {
+                        var format = new Bq.Messaging.Serialization.MessagePackSerialization().CreateWireFormat();
+                        var props = channel.CreateBasicProperties();
+                        props.MessageId = "skipped-1"; props.Type = EndpointConfiguration.MessageType(typeof(EdgeUowMessage));
+                        props.ContentType = format.ContentType; props.Headers = new Dictionary<string, object> { ["tenant"] = "acme" };
+                        channel.BasicPublish("", name, props, format.Serialize(typeof(EdgeUowMessage), new EdgeUowMessage { Text = "x" }));
+                        await Eventually(() => EdgeAmbientBehavior.Calls == 1, "the behavior to see the delivery", 10);
+                        await Task.Delay(800);
+                        That(handled == 0 && channel.MessageCount(name) == 0 && channel.MessageCount(name + ".error") == 0, "it was acknowledged and neither handled nor sent to the error queue");
+                    }
+                }
+                finally { EdgeAmbientBehavior.Mode = "pass"; }
+            });
+
+            // ---- multi-tenant: one database per tenant ----
+            // An endpoint whose tenants each have a SQLite file. "down" is a tenant whose database cannot be opened.
+            async Task<(RabbitEndpoint Endpoint, Bq.Messaging.MultiTenant.TenantPersistence Persistence, string Name, Func<string, string> Path,
+                System.Collections.Concurrent.ConcurrentQueue<string> Handled, EndpointConfiguration Configuration)> TenantEndpoint(string label, string[] tenants, string[] catalog = null)
+            {
+                var name = "bq.test.edge.tenant." + label + "." + Guid.NewGuid().ToString("N");
+                string PathOf(string tenant) => EdgeOutbox.NewPath(name + "." + tenant);
+                var configuration = new EndpointConfiguration(name, uri) { ImmediateRetries = 0 };
+                configuration.Recoverability.DelayedRetries = new TimeSpan[0];
+                configuration.Route(typeof(EdgeUowMessage), name);
+                var persistence = configuration.UseTenants(tenant => tenant == "down"
+                    ? new Bq.Persistence.Sqlite.SqlitePersistence(() => throw new System.IO.IOException("the database of tenant 'down' is unreachable"), name)
+                    : new Bq.Persistence.Sqlite.SqlitePersistence(() => EdgeOutbox.Connect(PathOf(tenant)), name),
+                    options => { options.Tenants = () => Task.FromResult<IReadOnlyList<string>>(catalog ?? tenants); options.MaxIdleInterval = TimeSpan.FromSeconds(1); });
+                foreach (var tenant in tenants.Where(t => t != "down")) await persistence.InitializeTenant(tenant);
+                var handled = new System.Collections.Concurrent.ConcurrentQueue<string>();
+                configuration.Handle(() => new Handler<EdgeUowMessage>(async (m, c) =>
+                {
+                    handled.Enqueue(m.Text + "@" + Bq.Messaging.MultiTenant.Tenant.Current);
+                    if (m.Text == "boom") throw new ApplicationException("boom");
+                    if (m.Text == "first")
+                    {
+                        await c.SendLocal(new EdgeUowMessage { Text = "follow-up" });
+                        await c.SendLocalAt(new EdgeUowMessage { Text = "delayed" }, DateTimeOffset.UtcNow.AddMilliseconds(1500));
+                    }
+                }));
+                return (RabbitEndpoint.Start(configuration), persistence, name, PathOf, handled, configuration);
+            }
+            void DeleteTenantFiles(string name, params string[] tenants)
+            {
+                foreach (var tenant in tenants) { var file = EdgeOutbox.NewPath(name + "." + tenant); if (System.IO.File.Exists(file)) System.IO.File.Delete(file); }
+            }
+
+            await Case("each tenant's messages, follow-ups and delayed messages stay in its own database", async () =>
+            {
+                var t = await TenantEndpoint("isolation", new[] { "acme", "globex" });
+                try
+                {
+                    using (t.Endpoint)
+                    {
+                        using (Bq.Messaging.MultiTenant.Tenant.Scope("acme")) await t.Endpoint.Send(new EdgeUowMessage { Text = "first" });
+                        using (Bq.Messaging.MultiTenant.Tenant.Scope("globex")) await t.Endpoint.Send(new EdgeUowMessage { Text = "other" });
+                        await Eventually(() => t.Handled.Count == 4, "four messages: acme's first, follow-up and delayed, and globex's", 20);
+                        var seen = t.Handled.OrderBy(x => x).ToArray();
+                        That(seen.SequenceEqual(new[] { "delayed@acme", "first@acme", "follow-up@acme", "other@globex" }),
+                            "every message was handled under its own tenant, which a follow-up and a delayed message keep: " + string.Join(",", seen));
+                    }
+                    That(await EdgeOutbox.Count(t.Path("acme"), "bq_inbox") == 3, "acme's database holds its three messages: " + await EdgeOutbox.Count(t.Path("acme"), "bq_inbox"));
+                    That(await EdgeOutbox.Count(t.Path("globex"), "bq_inbox") == 1, "globex's database holds only its own: " + await EdgeOutbox.Count(t.Path("globex"), "bq_inbox"));
+                    That(await EdgeOutbox.Count(t.Path("acme"), "bq_outbox") == 0 && await EdgeOutbox.Count(t.Path("globex"), "bq_outbox") == 0, "both outboxes were published");
+                    // Retention visits every tenant in the catalogue, with no tenant set.
+                    var purged = await t.Persistence.PurgeInbox(t.Name, DateTime.UtcNow.AddDays(1), 1000);
+                    That(purged == 4, "retention removed the inbox rows of both tenants: " + purged);
+                    That(await EdgeOutbox.Count(t.Path("acme"), "bq_inbox") == 0 && await EdgeOutbox.Count(t.Path("globex"), "bq_inbox") == 0, "and none are left");
+                }
+                finally { DeleteTenantFiles(t.Name, "acme", "globex"); }
+            });
+            await Case("work with no tenant fails closed, and a delivery with no tenant or an unknown one goes to the error queue", async () =>
+            {
+                var t = await TenantEndpoint("reject", new[] { "acme" });
+                try
+                {
+                    using (t.Endpoint)
+                    using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    using (var channel = connection.CreateModel())
+                    {
+                        Exception refusal = null;
+                        try { await t.Endpoint.Send(new EdgeUowMessage { Text = "nobody" }); } catch (Exception ex) { refusal = ex; }
+                        That(refusal != null, "a send outside any tenant scope is refused");
+                        That(refusal is Bq.Messaging.MultiTenant.TenantNotSetException || refusal?.InnerException is Bq.Messaging.MultiTenant.TenantNotSetException,
+                            "and the reason is that no tenant is set: " + refusal);
+                        // An explicit tenant header is left alone, so a send on behalf of a named tenant works without a scope.
+                        var explicitSend = new SendOptions();
+                        explicitSend.SetHeader("tenant-id", "acme");
+                        await t.Endpoint.Send(new EdgeUowMessage { Text = "explicit" }, explicitSend);
+                        await Eventually(() => t.Handled.Contains("explicit@acme"), "the explicitly addressed message to be handled under acme", 10);
+                        t.Handled.TryDequeue(out _);
+                        var format = new Bq.Messaging.Serialization.MessagePackSerialization().CreateWireFormat();
+                        void Deliver(string id, string tenant)
+                        {
+                            var props = channel.CreateBasicProperties();
+                            props.MessageId = id; props.Type = EndpointConfiguration.MessageType(typeof(EdgeUowMessage));
+                            props.ContentType = format.ContentType; props.Persistent = true;
+                            if (tenant != null) props.Headers = new Dictionary<string, object> { ["tenant-id"] = tenant };
+                            channel.BasicPublish("", t.Name, props, format.Serialize(typeof(EdgeUowMessage), new EdgeUowMessage { Text = id }));
+                        }
+                        Deliver("no-tenant", null);
+                        Deliver("unknown-tenant", "initech");
+                        var errors = new Dictionary<string, string>();
+                        await Eventually(() =>
+                        {
+                            BasicGetResult r;
+                            while ((r = channel.BasicGet(t.Name + ".error", true)) != null)
+                                errors[r.BasicProperties.MessageId] = System.Text.Encoding.UTF8.GetString((byte[])r.BasicProperties.Headers["x-bq-failure-message"]);
+                            return errors.Count == 2;
+                        }, "both rejected messages in the error queue", 15);
+                        That(errors["no-tenant"].Contains("no tenant") || errors["no-tenant"].Contains("tenant-id"), "a missing tenant is named: " + errors["no-tenant"]);
+                        That(errors["unknown-tenant"].Contains("initech"), "an unknown tenant is named: " + errors["unknown-tenant"]);
+                        That(t.Handled.IsEmpty, "no handler ran");
+                    }
+                }
+                finally { DeleteTenantFiles(t.Name, "acme"); }
+            });
+            await Case("failed messages are inspected and replayed for one tenant, the current one", async () =>
+            {
+                var t = await TenantEndpoint("errors", new[] { "acme", "globex" });
+                try
+                {
+                    using (t.Endpoint)
+                    {
+                        using (Bq.Messaging.MultiTenant.Tenant.Scope("acme")) await t.Endpoint.Send(new EdgeUowMessage { Text = "boom" });
+                        using (Bq.Messaging.MultiTenant.Tenant.Scope("acme"))
+                        {
+                            IReadOnlyList<RecoveryRecord> errors = null;
+                            await Eventually(() => (errors = t.Endpoint.ListErrors().GetAwaiter().GetResult()).Count == 1, "the failure to be recorded in acme's database", 15);
+                            That(errors.Single().ExceptionMessage == "boom", "the record is acme's failure");
+                        }
+                        using (Bq.Messaging.MultiTenant.Tenant.Scope("globex"))
+                            That((await t.Endpoint.ListErrors()).Count == 0, "another tenant sees none of acme's failures");
+                        var refused = false;
+                        try { await t.Endpoint.ListErrors(); } catch (Bq.Messaging.MultiTenant.TenantNotSetException) { refused = true; }
+                        That(refused, "inspection with no tenant is refused");
+                    }
+                }
+                finally { DeleteTenantFiles(t.Name, "acme", "globex"); }
+            });
+            await Case("a tenant whose database is down does not stop the others", async () =>
+            {
+                var t = await TenantEndpoint("down", new[] { "acme", "down" });
+                try
+                {
+                    using (t.Endpoint)
+                    {
+                        // Give the dispatcher time to try the tenant that is down, so the work below has to get past it.
+                        await Task.Delay(1500);
+                        using (Bq.Messaging.MultiTenant.Tenant.Scope("acme")) await t.Endpoint.Send(new EdgeUowMessage { Text = "first" });
+                        await Eventually(() => t.Handled.Count == 3, "acme's three messages while another tenant's database is down", 20);
+                        That(t.Handled.All(h => h.EndsWith("@acme")), "all were acme's: " + string.Join(",", t.Handled));
+                    }
+                }
+                finally { DeleteTenantFiles(t.Name, "acme"); }
+            });
+            await Case("rows left in a tenant's outbox by a crash are published by the background sweep", async () =>
+            {
+                var t = await TenantEndpoint("sweep", new[] { "acme", "globex" });
+                try
+                {
+                    using (t.Endpoint)
+                    {
+                        // Rows written straight into globex's database, as a process that crashed before publishing would leave them, with no activity in the tenant.
+                        var store = new Bq.Persistence.Sqlite.SqlitePersistence(() => EdgeOutbox.Connect(t.Path("globex")), t.Name);
+                        var format = new Bq.Messaging.Serialization.MessagePackSerialization().CreateWireFormat();
+                        using (var session = await store.OpenSession())
+                        {
+                            foreach (var text in new[] { "left-1", "left-2" })
+                                await session.StoreOutgoing(new OutgoingMessage
+                                {
+                                    Id = Guid.NewGuid().ToString("N"), Type = EndpointConfiguration.MessageType(typeof(EdgeUowMessage)), Exchange = "", RoutingKey = t.Name, Mandatory = true,
+                                    Headers = new Dictionary<string, object> { ["tenant-id"] = "globex" }, Body = format.Serialize(typeof(EdgeUowMessage), new EdgeUowMessage { Text = text })
+                                });
+                            session.Commit();
+                        }
+                        await Eventually(() => t.Handled.Count == 2, "both left-behind rows to be published and handled", 20);
+                        That(t.Handled.OrderBy(x => x).SequenceEqual(new[] { "left-1@globex", "left-2@globex" }), "handled under globex: " + string.Join(",", t.Handled));
+                    }
+                }
+                finally { DeleteTenantFiles(t.Name, "acme", "globex"); }
             });
 
             foreach (var viaContainer in new[] { false, true })
@@ -1671,6 +1978,8 @@ namespace Bq.Messaging.Tests
         public static async Task RunOne(Uri uri, string name)
         {
             var found = (await Collect(uri)).Single(c => c.Name == name);
+            // The simulator's clock is shared and stays advanced, which would make a delivery time look due, so every case starts at real time.
+            await ResetClock();
             await found.Body();
         }
 
@@ -1680,7 +1989,7 @@ namespace Bq.Messaging.Tests
             var all = await Collect(uri);
             foreach (var (name, body) in all)
             {
-                try { await body(); }
+                try { await ResetClock(); await body(); }
                 catch (Exception ex) { failures.Add(name + ": " + ex.Message); }
             }
             Console.WriteLine("Edge broker tests: " + (all.Count - failures.Count) + " passed, " + failures.Count + " failed.");

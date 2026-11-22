@@ -49,6 +49,8 @@ namespace Bq.Messaging
         readonly bool hasPhysicalBehaviors;
         readonly Func<TransportReceiveContext, Func<Task>, Task> receive;
         readonly bool hasReceiveBehaviors;
+        readonly Func<DeliveryContext, Func<Task>, Task> delivery;
+        readonly bool hasDeliveryBehaviors;
         internal EndpointConfiguration Configuration => configuration;
         readonly Func<FailedMessage, Task> errorQueueNotification;
         readonly Func<ImmediateRetryMessage, Task> immediateRetryNotification;
@@ -177,6 +179,8 @@ namespace Bq.Messaging
             outgoingStages = configuration.Incoming.BuildOutgoing(configuration.Pipeline);
             receive = configuration.Incoming.BuildReceive(configuration.Pipeline);
             hasReceiveBehaviors = configuration.Incoming.HasReceiveBehaviors;
+            delivery = configuration.Incoming.BuildDelivery(configuration.Pipeline);
+            hasDeliveryBehaviors = configuration.Incoming.HasDeliveryBehaviors;
             configuration.InvokeHandlerChain = configuration.Incoming.BuildInvokeHandler(configuration.Pipeline);
             hasPhysicalBehaviors = configuration.Incoming.HasPhysicalBehaviors;
             var owners = new Dictionary<string, Type>();
@@ -1052,9 +1056,83 @@ namespace Bq.Messaging
                 if (shutdownRequested) return;
                 activeDeliveries++;
             }
-            try { await ProcessDelivery(delivery).ConfigureAwait(false); }
+            try { await RunDelivery(delivery).ConfigureAwait(false); }
             finally { CompleteActiveWork(); }
         }
+        // Runs the delivery behaviors around ProcessDelivery. They run before the persistence session opens, so there is no database to
+        // record a failure in: a behavior that rejects the delivery sends it straight to the error queue.
+        async Task RunDelivery(BasicDeliverEventArgs incomingDelivery)
+        {
+            if (!hasDeliveryBehaviors) { await ProcessDelivery(incomingDelivery).ConfigureAwait(false); return; }
+            var props = incomingDelivery.BasicProperties;
+            var context = new DeliveryContext(rootBuilder, props.MessageId, props.Type,
+                MessageHeaders.ToTextDictionary(props.Headers ?? new Dictionary<string, object>()));
+            var reachedProcessing = false;
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo processingFailure = null;
+            Exception behaviorFailure = null;
+            try
+            {
+                await delivery(context, async () =>
+                {
+                    reachedProcessing = true;
+                    try { await ProcessDelivery(incomingDelivery).ConfigureAwait(false); }
+                    catch (Exception ex) { processingFailure = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex); throw; }
+                }).ConfigureAwait(false);
+            }
+            catch (Exception ex) { behaviorFailure = ex; }
+            if (processingFailure != null) processingFailure.Throw();
+            if (reachedProcessing)
+            {
+                // The delivery was already handled and acknowledged, so all that is left is to say that a behavior failed afterwards.
+                if (behaviorFailure != null)
+                    System.Diagnostics.Trace.TraceError("A delivery behavior failed after message {0} was handled: {1}", props.MessageId, behaviorFailure);
+                return;
+            }
+            if (behaviorFailure != null) await RejectDelivery(incomingDelivery, behaviorFailure).ConfigureAwait(false);
+            else
+            {
+                System.Diagnostics.Trace.TraceWarning("Message {0} was discarded by a delivery behavior that did not call next.", props.MessageId);
+                AcknowledgeCommittedDelivery(incomingDelivery.DeliveryTag);
+            }
+        }
+
+        // Sends a delivery to the error queue without a database, with the failure in its headers, then acknowledges it.
+        async Task RejectDelivery(BasicDeliverEventArgs rejected, Exception failure)
+        {
+            var errorQueue = configuration.Recoverability.ErrorQueue ?? configuration.Name + ".error";
+            var source = rejected.BasicProperties;
+            try
+            {
+                var headers = RecoveryWire.DecodeHeaders(RecoveryWire.EncodeHeaders(source.Headers));
+                headers[Faults.FaultsHeaderKeys.FailedQ] = configuration.Name;
+                headers["x-bq-failure-type"] = failure.GetType().FullName;
+                var reason = failure.Message ?? "";
+                headers["x-bq-failure-message"] = reason.Length > 1000 ? reason.Substring(0, 1000) : reason;
+                lock (publishLock)
+                {
+                    if (disposed) throw new ObjectDisposedException(nameof(RabbitEndpoint));
+                    var props = publisherChannel.CreateBasicProperties();
+                    props.MessageId = source.MessageId; props.Type = source.Type; props.ContentType = source.ContentType;
+                    props.ContentEncoding = source.ContentEncoding; props.CorrelationId = source.CorrelationId; props.ReplyTo = source.ReplyTo;
+                    props.Persistent = true;
+                    props.Headers = headers;
+                    returned = false;
+                    publisherChannel.BasicPublish("", errorQueue, true, props, rejected.Body.ToArray());
+                    AwaitConfirms();
+                    if (returned) throw new InvalidOperationException("The error queue is unroutable.");
+                }
+            }
+            catch (Exception handoffError)
+            {
+                System.Diagnostics.Trace.TraceError("Failed to move rejected message {0} to the error queue; requeuing: {1}", source.MessageId, handoffError);
+                await Task.Delay(1000).ConfigureAwait(false);
+                lock (consumerLock) { if (!disposed && consumerChannel.IsOpen) consumerChannel.BasicNack(rejected.DeliveryTag, false, true); }
+                return;
+            }
+            System.Diagnostics.Trace.TraceError("Message {0} was rejected by a delivery behavior and sent to {1}: {2}", source.MessageId, errorQueue, failure);
+            AcknowledgeCommittedDelivery(rejected.DeliveryTag);
+        }
+
         void CompleteActiveWork()
         {
             lock (lifecycleLock)
