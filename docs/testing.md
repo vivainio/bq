@@ -19,7 +19,7 @@ The messaging CI job installs the [published rabbit-sim wheel](https://pypi.org/
 ```sh
 python3 -m venv .venv-rabbit-sim
 source .venv-rabbit-sim/bin/activate
-python -m pip install rabbit-sim==0.3.0
+python -m pip install rabbit-sim==0.4.0
 bash scripts/test-rabbit-sim.sh
 ```
 

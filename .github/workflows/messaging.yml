@@ -56,7 +56,7 @@ jobs:
       # 0.3.0 adds publisher confirm delay and nack injection on top of the clock endpoint, the ack redelivery fix and --rabbitmq 4, which the tests use.
       - name: Install rabbit-sim
         run: |
-          python -m pip install --only-binary=:all: rabbit-sim==0.3.0
+          python -m pip install --only-binary=:all: rabbit-sim==0.4.0
       - name: Run messaging integration tests
         run: bash scripts/test-rabbit-sim.sh
 
