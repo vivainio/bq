@@ -992,6 +992,8 @@ namespace Bq.Messaging.Tests
                     {
                         await Eventually(() => { lock (received) return received.Count == behind.Count; }, "the rows behind the unroutable one to be sent");
                         lock (received) That(received.SequenceEqual(behind), "they keep their own order");
+                        // The handlers have seen the rows, but their outbox entries are removed a moment later.
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 1, "only the deferred row to remain pending");
                         var pending = (await store.ListPendingDispatches(DispatchKind.Outbox, 10)).Single();
                         That(pending.RoutingKey == name + ".nowhere" && pending.Attempts >= 1 && pending.LastError.Contains("unroutable") && pending.RetryAfterUtc.HasValue,
                             "the row stays pending with its attempt count and reason: attempts " + pending.Attempts + ", " + pending.LastError);
