@@ -635,6 +635,58 @@ namespace Bq.Messaging.Tests
                     }
                 });
             }
+            Case("authenticated encryption detects a wrong key and a changed value, and reads expired keys", () =>
+            {
+                var current = Enumerable.Range(1, 32).Select(i => (byte)i).ToArray();
+                var retired = Enumerable.Range(101, 32).Select(i => (byte)i).ToArray();
+                var stranger = Enumerable.Range(201, 32).Select(i => (byte)i).ToArray();
+                EncryptedValue Seal(string id, byte[] key, string text, out System.Collections.Generic.Dictionary<string, string> headers)
+                {
+                    var configuration = new EndpointConfiguration("auth-" + id, new Uri("amqp://localhost/"));
+                    configuration.AuthenticatedEncryptionService(id, key);
+                    headers = new System.Collections.Generic.Dictionary<string, string>();
+                    var stage = new OutgoingContext(null, () => null, "id", typeof(SecretMessage), new SecretMessage(), headers, new ContextBag(),
+                        new Bq.Messaging.Routing.RoutingStrategy[0]);
+                    return configuration.CreateEncryptionService().Encrypt(text, stage);
+                }
+                var reader = new EndpointConfiguration("auth-reader", new Uri("amqp://localhost/"));
+                reader.AuthenticatedEncryptionService("k2", current, new System.Collections.Generic.List<byte[]> { retired });
+                var service = reader.CreateEncryptionService();
+
+                // Many values, so a scheme that only fails most of the time would be caught.
+                for (var i = 0; i < 300; i++)
+                {
+                    var value = Seal("k2", current, "secret " + i, out var headers);
+                    That(value.EncryptedBase64Value.IndexOf("secret", StringComparison.Ordinal) < 0 && headers.ContainsKey("Bq.EncryptionKeyIdentifier"), "the value is hidden and names its key");
+                    That(service.Decrypt(value, new FakeLogicalContext(headers)) == "secret " + i, "the current key reads it back");
+                    var wrong = Seal("k2", stranger, "secret " + i, out var wrongHeaders);
+                    var rejected = false;
+                    try { service.Decrypt(wrong, new FakeLogicalContext(wrongHeaders)); } catch (InvalidOperationException) { rejected = true; }
+                    That(rejected, "a value sealed with an unknown key is rejected every time");
+                }
+
+                var old = Seal("k1", retired, "from the old key", out var oldHeaders);
+                That(service.Decrypt(old, new FakeLogicalContext(oldHeaders)) == "from the old key", "an expired key still reads values in flight");
+                var noHeader = false;
+                try { service.Decrypt(old, new FakeLogicalContext(new System.Collections.Generic.Dictionary<string, string>())); } catch (InvalidOperationException) { noHeader = true; }
+                That(noHeader, "the key name is part of what is authenticated, so an expired key needs its header");
+
+                var changed = Seal("k2", current, "pay 10", out var changedHeaders);
+                var bytes = Convert.FromBase64String(changed.EncryptedBase64Value);
+                bytes[0] ^= 1;
+                var tampered = false;
+                try { service.Decrypt(new EncryptedValue { EncryptedBase64Value = Convert.ToBase64String(bytes), Base64Iv = changed.Base64Iv }, new FakeLogicalContext(changedHeaders)); }
+                catch (InvalidOperationException) { tampered = true; }
+                That(tampered, "a changed value is rejected");
+                var swappedIv = false;
+                try { service.Decrypt(new EncryptedValue { EncryptedBase64Value = changed.EncryptedBase64Value, Base64Iv = Convert.ToBase64String(new byte[16]) }, new FakeLogicalContext(changedHeaders)); }
+                catch (InvalidOperationException) { swappedIv = true; }
+                That(swappedIv, "a changed IV is rejected");
+
+                var badKey = false;
+                try { new EndpointConfiguration("auth-bad", new Uri("amqp://localhost/")).AuthenticatedEncryptionService("k", new byte[16]); } catch (ArgumentException) { badKey = true; }
+                That(badKey, "keys that are not 32 bytes are rejected");
+            });
             Case("rijndael expired key collection operations", () =>
             {
                 var collection = new Bq.Messaging.Config.RijndaelExpiredKeyCollection();

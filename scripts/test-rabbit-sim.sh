@@ -96,6 +96,8 @@ wait "$test_pid"
 test_pid=""
 # The TUnit runner reports each registered case on its own. It reuses the running broker.
 TESTINGPLATFORM_TELEMETRY_OPTOUT=1 mono Bq.Messaging.Tests.TUnit/bin/Debug/net472/Bq.Messaging.Tests.exe
+# The same cases on net10, the other runtime the code has to run on.
+TESTINGPLATFORM_TELEMETRY_OPTOUT=1 dotnet Bq.Messaging.Tests.TUnit/bin/Debug/net10.0/Bq.Messaging.Tests.dll
 BQ_SAMPLE_DB="$test_dir/windsor.db" \
     mono Bq.Reference.Windsor/bin/Debug/net472/Bq.Reference.Windsor.exe
 BQ_SAMPLE_DB="$test_dir/net10.db" \

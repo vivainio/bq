@@ -111,9 +111,20 @@ namespace Bq.Messaging.Tests
             var section = new T();
             using (var reader = System.Xml.XmlReader.Create(new StringReader(xml)))
             {
+#if NETFRAMEWORK
+                // .NET Framework expects the reader on the section element; .NET reads forward to it itself.
                 reader.MoveToContent();
-                typeof(System.Configuration.ConfigurationSection).GetMethod("DeserializeSection",
-                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(section, new object[] { reader });
+#endif
+                try
+                {
+                    typeof(System.Configuration.ConfigurationSection).GetMethod("DeserializeSection",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(section, new object[] { reader });
+                }
+                catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException != null)
+                {
+                    // Surface the section's own error, such as a ConfigurationErrorsException for a missing required attribute.
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+                }
             }
             return section;
         }

@@ -287,12 +287,7 @@ namespace Bq.Messaging.Tests
         public static string NewPath(string name) => System.IO.Path.Combine(System.IO.Path.GetTempPath(), name + ".db");
 
         public static System.Data.Common.DbConnection Connect(string path)
-        {
-            var type = Type.GetType("Mono.Data.Sqlite.SqliteConnection, Mono.Data.Sqlite, Version=4.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756", true);
-            var connection = (System.Data.Common.DbConnection)Activator.CreateInstance(type);
-            connection.ConnectionString = "Data Source=" + path + ";Default Timeout=5";
-            return connection;
-        }
+        => SqliteDriver.Connect(path);
 
         public static async Task<Bq.Persistence.Sqlite.SqlitePersistence> Store(string path, string endpoint)
         {
@@ -792,10 +787,11 @@ namespace Bq.Messaging.Tests
                     configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { handled.Enqueue((m.Text, DateTime.UtcNow)); return Task.CompletedTask; }));
                     using (var endpoint = RabbitEndpoint.Start(configuration))
                     {
+                        // Schedule the delayed message only after the endpoint is known to deliver, so a slow first delivery cannot use up the delay.
+                        await endpoint.SendLocal(new EdgeUowMessage { Text = "now" });
+                        await Eventually(() => handled.Count == 1, "the immediate message", 15);
                         var due = DateTimeOffset.UtcNow.AddMilliseconds(2500);
                         await endpoint.SendLocalAt(new EdgeUowMessage { Text = "later" }, due);
-                        await endpoint.SendLocal(new EdgeUowMessage { Text = "now" });
-                        await Eventually(() => handled.Count == 1, "the immediate message", 5);
                         await Task.Delay(1000);
                         That(handled.Count == 1 && handled.First().Text == "now", "the delayed message has not arrived after one second");
                         await Eventually(() => handled.Count == 2, "the delayed message once due", 10);
@@ -1268,12 +1264,7 @@ namespace Bq.Messaging.Tests
                 var sink = name + ".sink";
                 var path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), name + ".db");
                 System.Data.Common.DbConnection Connect()
-                {
-                    var type = Type.GetType("Mono.Data.Sqlite.SqliteConnection, Mono.Data.Sqlite, Version=4.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756", true);
-                    var connection = (System.Data.Common.DbConnection)Activator.CreateInstance(type);
-                    connection.ConnectionString = "Data Source=" + path + ";Default Timeout=5";
-                    return connection;
-                }
+                    => SqliteDriver.Connect(path);
                 try
                 {
                     using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())

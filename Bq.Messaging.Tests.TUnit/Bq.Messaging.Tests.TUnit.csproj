@@ -2,7 +2,7 @@
   <!-- TUnit runner for the tests in Bq.Messaging.Tests. It compiles the same sources, so each registered case reports on its own. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net472</TargetFramework>
+    <TargetFrameworks>net472;net10.0</TargetFrameworks>
     <LangVersion>latest</LangVersion>
     <RootNamespace>Bq.Messaging.Tests</RootNamespace>
     <AssemblyName>Bq.Messaging.Tests</AssemblyName>
@@ -17,9 +17,14 @@
     <ProjectReference Include="../Bq.Persistence.Oracle/Bq.Persistence.Oracle.csproj" />
     <ProjectReference Include="../Bq.Persistence.Sqlite/Bq.Persistence.Sqlite.csproj" />
     <ProjectReference Include="../Bq.Messaging.MultiTenant/Bq.Messaging.MultiTenant.csproj" />
+    <PackageReference Include="TUnit" Version="*" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
     <Reference Include="System.Transactions" />
     <Reference Include="System.Net.Http" />
-    <PackageReference Include="TUnit" Version="*" />
     <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>
 </Project>

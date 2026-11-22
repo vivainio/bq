@@ -508,12 +508,7 @@ namespace Bq.Messaging.Tests
         }
 
         static DbConnection Sqlite(string path)
-        {
-            var type = Type.GetType("Mono.Data.Sqlite.SqliteConnection, Mono.Data.Sqlite, Version=4.0.0.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756", true);
-            var connection = (DbConnection)Activator.CreateInstance(type);
-            connection.ConnectionString = "Data Source=" + path + ";Default Timeout=5";
-            return connection;
-        }
+            => SqliteDriver.Connect(path);
         static async Task PersistenceTests()
         {
             var path = Path.Combine(Path.GetTempPath(), "bq-" + Guid.NewGuid().ToString("N") + ".db");
