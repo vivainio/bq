@@ -1,5 +1,7 @@
 # Migrate from NServiceBus in phases
 
+This page covers porting and verification. For the strategy of running Bq beside NServiceBus and moving one flow at a time, see [Moving one flow at a time](gradual-migration.md). Never send a Bq message from inside an NServiceBus handler; that page explains why.
+
 Start with a small group of endpoints whose senders and receivers can switch together. A send-only Bq producer and a subscriber without saga state make a useful first exercise. List the commands, events, subscriptions, and queues each endpoint uses before choosing the group.
 
 Bq uses MessagePack. Give migrated consumers their own queues and use a distinct event exchange for the Bq group while legacy XML consumers remain active. Route commands to the new queues only when their receivers are ready. Before redirecting each flow, account for messages already queued, scheduled deliveries, and unpublished outbox entries. For flows with active sagas, decide how to handle existing state and pending timeouts before switching traffic.

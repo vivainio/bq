@@ -4,6 +4,8 @@ Bq runs message handlers and sagas on RabbitMQ with a transactional database inb
 
 - [An order workflow with Bq](order-workflow.md) introduces messaging through a three-endpoint example.
 - [Getting started](getting-started.md) walks through endpoint registration and SQLite setup.
+- [Moving one flow at a time](gradual-migration.md) shows how to prove Bq on one flow while the rest stays on NServiceBus.
+- [Databases in a migration](databases-in-migration.md) compares where NServiceBus and Bq keep sagas, timeouts and the outbox, with checks to run before a cutover.
 - [Phased NServiceBus migration](migration.md) covers routing isolation, transaction hooks, and local verification.
 - [Endpoints and sessions](endpoints.md) covers routing, local sends, uniform sessions, concurrency, and shutdown.
 - [Persistence and outbox](persistence.md) explains transaction boundaries and dispatch inspection.

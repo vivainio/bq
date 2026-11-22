@@ -22,6 +22,8 @@ nav = [
   ] },
   { "Examples and development" = [
     { "Castle Windsor example" = "windsor.md" },
+    { "Moving one flow at a time" = "gradual-migration.md" },
+    { "Databases in a migration" = "databases-in-migration.md" },
     { "Phased NServiceBus migration" = "migration.md" },
     { "What Bq leaves out" = "omissions.md" },
     { "Integration tests" = "testing.md" },

@@ -45,6 +45,45 @@ In that design, RabbitMQ can send an ID as a wake-up signal. Periodic database p
 
 This is an alternative transport design. Sharing a database in the current RabbitMQ transport still uses the same outbox and publish flow at the top of this section.
 
+## Many processes on one endpoint
+
+!!! note "In short"
+    You can run many processes of the same endpoint against one database, and nothing is lost or handled twice. But **extra processes do not publish faster**. They add failover and **extra polling load on the database**. To publish faster, raise `OutboxBatchSize`; do not add processes.
+
+Every process that runs an endpoint polls the same rows. The rows belong to the endpoint's name, so processes of one endpoint share them, and endpoints with different names never touch each other's rows.
+
+### What each process does
+
+- It runs an **outbox loop** that publishes ready outbox rows and due saga timeouts. A send-only endpoint runs only this loop.
+- Unless it is send-only, it also runs a **recovery loop** for delayed retries and failed messages.
+- When a loop finds a row it publishes it and looks again at once. When it finds nothing, or fails, it waits `DispatchPollInterval` (one second by default).
+
+### How a row is claimed
+
+| | SQLite | Oracle |
+| --- | --- | --- |
+| Claiming a row | None. A process reads the first ready row and marks it dispatched afterwards | The row is locked with `FOR UPDATE SKIP LOCKED` while it is published, and removed after the broker confirms |
+| Two processes, one row | Both may publish it. The message has the same ID both times, and the inbox keeps handling to once | The second process does not take a row that is locked. It gets nothing and waits for the next poll |
+| A process dies while publishing | The row is still pending, so the next poll publishes it | The lock is released with the transaction, so another process publishes the row |
+| A process dies after the confirm, before the row is removed | The row is published again | The row is published again |
+| Meant for | One process, or a few on a developer machine | Production, with several processes |
+
+In every case the worst outcome is a duplicate publish with the original message ID, never a lost message. Receivers deduplicate through the inbox, so handling still happens once.
+
+### What more processes cost
+
+- **Polling.** Every idle loop queries the database once per `DispatchPollInterval`. On Oracle a poll can run two queries, one for outbox rows and one for scheduled rows. They use indexes (`bq_outbox_ready_ix` on `(endpoint, enqueue_order)` and `bq_saga_timeout_due_ix` on `(endpoint, due_ticks, id)`), so each is cheap. But the load is linear in the number of processes and has no backoff. Twenty processes with the defaults run forty loops, which is roughly forty to sixty small queries a second while idle.
+- **No extra throughput.** A dispatcher takes the first ready row, or the first `OutboxBatchSize` rows, in order. If another process holds those rows, the second process finds them locked, gets nothing, and waits for the next poll. So for one endpoint, publishing is in effect done by one process at a time. This follows from how the query is written. It has not been load-tested.
+- **Ordering.** Rows are published in the order they were stored by one dispatcher. With several dispatchers Bq does not promise that order across processes, so do not depend on it. Receivers that need order should carry their own sequence.
+- **Timeouts.** A due timeout is published by whichever process polls it first, up to one poll interval after it falls due.
+
+### What to do about it
+
+- To publish a large backlog faster, raise `OutboxBatchSize` (100 by default). One process confirms a whole batch with a single broker round trip.
+- To cut polling, raise `DispatchPollInterval`. A longer interval delays pickup of new rows and timeouts by up to that long.
+- Use as few processes per endpoint as you need for failover and for running handlers. Handler throughput is separate: RabbitMQ shares one queue between all the processes consuming it, so more processes do process more messages at a time. Only the publishing of the outbox is single-file.
+- Do not point many processes at a SQLite file. SQLite allows one writer at a time, so they would compete for it.
+
 ## Dispatch inspection
 
 `config.DispatchPollInterval` sets the wait after an empty or failed dispatch poll. It defaults to one second, and both the outbox and recovery loops use it. Shorter intervals reduce idle pickup latency and increase database polling. `config.PublisherConfirmTimeout` controls how long direct sends and both background dispatchers wait for publisher confirmation. It defaults to ten seconds. After a failed confirmation, durable records remain pending for another attempt.
@@ -69,7 +108,7 @@ Delivery behavior of the outbox, each of which a test checks:
 
 - Rows are published in the order they were stored. A row that cannot be published because of the message itself, such as a mandatory message no queue accepts, is deferred: it stays pending with its attempt count and reason, and the rows behind it are sent. It is retried after a delay that starts at 100 milliseconds and doubles up to 30 seconds, and it is never dropped. A queue that appears a moment later is found quickly, and a row that never succeeds is tried every 30 seconds. A broker outage is not blamed on any row, so rows keep their place while the broker is away.
 - Delivery is at least once. If the endpoint stops after publishing and before it records the dispatch, the row is published again with the same message ID, and the receiver's inbox keeps handling to once.
-- Several endpoint instances can dispatch from one database. With SQLite two dispatchers may each publish a row, and the inbox keeps each message to one handling. The Oracle provider locks the row while it publishes, so each row is published once.
+- Several endpoint instances can dispatch from one database. With SQLite two dispatchers may each publish the same row, and the inbox keeps each message to one handling. The Oracle provider locks the row while it publishes, so two dispatchers do not publish it at the same time. A crash after the broker confirms but before the row is removed can still publish it again, which the inbox absorbs. See [many processes on one endpoint](#many-processes-on-one-endpoint) for what extra processes do and do not give you.
 - The dispatcher publishes up to `config.OutboxBatchSize` ready rows (100 by default) and waits for one broker confirm for the whole batch, then removes the delivered rows together. A real broker confirms durable messages one batch at a time, so a backlog of 1,500 rows drains in a few seconds, where one confirm per row took over a minute. The rows keep their order. If the broker does not confirm a batch, every row of it stays pending and may be published again, which the inbox absorbs. Set `OutboxBatchSize` to 1 to confirm each row on its own. A provider that does not support batches always works that way.
 - A backlog of thousands of rows drains completely, and delivered rows leave the outbox.
 

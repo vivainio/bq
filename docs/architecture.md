@@ -33,4 +33,6 @@ All registered handlers for a delivery share a persistence session. Writes using
 
 The endpoint polls recovery records separately from ordinary outgoing messages. SQLite alternates preference between ordinary outbox messages and due saga timeouts. A failed recovery destination can hold up other recovery records. An unroutable outbox message can hold up later records in its own category.
 
+With several processes on one endpoint, extra processes add failover and polling load, not publishing speed. See [many processes on one endpoint](persistence.md#many-processes-on-one-endpoint).
+
 See [persistence and outbox](persistence.md) for backlog inspection and [retries and replay](recoverability.md) for recovering failed messages.
