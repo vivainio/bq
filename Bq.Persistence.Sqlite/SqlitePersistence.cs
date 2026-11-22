@@ -7,7 +7,7 @@ using Bq.Messaging;
 namespace Bq.Persistence.Sqlite
 {
     // Accepts an ADO.NET SQLite connection factory; the host selects the driver.
-    public sealed class SqlitePersistence : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence, IOutgoingFailureTracking, IRetentionPersistence
+    public sealed class SqlitePersistence : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence, IOutgoingFailureTracking, IRetentionPersistence, IBatchOutgoingPersistence
     {
         readonly Func<DbConnection> factory;
         readonly string endpoint;
@@ -160,6 +160,61 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
                 return new OutgoingMessage { Id = r.GetString(0), CorrelationId = r.IsDBNull(1) ? null : r.GetString(1), ReplyTo = r.IsDBNull(2) ? null : r.GetString(2), Type = r.GetString(3), Exchange = r.GetString(4), RoutingKey = r.GetString(5), Mandatory = Convert.ToInt32(r.GetValue(6)) != 0, Body = (byte[])r.GetValue(7), Headers = MessageHeaderCodec.Decode(r.IsDBNull(8) ? null : (byte[])r.GetValue(8)) };
             }
         }
+        const string OutgoingFields = "id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,headers";
+
+        static OutgoingMessage ReadOutgoing(DbDataReader r) => new OutgoingMessage
+        {
+            Id = r.GetString(0), CorrelationId = r.IsDBNull(1) ? null : r.GetString(1), ReplyTo = r.IsDBNull(2) ? null : r.GetString(2), Type = r.GetString(3),
+            Exchange = r.GetString(4), RoutingKey = r.GetString(5), Mandatory = Convert.ToInt32(r.GetValue(6)) != 0, Body = (byte[])r.GetValue(7),
+            Headers = MessageHeaderCodec.Decode(r.IsDBNull(8) ? null : (byte[])r.GetValue(8))
+        };
+
+        /// <summary>
+        /// Up to <paramref name="maxCount"/> ready rows from one table, in dispatch order. Like <see cref="NextOutgoing"/> it prefers
+        /// ordinary outbox rows and due timeouts in turn, so a backlog in one cannot starve the other.
+        /// </summary>
+        public async Task<System.Collections.Generic.IReadOnlyList<OutgoingMessage>> NextOutgoingBatch(string name, int maxCount)
+        {
+            CheckEndpoint(name);
+            if (maxCount < 1) throw new ArgumentOutOfRangeException(nameof(maxCount));
+            var timeoutsFirst = (System.Threading.Interlocked.Increment(ref outgoingPoll) & 1) == 1;
+            var outboxSql = "SELECT " + OutgoingFields + " FROM bq_outbox WHERE endpoint=@e AND retry_after_ticks<=@now ORDER BY rowid LIMIT @n";
+            var timeoutSql = "SELECT " + OutgoingFields + " FROM bq_saga_timeout WHERE endpoint=@e AND due_ticks<=@now AND retry_after_ticks<=@now ORDER BY due_ticks,id LIMIT @n";
+            using (var c = await Open().ConfigureAwait(false))
+            {
+                foreach (var sql in timeoutsFirst ? new[] { timeoutSql, outboxSql } : new[] { outboxSql, timeoutSql })
+                {
+                    var rows = new System.Collections.Generic.List<OutgoingMessage>();
+                    using (var cmd = Command(c, null, sql, "@e", endpoint, "@now", DateTime.UtcNow.Ticks, "@n", maxCount))
+                    using (var r = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
+                        while (await r.ReadAsync().ConfigureAwait(false)) rows.Add(ReadOutgoing(r));
+                    if (rows.Count > 0) return rows;
+                }
+            }
+            return new OutgoingMessage[0];
+        }
+
+        public async Task MarkDispatched(string name, System.Collections.Generic.IReadOnlyCollection<string> ids)
+        {
+            CheckEndpoint(name);
+            if (ids == null) throw new ArgumentNullException(nameof(ids));
+            if (ids.Count == 0) return;
+            using (var c = await Open().ConfigureAwait(false))
+            using (var tx = c.BeginTransaction())
+            {
+                foreach (var chunk in System.Linq.Enumerable.Select(System.Linq.Enumerable.GroupBy(System.Linq.Enumerable.Select(ids, (id, i) => (id, i)), pair => pair.i / 400), group => System.Linq.Enumerable.ToList(System.Linq.Enumerable.Select(group, pair => pair.id))))
+                    foreach (var table in new[] { "bq_outbox", "bq_saga_timeout" })
+                    {
+                        var parameters = new System.Collections.Generic.List<object> { "@e", endpoint };
+                        var names = new System.Collections.Generic.List<string>();
+                        for (var i = 0; i < chunk.Count; i++) { names.Add("@p" + i); parameters.Add("@p" + i); parameters.Add(chunk[i]); }
+                        using (var cmd = Command(c, tx, "DELETE FROM " + table + " WHERE endpoint=@e AND id IN (" + string.Join(",", names) + ")", parameters.ToArray()))
+                            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+                    }
+                tx.Commit();
+            }
+        }
+
         public async Task MarkDispatched(string name, string id)
         {
             CheckEndpoint(name);

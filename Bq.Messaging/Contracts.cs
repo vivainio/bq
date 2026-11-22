@@ -173,6 +173,12 @@ namespace Bq.Messaging
         public ushort? PrefetchCount { get; set; }
         // Wait after an empty or failed dispatch poll.
         public TimeSpan DispatchPollInterval { get; set; } = TimeSpan.FromSeconds(1);
+        /// <summary>
+        /// How many outbox rows the dispatcher publishes before it waits for the broker's confirm. A provider that supports batches hands
+        /// the dispatcher this many ready rows at a time, which is much faster on a real broker than one confirm per row. Set 1 to
+        /// confirm every row on its own.
+        /// </summary>
+        public int OutboxBatchSize { get; set; } = 100;
         public TimeSpan NetworkRecoveryInterval { get; set; } = TimeSpan.FromSeconds(5);
         public TimeSpan PublisherConfirmTimeout { get; set; } = TimeSpan.FromSeconds(10);
         // If set, report the first sustained broker or dispatcher failure for this endpoint instance.

@@ -93,6 +93,9 @@ namespace Bq.Messaging
         readonly CancellationTokenSource stopping = new CancellationTokenSource();
         Task dispatcher;
         bool returned;
+        // IDs of the messages the broker returned as unroutable. Cleared at the start of each batch.
+        readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> returnedIds = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.Ordinal);
+        readonly int outboxBatchSize;
         volatile bool disposed;
 
         RabbitEndpoint(EndpointConfiguration configuration)
@@ -194,6 +197,7 @@ namespace Bq.Messaging
             eventsExchange = configuration.EventsExchange;
             errorExchange = configuration.ErrorExchange;
             dispatchPollInterval = configuration.DispatchPollInterval;
+            outboxBatchSize = configuration.OutboxBatchSize;
             publisherConfirmTimeout = configuration.PublisherConfirmTimeout;
             var factory = new ConnectionFactory { Uri = configuration.RabbitMqUri };
             configuration.ConfigureRabbitMqConnection?.Invoke(factory);
@@ -207,7 +211,12 @@ namespace Bq.Messaging
                 if (configuration.UsePreProvisionedTopology) publisherChannel.ExchangeDeclarePassive(eventsExchange);
                 else publisherChannel.ExchangeDeclare(eventsExchange, ExchangeType.Topic, true);
                 publisherChannel.ConfirmSelect();
-                publisherChannel.BasicReturn += (sender, args) => { returned = true; };
+                publisherChannel.BasicReturn += (sender, args) =>
+                {
+                    returned = true;
+                    var id = args.BasicProperties?.MessageId;
+                    if (id != null) returnedIds[id] = 1;
+                };
                 if (!sendOnly)
                 {
                     consumerChannel = connection.CreateModel();
@@ -306,6 +315,7 @@ namespace Bq.Messaging
                 configuration.CriticalErrorThreshold <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(configuration.CriticalErrorThreshold));
             configuration.Retention.Validate();
+            if (configuration.OutboxBatchSize < 1 || configuration.OutboxBatchSize > 10000) throw new ArgumentOutOfRangeException(nameof(configuration.OutboxBatchSize));
             if (configuration.MaxConcurrency == 0) throw new ArgumentOutOfRangeException(nameof(configuration.MaxConcurrency));
             if (configuration.ImmediateRetries < 0) throw new ArgumentOutOfRangeException(nameof(configuration.ImmediateRetries));
             var endpoint = new RabbitEndpoint(configuration);
@@ -713,40 +723,71 @@ namespace Bq.Messaging
         {
             PublishPrepared(await Prepare(message, exchange, routingKey, correlationId, mandatory, headers, kind: kind).ConfigureAwait(false));
         }
+        IBasicProperties OutgoingProperties(OutgoingMessage message)
+        {
+            var props = publisherChannel.CreateBasicProperties();
+            props.Persistent = durableMessages;
+            props.MessageId = message.Id;
+            props.CorrelationId = message.CorrelationId;
+            props.ReplyTo = message.ReplyTo;
+            props.Type = message.Type;
+            props.ContentType = wireFormat.ContentType;
+            if (message.Headers != null && message.Headers.Count > 0)
+            {
+                var headers = new Dictionary<string, object>(message.Headers);
+                // A forwarded delivery has its own outbox record ID but keeps its original wire ID.
+                if (headers.TryGetValue(MessageOptions.WireIdHeader, out var originalId) && originalId is string id)
+                    props.MessageId = id;
+                headers.Remove(MessageOptions.WireIdHeader);
+                if (headers.TryGetValue(OutboxExpirationHeader, out var expiration) && expiration is string ttl)
+                    props.Expiration = ttl;
+                headers.Remove(OutboxExpirationHeader);
+                // Rows stored before this header existed fall back to the endpoint's current format.
+                if (headers.TryGetValue(OutboxContentTypeHeader, out var storedContentType) && storedContentType is string contentType)
+                    props.ContentType = contentType;
+                headers.Remove(OutboxContentTypeHeader);
+                props.Headers = headers;
+            }
+            return props;
+        }
+
         void PublishPrepared(OutgoingMessage message)
         {
             lock (publishLock)
             {
                 if (disposed) throw new ObjectDisposedException(nameof(RabbitEndpoint));
-                var props = publisherChannel.CreateBasicProperties();
-                props.Persistent = durableMessages;
-                props.MessageId = message.Id;
-                props.CorrelationId = message.CorrelationId;
-                props.ReplyTo = message.ReplyTo;
-                props.Type = message.Type;
-                props.ContentType = wireFormat.ContentType;
-                if (message.Headers != null && message.Headers.Count > 0)
-                {
-                    var headers = new Dictionary<string, object>(message.Headers);
-                    // A forwarded delivery has its own outbox record ID but keeps its original wire ID.
-                    if (headers.TryGetValue(MessageOptions.WireIdHeader, out var originalId) && originalId is string id)
-                        props.MessageId = id;
-                    headers.Remove(MessageOptions.WireIdHeader);
-                    if (headers.TryGetValue(OutboxExpirationHeader, out var expiration) && expiration is string ttl)
-                        props.Expiration = ttl;
-                    headers.Remove(OutboxExpirationHeader);
-                    // Rows stored before this header existed fall back to the endpoint's current format.
-                    if (headers.TryGetValue(OutboxContentTypeHeader, out var storedContentType) && storedContentType is string contentType)
-                        props.ContentType = contentType;
-                    headers.Remove(OutboxContentTypeHeader);
-                    props.Headers = headers;
-                }
+                var props = OutgoingProperties(message);
                 returned = false;
                 publisherChannel.BasicPublish(message.Exchange, message.RoutingKey, message.Mandatory, props, message.Body);
                 if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
                 if (returned) throw new OutgoingMessageRejectedException(message.Id, "Message was unroutable: " + message.RoutingKey);
             }
         }
+
+        // Publishes every row, then waits for one confirm for the lot. It returns the row IDs the broker returned as unroutable. If the
+        // broker does not confirm, it throws and every row stays pending, so a row may be published again, which the inbox absorbs.
+        IReadOnlyCollection<string> PublishBatch(IReadOnlyList<OutgoingMessage> messages)
+        {
+            lock (publishLock)
+            {
+                if (disposed) throw new ObjectDisposedException(nameof(RabbitEndpoint));
+                returnedIds.Clear();
+                var wireIds = new string[messages.Count];
+                for (var i = 0; i < messages.Count; i++)
+                {
+                    var props = OutgoingProperties(messages[i]);
+                    wireIds[i] = props.MessageId;
+                    publisherChannel.BasicPublish(messages[i].Exchange, messages[i].RoutingKey, messages[i].Mandatory, props, messages[i].Body);
+                }
+                if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
+                var rejected = new List<string>();
+                for (var i = 0; i < messages.Count; i++)
+                    if (returnedIds.ContainsKey(wireIds[i])) rejected.Add(messages[i].Id);
+                foreach (var id in rejected) System.Diagnostics.Trace.TraceError("Outgoing message {0} was unroutable and will be retried later.", id);
+                return rejected;
+            }
+        }
+
         // Removes old inbox and finished recovery records in batches. A failure is logged and tried again on the next round, because
         // a record that lingers does no harm.
         async Task PurgeRetained(IRetentionPersistence store, RetentionOptions options, CancellationToken cancellation)
@@ -802,6 +843,22 @@ namespace Bq.Messaging
         {
             var persistence = configuration.Persistence;
             var endpoint = configuration.Name;
+            if (!recoveries && outboxBatchSize > 1)
+            {
+                if (persistence is ILockedBatchDispatchPersistence lockedBatch)
+                    return await lockedBatch.DispatchOutgoingBatch(endpoint, outboxBatchSize, PublishBatch).ConfigureAwait(false) > 0;
+                if (persistence is IBatchOutgoingPersistence batchable && persistence is IOutgoingFailureTracking batchTracking)
+                {
+                    var batch = await batchable.NextOutgoingBatch(endpoint, outboxBatchSize).ConfigureAwait(false);
+                    if (batch.Count == 0) return false;
+                    var rejected = PublishBatch(batch);
+                    foreach (var id in rejected)
+                        await batchTracking.RecordOutgoingFailure(endpoint, id, new OutgoingMessageRejectedException(id, "Message was unroutable.")).ConfigureAwait(false);
+                    var sent = rejected.Count == 0 ? batch.Select(m => m.Id).ToList() : batch.Select(m => m.Id).Where(id => !rejected.Contains(id)).ToList();
+                    if (sent.Count > 0) await batchable.MarkDispatched(endpoint, sent).ConfigureAwait(false);
+                    return true;
+                }
+            }
             if (persistence is ILockedDispatchPersistence locked)
             {
                 if (!recoveries) return await locked.DispatchOutgoing(endpoint, PublishPrepared).ConfigureAwait(false);

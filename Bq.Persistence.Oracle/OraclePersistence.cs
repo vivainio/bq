@@ -2,13 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Bq.Messaging;
 
 namespace Bq.Persistence.Oracle
 {
-    public sealed partial class OraclePersistence : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence, IOutgoingFailureTracking, IRetentionPersistence
+    public sealed partial class OraclePersistence : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence, IOutgoingFailureTracking, IRetentionPersistence, ILockedBatchDispatchPersistence
     {
         const string Outbox = "bq_outbox";
         const string Scheduled = "bq_saga_timeout";
@@ -209,6 +210,64 @@ namespace Bq.Persistence.Oracle
                 await DeleteOutgoing(connection, transaction, table, message.Id).ConfigureAwait(false);
                 transaction.Commit();
                 return true;
+            }
+        }
+
+        // Up to maxCount ready rows of one table, locked for this transaction, in dispatch order. A row another dispatcher has locked is skipped.
+        async Task<List<OutgoingMessage>> FindOutgoingBatch(DbConnection connection, DbTransaction transaction, string table, int maxCount)
+        {
+            var scheduled = table == Scheduled;
+            var filter = scheduled ? "endpoint = :endpoint AND due_ticks <= :now AND retry_after_ticks <= :retry_now"
+                : "endpoint = :endpoint AND retry_after_ticks <= :retry_now";
+            var order = scheduled ? "due_ticks, id" : "enqueue_order";
+            var now = DateTime.UtcNow.Ticks;
+            var args = new List<(string, object)> { ("endpoint", endpoint) };
+            if (scheduled) args.Add(("now", now));
+            args.Add(("retry_now", now));
+            args.Add(("max", maxCount));
+            args.Add(("locked_endpoint", endpoint));
+            args.Add(("locked_retry_now", now));
+            // Choose the row IDs in a subquery and lock them in the outer query, since Oracle 12c-21c reject FETCH FIRST beside FOR UPDATE.
+            var sql = $"SELECT {OutgoingColumns} FROM {table} WHERE ROWID IN (" +
+                $"SELECT chosen_id FROM (SELECT ROWID AS chosen_id FROM {table} WHERE {filter} ORDER BY {order}) WHERE ROWNUM <= :max)" +
+                $" AND endpoint = :locked_endpoint AND retry_after_ticks <= :locked_retry_now ORDER BY {order} FOR UPDATE SKIP LOCKED";
+            var rows = new List<OutgoingMessage>();
+            using (var command = Command(connection, transaction, sql, args.ToArray()))
+            using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
+                while (await reader.ReadAsync().ConfigureAwait(false)) rows.Add(ReadOutgoing(reader));
+            return rows;
+        }
+
+        public async Task<int> DispatchOutgoingBatch(string name, int maxCount, Func<IReadOnlyList<OutgoingMessage>, IReadOnlyCollection<string>> publish)
+        {
+            CheckEndpoint(name);
+            if (maxCount < 1) throw new ArgumentOutOfRangeException(nameof(maxCount));
+            if (publish == null) throw new ArgumentNullException(nameof(publish));
+            var scheduledFirst = (Interlocked.Increment(ref outgoingPoll) & 1) != 0;
+            using (var connection = await Open().ConfigureAwait(false))
+            using (var transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted))
+            {
+                foreach (var table in scheduledFirst ? new[] { Scheduled, Outbox } : new[] { Outbox, Scheduled })
+                {
+                    var rows = await FindOutgoingBatch(connection, transaction, table, maxCount).ConfigureAwait(false);
+                    if (rows.Count == 0) continue;
+                    var rejected = new HashSet<string>(publish(rows) ?? new string[0], StringComparer.Ordinal);
+                    foreach (var id in rejected)
+                        await RecordFailure(connection, transaction, table, id, new OutgoingMessageRejectedException(id, "Message was unroutable.")).ConfigureAwait(false);
+                    var sent = rows.Select(row => row.Id).Where(id => !rejected.Contains(id)).ToList();
+                    for (var offset = 0; offset < sent.Count; offset += 100)
+                    {
+                        var chunk = sent.Skip(offset).Take(100).ToList();
+                        var args = new List<(string, object)> { ("endpoint", endpoint) };
+                        for (var i = 0; i < chunk.Count; i++) args.Add(("id" + i, chunk[i]));
+                        await Execute(connection, transaction,
+                            $"DELETE FROM {table} WHERE endpoint = :endpoint AND id IN (" + string.Join(", ", chunk.Select((id, i) => ":id" + i)) + ")",
+                            args.ToArray()).ConfigureAwait(false);
+                    }
+                    transaction.Commit();
+                    return rows.Count;
+                }
+                return 0;
             }
         }
 

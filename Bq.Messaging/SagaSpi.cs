@@ -150,14 +150,20 @@ namespace Bq.Messaging.Sagas
             var dataType = SagaDataOf(sagaType) ?? throw new ArgumentException(sagaType.FullName + " is not a saga.", nameof(sagaType));
             var interfaces = sagaType.GetInterfaces();
             var messages = new List<SagaMessage>();
+            // A message is listed once. IAmStartedByMessages<T> implies IHandleMessages<T>, and the runtime does not promise which of the
+            // two it reports first, so the start flag must not depend on the order.
+            void Associate(Type message, bool startsSaga)
+            {
+                var index = messages.FindIndex(m => m.MessageType == message);
+                if (index < 0) messages.Add(new SagaMessage(message, startsSaga));
+                else if (startsSaga && !messages[index].IsAllowedToStartSaga) messages[index] = new SagaMessage(message, true);
+            }
             foreach (var contract in interfaces.Where(i => i.IsGenericType))
             {
                 var definition = contract.GetGenericTypeDefinition();
                 var message = contract.GetGenericArguments()[0];
-                if (definition == typeof(IAmStartedByMessages<>)) messages.Add(new SagaMessage(message, true));
-                else if (definition == typeof(IHandleMessages<>) && !messages.Any(m => m.MessageTypeName == message.FullName))
-                    messages.Add(new SagaMessage(message, false));
-                else if (definition == typeof(IHandleTimeouts<>)) messages.Add(new SagaMessage(message, false));
+                if (definition == typeof(IAmStartedByMessages<>)) Associate(message, true);
+                else if (definition == typeof(IHandleMessages<>) || definition == typeof(IHandleTimeouts<>)) Associate(message, false);
             }
             var correlation = (CorrelationPropertyMetadata)typeof(SagaMetadata).GetMethod(nameof(Correlation), BindingFlags.Static | BindingFlags.NonPublic)
                 .MakeGenericMethod(dataType).Invoke(null, new object[] { sagaType });

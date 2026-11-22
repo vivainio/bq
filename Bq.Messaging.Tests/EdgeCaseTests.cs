@@ -272,6 +272,7 @@ namespace Bq.Messaging.Tests
             await RunSagaApiCases();
             await RunOutgoingRetryCases();
             await RunRetentionCases();
+            await RunBatchCases();
             RunSagaSpiDetailCases();
             await RunInMemoryCases();
             return cases.ToList();
@@ -661,7 +662,7 @@ namespace Bq.Messaging.Tests
                 var metadata = Bq.Messaging.Sagas.SagaMetadata.Create(typeof(ScannedSaga));
                 That(metadata.SagaType == typeof(ScannedSaga) && metadata.SagaEntityType == typeof(ScannedSagaState) && metadata.EntityName == typeof(ScannedSagaState).FullName, "type names");
                 That(metadata.IsMessageAllowedToStartTheSaga(typeof(SagaStart).FullName) && !metadata.IsMessageAllowedToStartTheSaga(typeof(SagaDone).FullName), "only the starting message may start the saga");
-                That(metadata.AssociatedMessages.Count == 2, "both messages are associated");
+                That(metadata.AssociatedMessages.Count == 2 && metadata.AssociatedMessages.Select(m => m.MessageType).Distinct().Count() == 2, "each message is associated once");
                 That(metadata.TryGetCorrelationProperty(out var correlation) && correlation.Name == "OrderId" && correlation.Type == typeof(string), "the correlation property is found");
                 That(!metadata.TryGetFinder(typeof(SagaStart).FullName, out var finder) && finder == null, "Bq has no custom finders");
                 That(Bq.Messaging.Sagas.SagaMetadata.IsSagaType(typeof(ScannedSaga)) && !Bq.Messaging.Sagas.SagaMetadata.IsSagaType(typeof(string)), "saga types are recognized");
@@ -1265,6 +1266,84 @@ namespace Bq.Messaging.Tests
                     var invalid = new EndpointConfiguration("edge-retention-invalid", new Uri("amqp://localhost:1/")) { Persistence = new InMemoryPersistenceProvider("edge-retention-invalid") };
                     change(invalid.Retention);
                     Throws<ArgumentOutOfRangeException>(() => RabbitEndpoint.Start(invalid), "an invalid retention setting");
+                }
+            });
+        }
+
+        // The same expectations for every provider that hands the dispatcher a batch of ready rows.
+        public static async Task BatchScenario<T>(T store, string endpoint) where T : IPersistenceProvider, IBatchOutgoingPersistence, IOutgoingFailureTracking
+        {
+            using (var session = await store.OpenSession())
+            {
+                OutgoingMessage Row(string id) => new OutgoingMessage { Id = id, Type = "t", Body = new byte[] { 1 }, RoutingKey = "q", Exchange = "", Headers = new Dictionary<string, object>() };
+                for (var i = 1; i <= 5; i++) await session.StoreOutgoing(Row("o" + i));
+                for (var i = 1; i <= 3; i++) await session.StoreTimeout(Row("t" + i), DateTime.UtcNow.AddMinutes(-10 + i));
+                await session.StoreTimeout(Row("t-later"), DateTime.UtcNow.AddHours(1));
+                session.Commit();
+            }
+            var first = await store.NextOutgoingBatch(endpoint, 3);
+            var second = await store.NextOutgoingBatch(endpoint, 3);
+            That(first.Count == 3 && second.Count == 3, "each call returns up to the limit: " + first.Count + ", " + second.Count);
+            That(first.All(m => m.Id[0] == first[0].Id[0]) && second.All(m => m.Id[0] == second[0].Id[0]) && first[0].Id[0] != second[0].Id[0],
+                "a batch comes from one table, and the tables take turns: " + string.Join(",", first.Select(m => m.Id)) + " / " + string.Join(",", second.Select(m => m.Id)));
+            var outbox = first[0].Id[0] == 'o' ? first : second;
+            var timeouts = first[0].Id[0] == 't' ? first : second;
+            That(outbox.Select(m => m.Id).SequenceEqual(new[] { "o1", "o2", "o3" }), "outbox rows keep their stored order");
+            That(timeouts.Select(m => m.Id).SequenceEqual(new[] { "t1", "t2", "t3" }), "timeouts come in due order, and one that is not due yet is left out");
+
+            // Four rejections make the delay 800 ms, so the checks below are not racing the clock.
+            for (var i = 0; i < 4; i++) await store.RecordOutgoingFailure(endpoint, "o2", new Exception("rejected"));
+            await store.MarkDispatched(endpoint, new[] { "o1", "o3", "t1" });
+            var remaining = new List<string>();
+            for (var round = 0; round < 4; round++)
+            {
+                var next = await store.NextOutgoingBatch(endpoint, 10);
+                remaining.AddRange(next.Select(m => m.Id));
+                if (next.Count > 0) await store.MarkDispatched(endpoint, next.Select(m => m.Id).ToList());
+            }
+            That(remaining.OrderBy(id => id).SequenceEqual(new[] { "o4", "o5", "t2", "t3" }), "dispatched rows are gone and the deferred row is not offered: " + string.Join(",", remaining));
+            await Task.Delay(1500);
+            var back = await store.NextOutgoingBatch(endpoint, 10);
+            That(back.Select(m => m.Id).SequenceEqual(new[] { "o2" }), "the deferred row returns after its retry time: " + string.Join(",", back.Select(m => m.Id)));
+            await store.MarkDispatched(endpoint, new string[0]);
+            await store.MarkDispatched(endpoint, back.Select(m => m.Id).ToList());
+            That((await store.NextOutgoingBatch(endpoint, 10)).Count == 0, "nothing ready is left but the timeout that is not due");
+        }
+
+        static async Task RunBatchCases()
+        {
+            await CaseAsync("the in-memory provider hands out batches", async () =>
+                await BatchScenario(new InMemoryPersistenceProvider("edge-batch"), "edge-batch"));
+            await CaseAsync("SQLite hands out batches", async () =>
+            {
+                var name = "edge-batch-sqlite-" + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try { await BatchScenario(await EdgeOutbox.Store(path, name), name); }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await CaseAsync("SQLite removes a large batch of delivered rows in one call", async () =>
+            {
+                var name = "edge-batch-big-" + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    await EdgeOutbox.Seed(store, "q", Enumerable.Range(0, 900).Select(i => "m" + i));
+                    var batch = await store.NextOutgoingBatch(name, 1000);
+                    That(batch.Count == 900, "all rows come back, got " + batch.Count);
+                    await store.MarkDispatched(name, batch.Select(m => m.Id).ToList());
+                    That(await EdgeOutbox.Count(path, "bq_outbox") == 0, "all of them are removed, across several statements");
+                    await ThrowsAsync<ArgumentOutOfRangeException>(() => store.NextOutgoingBatch(name, 0), "a zero batch size");
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            Case("the outbox batch size is validated and defaults to one hundred", () =>
+            {
+                That(Configuration("edge-batch-default").OutboxBatchSize == 100, "default");
+                foreach (var size in new[] { 0, -1, 10001 })
+                {
+                    var invalid = new EndpointConfiguration("edge-batch-invalid", new Uri("amqp://localhost:1/")) { Persistence = new InMemoryPersistenceProvider("edge-batch-invalid"), OutboxBatchSize = size };
+                    Throws<ArgumentOutOfRangeException>(() => RabbitEndpoint.Start(invalid), "batch size " + size);
                 }
             });
         }

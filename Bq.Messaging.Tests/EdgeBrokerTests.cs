@@ -200,7 +200,7 @@ namespace Bq.Messaging.Tests
     }
 
     // Counts what an Oracle provider hands to the dispatcher, so duplicate publishing is visible and not hidden by the inbox.
-    public sealed class EdgeCountingOracle : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence
+    public sealed class EdgeCountingOracle : IPersistenceProvider, IRecoveryPersistence, ILockedDispatchPersistence, ILockedBatchDispatchPersistence
     {
         readonly Bq.Persistence.Oracle.OraclePersistence inner;
         readonly int[] published;
@@ -216,6 +216,42 @@ namespace Bq.Messaging.Tests
         public Task<bool> DispatchOutgoing(string endpoint, Action<OutgoingMessage> publish) =>
             inner.DispatchOutgoing(endpoint, message => { Interlocked.Increment(ref published[0]); publish(message); });
         public Task<bool> DispatchRecovery(string endpoint, Action<RecoveryRecord> publish) => inner.DispatchRecovery(endpoint, publish);
+        public Task<int> DispatchOutgoingBatch(string endpoint, int maxCount, Func<IReadOnlyList<OutgoingMessage>, IReadOnlyCollection<string>> publish) =>
+            inner.DispatchOutgoingBatch(endpoint, maxCount, rows => { Interlocked.Add(ref published[0], rows.Count); return publish(rows); });
+    }
+
+    // Delegates to SQLite and counts the batches the dispatcher asked for.
+    public sealed class EdgeBatchCounting : IPersistenceProvider, IRecoveryPersistence, IOutgoingFailureTracking, IBatchOutgoingPersistence
+    {
+        readonly Bq.Persistence.Sqlite.SqlitePersistence inner;
+        public int Batches, Largest, Singles;
+        public EdgeBatchCounting(Bq.Persistence.Sqlite.SqlitePersistence inner) { this.inner = inner; }
+        public Task<IPersistenceSession> OpenSession() => inner.OpenSession();
+        public async Task<OutgoingMessage> NextOutgoing(string endpoint)
+        {
+            var next = await inner.NextOutgoing(endpoint);
+            if (next != null) Interlocked.Increment(ref Singles);
+            return next;
+        }
+        public Task MarkDispatched(string endpoint, string messageId) => inner.MarkDispatched(endpoint, messageId);
+        public async Task<IReadOnlyList<OutgoingMessage>> NextOutgoingBatch(string endpoint, int maxCount)
+        {
+            var batch = await inner.NextOutgoingBatch(endpoint, maxCount);
+            if (batch.Count > 0)
+            {
+                Interlocked.Increment(ref Batches);
+                int seen;
+                while ((seen = Volatile.Read(ref Largest)) < batch.Count && Interlocked.CompareExchange(ref Largest, batch.Count, seen) != seen) { }
+            }
+            return batch;
+        }
+        public Task MarkDispatched(string endpoint, IReadOnlyCollection<string> messageIds) => inner.MarkDispatched(endpoint, messageIds);
+        public Task RecordOutgoingFailure(string endpoint, string messageId, Exception failure) => inner.RecordOutgoingFailure(endpoint, messageId, failure);
+        public Task<RecoveryRecord> NextRecovery(string endpoint) => inner.NextRecovery(endpoint);
+        public Task MarkRecoveryDispatched(string endpoint, string recoveryId) => inner.MarkRecoveryDispatched(endpoint, recoveryId);
+        public Task<RecoveryRecord> GetError(string endpoint, string recoveryId) => inner.GetError(endpoint, recoveryId);
+        public Task<IReadOnlyList<RecoveryRecord>> ListErrors(string endpoint, int limit) => inner.ListErrors(endpoint, limit);
+        public Task<bool> ReplayError(string endpoint, string recoveryId, RecoveryRecord replay) => inner.ReplayError(endpoint, recoveryId, replay);
     }
 
     // Lets the broker cases reach the shared retention scenario in EdgeCaseTests.
@@ -852,20 +888,93 @@ namespace Bq.Messaging.Tests
                 try
                 {
                     var store = await EdgeOutbox.Store(path, name);
-                    var expected = Enumerable.Range(0, OnSimulator ? 200 : 40).Select(i => i.ToString("D4")).ToList();
+                    var expected = Enumerable.Range(0, 200).Select(i => i.ToString("D4")).ToList();
                     await EdgeOutbox.Seed(store, name, expected);
                     var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
                     var received = new List<string>();
                     configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { lock (received) received.Add(m.Text); return Task.CompletedTask; }));
                     using (var endpoint = RabbitEndpoint.Start(configuration))
                     {
-                        await Eventually(() => { lock (received) return received.Count == expected.Count; }, "all " + expected.Count + " rows to be handled", OnSimulator ? 15 : 90);
+                        await Eventually(() => { lock (received) return received.Count == expected.Count; }, "all " + expected.Count + " rows to be handled", OnSimulator ? 15 : 60);
                         lock (received) That(received.SequenceEqual(expected), "rows arrive in stored order, first out of order: " + string.Join(",", received.Where((t, i) => t != expected[i]).Take(3)));
                         await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the dispatched rows to leave the outbox");
                     }
                 }
                 finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
             });
+            await Case("the dispatcher sends a backlog in batches, with one confirm for each", async () =>
+            {
+                var name = "bq.test.edge.outbox.batches." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    var counting = new EdgeBatchCounting(store);
+                    var expected = Enumerable.Range(0, 120).Select(i => i.ToString("D4")).ToList();
+                    await EdgeOutbox.Seed(store, name, expected);
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = counting, OutboxBatchSize = 50 };
+                    var received = new List<string>();
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { lock (received) received.Add(m.Text); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        await Eventually(() => { lock (received) return received.Count == expected.Count; }, "all rows to be handled", OnSimulator ? 15 : 60);
+                        lock (received) That(received.SequenceEqual(expected), "batching keeps the stored order");
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");
+                        That(counting.Largest == 50 && counting.Batches >= 3 && counting.Batches <= 6 && counting.Singles == 0,
+                            "rows came in batches of up to 50, not one at a time: " + counting.Batches + " batches, largest " + counting.Largest + ", " + counting.Singles + " singles");
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("a batch size of one confirms every row on its own", async () =>
+            {
+                var name = "bq.test.edge.outbox.single." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    var counting = new EdgeBatchCounting(store);
+                    await EdgeOutbox.Seed(store, name, Enumerable.Range(0, 10).Select(i => "s" + i));
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = counting, OutboxBatchSize = 1 };
+                    var handled = 0;
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { Interlocked.Increment(ref handled); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        await Eventually(() => Volatile.Read(ref handled) == 10, "all ten rows to be handled");
+                        That(counting.Batches == 0 && counting.Singles >= 10, "no batch was used: " + counting.Batches + " batches, " + counting.Singles + " singles");
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("an unroutable row in the middle of a batch is deferred and the rest of the batch is sent", async () =>
+            {
+                var name = "bq.test.edge.outbox.midbatch." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    await EdgeOutbox.Seed(store, name, new[] { "before" });
+                    await EdgeOutbox.Seed(store, name + ".nowhere", new[] { "unroutable" });
+                    await EdgeOutbox.Seed(store, name, new[] { "after1", "after2" });
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
+                    var received = new List<string>();
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { lock (received) received.Add(m.Text); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                    using (var channel = connection.CreateModel())
+                    {
+                        await Eventually(() => { lock (received) return received.Count == 3; }, "the three routable rows of the batch to be sent");
+                        lock (received) That(received.SequenceEqual(new[] { "before", "after1", "after2" }), "in stored order");
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 1, "only the unroutable row to remain");
+                        var pending = (await store.ListPendingDispatches(DispatchKind.Outbox, 10)).Single();
+                        That(pending.Attempts >= 1 && pending.LastError != null, "it is deferred with its reason: " + pending.LastError);
+                        channel.QueueDeclare(name + ".nowhere", true, false, false);
+                        await Eventually(() => channel.MessageCount(name + ".nowhere") == 1, "the deferred row to be delivered once its queue exists");
+                    }
+                }
+                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+
             await Case("a large outbox backlog drains completely and exactly once", async () =>
             {
                 var name = "bq.test.edge.outbox.volume." + Guid.NewGuid().ToString("N");
@@ -873,7 +982,7 @@ namespace Bq.Messaging.Tests
                 try
                 {
                     var store = await EdgeOutbox.Store(path, name);
-                    var total = OnSimulator ? 1500 : 150;
+                    var total = 1500;
                     await EdgeOutbox.Seed(store, name, Enumerable.Range(0, total).Select(i => "v" + i));
                     var configuration = new EndpointConfiguration(name, uri) { Persistence = store, MaxConcurrency = 8 };
                     var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
@@ -883,7 +992,7 @@ namespace Bq.Messaging.Tests
                     {
                         for (var i = 0; i < 1200 && seen.Count < total; i++) await Task.Delay(100);
                         That(seen.Count == total, "all rows were handled, got " + seen.Count + " of " + total);
-                        Console.WriteLine("Outbox backlog of " + total + " drained in " + (DateTime.UtcNow - started).TotalSeconds.ToString("0.0") + "s.");
+                        Console.WriteLine("Outbox backlog of " + total + " drained in " + (DateTime.UtcNow - started).TotalSeconds.ToString("0.0") + "s on " + (OnSimulator ? "the simulator" : "a real broker") + ".");
                         await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");
                         await Task.Delay(500);
                         That(seen.Values.All(n => n == 1), "no row was handled twice: " + string.Join(",", seen.Where(p => p.Value != 1).Take(3).Select(p => p.Key)));

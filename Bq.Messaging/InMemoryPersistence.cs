@@ -18,7 +18,7 @@ namespace Bq.Messaging
             new InMemoryPersistenceProvider(settings.Get<string>(EndpointConfiguration.EndpointNameKey));
     }
 
-    public sealed class InMemoryPersistenceProvider : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence, IOutgoingFailureTracking, IRetentionPersistence
+    public sealed class InMemoryPersistenceProvider : IPersistenceProvider, IRecoveryPersistence, IInstallablePersistence, IOutgoingFailureTracking, IRetentionPersistence, IBatchOutgoingPersistence
     {
         readonly object gate = new object();
         readonly string endpoint;
@@ -61,6 +61,37 @@ namespace Bq.Messaging
                 var queued = outbox.FirstOrDefault(message => Ready(message.Id));
                 return Task.FromResult(preferTimeout ? due ?? queued : queued ?? due);
             }
+        }
+
+        public Task<IReadOnlyList<OutgoingMessage>> NextOutgoingBatch(string name, int maxCount)
+        {
+            Check(name);
+            if (maxCount < 1) throw new ArgumentOutOfRangeException(nameof(maxCount));
+            lock (gate)
+            {
+                var now = DateTime.UtcNow;
+                bool Ready(string id) => !rejected.TryGetValue(id, out var state) || state.RetryAfter <= now;
+                var due = timeouts.Where(entry => entry.Due <= now && Ready(entry.Message.Id)).OrderBy(entry => entry.Due).ThenBy(entry => entry.Message.Id, StringComparer.Ordinal)
+                    .Select(entry => entry.Message).Take(maxCount).ToList();
+                var queued = outbox.Where(message => Ready(message.Id)).Take(maxCount).ToList();
+                var timeoutsFirst = (Interlocked.Increment(ref outgoingPoll) & 1) == 1;
+                var batch = timeoutsFirst ? (due.Count > 0 ? due : queued) : (queued.Count > 0 ? queued : due);
+                return Task.FromResult<IReadOnlyList<OutgoingMessage>>(batch);
+            }
+        }
+
+        public Task MarkDispatched(string name, IReadOnlyCollection<string> ids)
+        {
+            Check(name);
+            if (ids == null) throw new ArgumentNullException(nameof(ids));
+            lock (gate)
+            {
+                var set = new HashSet<string>(ids, StringComparer.Ordinal);
+                outbox.RemoveAll(message => set.Contains(message.Id));
+                timeouts.RemoveAll(entry => set.Contains(entry.Message.Id));
+                foreach (var id in set) rejected.Remove(id);
+            }
+            return Task.CompletedTask;
         }
 
         public Task MarkDispatched(string name, string id)

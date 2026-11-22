@@ -84,6 +84,28 @@ namespace Bq.Messaging
     }
 
     /// <summary>
+    /// Implemented by providers that can hand the dispatcher several ready rows at once, so the endpoint can publish them all and wait for
+    /// one broker confirm instead of one per row. Rows come in the order they would come one at a time, from one table per call.
+    /// </summary>
+    public interface IBatchOutgoingPersistence
+    {
+        Task<System.Collections.Generic.IReadOnlyList<OutgoingMessage>> NextOutgoingBatch(string endpoint, int maxCount);
+        Task MarkDispatched(string endpoint, System.Collections.Generic.IReadOnlyCollection<string> messageIds);
+    }
+
+    /// <summary>
+    /// The batch form of <see cref="ILockedDispatchPersistence"/>. The provider locks up to <c>maxCount</c> ready rows, passes them to
+    /// <c>publish</c>, which returns the IDs of the rows the broker rejected, then removes the other rows and records a failure on the
+    /// rejected ones before it releases the lock. It returns how many rows it handled, or 0 when none were ready. If <c>publish</c> throws,
+    /// the rows stay pending.
+    /// </summary>
+    public interface ILockedBatchDispatchPersistence
+    {
+        Task<int> DispatchOutgoingBatch(string endpoint, int maxCount,
+            Func<System.Collections.Generic.IReadOnlyList<OutgoingMessage>, System.Collections.Generic.IReadOnlyCollection<string>> publish);
+    }
+
+    /// <summary>
     /// How long a rejected outgoing row waits before it is tried again: 100 milliseconds, doubling, up to 30 seconds. A
     /// queue that appears a moment later is found quickly, and a row that never succeeds is retried every 30 seconds.
     /// </summary>
