@@ -48,7 +48,7 @@ This is an alternative transport design. Sharing a database in the current Rabbi
 ## Many processes on one endpoint
 
 !!! note "In short"
-    You can run many processes of the same endpoint against one database, and nothing is lost or handled twice. But **extra processes do not publish faster**. They add failover and **extra polling load on the database**. To publish faster, raise `OutboxBatchSize`; do not add processes.
+    You can run many processes of the same endpoint against one database, and nothing is lost or handled twice. But **extra processes do not publish faster**. They add failover and **extra polling load on the database**. To publish faster, raise `OutboxBatchSize`; do not add processes. For a database per tenant, see [multi-tenant endpoints](multi-tenant.md).
 
 Every process that runs an endpoint polls the same rows. The rows belong to the endpoint's name, so processes of one endpoint share them, and endpoints with different names never touch each other's rows.
 

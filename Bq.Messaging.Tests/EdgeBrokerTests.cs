@@ -1032,6 +1032,22 @@ namespace Bq.Messaging.Tests
                 }
                 finally { DeleteTenantFiles(t.Name, "acme", "globex"); }
             });
+            await Case("a transaction opened inside a tenant scope stores its outbox rows in that tenant's database", async () =>
+            {
+                var t = await TenantEndpoint("transaction", new[] { "acme", "globex" });
+                try
+                {
+                    using (t.Endpoint)
+                    {
+                        using (Bq.Messaging.MultiTenant.Tenant.Scope("globex"))
+                            await t.Endpoint.ExecuteTransaction(async session => await session.SendLocal(new EdgeUowMessage { Text = "in-transaction" }));
+                        await Eventually(() => t.Handled.Contains("in-transaction@globex"), "the message sent in the transaction to be handled under its tenant", 15);
+                    }
+                    That(await EdgeOutbox.Count(t.Path("globex"), "bq_inbox") == 1 && await EdgeOutbox.Count(t.Path("acme"), "bq_inbox") == 0,
+                        "only globex's database was used");
+                }
+                finally { DeleteTenantFiles(t.Name, "acme", "globex"); }
+            });
             await Case("work with no tenant fails closed, and a delivery with no tenant or an unknown one goes to the error queue", async () =>
             {
                 var t = await TenantEndpoint("reject", new[] { "acme" });
