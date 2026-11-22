@@ -207,9 +207,13 @@ namespace Bq.Messaging
             {
                 try { return Decrypt(encryptedValue, key); }
                 catch (CryptographicException) { }
+                // A wrong key still gives valid padding about once in 256 tries; the garbage it decrypts to is rarely valid UTF-8.
+                catch (ArgumentException) { }
             }
             throw new InvalidOperationException("The value could not be decrypted with the current or expired keys.");
         }
+
+        static readonly Encoding StrictUtf8 = new UTF8Encoding(false, true);
 
         static string Decrypt(EncryptedValue value, byte[] key)
         {
@@ -222,7 +226,7 @@ namespace Bq.Messaging
                 using (var decryptor = aes.CreateDecryptor())
                 {
                     var cipher = Convert.FromBase64String(value.EncryptedBase64Value);
-                    return Encoding.UTF8.GetString(decryptor.TransformFinalBlock(cipher, 0, cipher.Length));
+                    return StrictUtf8.GetString(decryptor.TransformFinalBlock(cipher, 0, cipher.Length));
                 }
             }
         }

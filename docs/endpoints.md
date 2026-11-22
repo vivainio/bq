@@ -226,6 +226,19 @@ To enable the Rijndael (AES-CBC) service:
 
 The sender names its key in the `NServiceBus.RijndaelKeyIdentifier` header. The receiver falls back to the other and expired keys, so a rotated key still reads messages already in flight.
 
+Rijndael (AES-CBC) has no authentication. A wrong key can occasionally decrypt to garbage instead of failing, and a changed value goes unnoticed. Bq reads past most wrong-key results by requiring valid UTF-8, but it can't be certain. Keep Rijndael for compatibility with NServiceBus and its keys.
+
+For new messages that NServiceBus doesn't need to read, use the authenticated service:
+
+```csharp
+config.AuthenticatedEncryptionService("2026-11", key, expiredKeys: new List<byte[]> { oldKey });
+```
+
+- It encrypts with AES-CBC and authenticates with HMAC-SHA256 (encrypt then MAC), so a wrong key, a changed value or a changed IV is rejected every time. It isn't AES-GCM, because `AesGcm` doesn't exist on .NET Framework.
+- Keys are 32 bytes. One key gives separate encryption and authentication keys.
+- The sender names its key in the `Bq.EncryptionKeyIdentifier` header. The key name is part of what is authenticated, so a value sealed with an expired key still needs its header.
+- The format is Bq's own, and NServiceBus can't read it.
+
 For another algorithm, use `RegisterEncryptionService` or a container-registered `IEncryptionService`. This is separate from `EnableMessagePropertyEncryption`, which encrypts ordinary string properties chosen by convention.
 
 ## JSON on the wire
