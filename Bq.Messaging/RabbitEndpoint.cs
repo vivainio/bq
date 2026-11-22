@@ -723,6 +723,15 @@ namespace Bq.Messaging
         {
             PublishPrepared(await Prepare(message, exchange, routingKey, correlationId, mandatory, headers, kind: kind).ConfigureAwait(false));
         }
+        // RabbitMQ.Client returns true from WaitForConfirms when the wait times out and nothing was nacked, so a timeout is only visible in
+        // the out parameter. Without this check an unconfirmed message would be treated as delivered.
+        void AwaitConfirms()
+        {
+            if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout, out var timedOut))
+                throw new InvalidOperationException("RabbitMQ declined the publish.");
+            if (timedOut) throw new TimeoutException("RabbitMQ did not confirm the publish within " + publisherConfirmTimeout + ".");
+        }
+
         IBasicProperties OutgoingProperties(OutgoingMessage message)
         {
             var props = publisherChannel.CreateBasicProperties();
@@ -759,7 +768,7 @@ namespace Bq.Messaging
                 var props = OutgoingProperties(message);
                 returned = false;
                 publisherChannel.BasicPublish(message.Exchange, message.RoutingKey, message.Mandatory, props, message.Body);
-                if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
+                AwaitConfirms();
                 if (returned) throw new OutgoingMessageRejectedException(message.Id, "Message was unroutable: " + message.RoutingKey);
             }
         }
@@ -779,7 +788,7 @@ namespace Bq.Messaging
                     wireIds[i] = props.MessageId;
                     publisherChannel.BasicPublish(messages[i].Exchange, messages[i].RoutingKey, messages[i].Mandatory, props, messages[i].Body);
                 }
-                if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
+                AwaitConfirms();
                 var rejected = new List<string>();
                 for (var i = 0; i < messages.Count; i++)
                     if (returnedIds.ContainsKey(wireIds[i])) rejected.Add(messages[i].Id);
@@ -938,7 +947,7 @@ namespace Bq.Messaging
                 props.Persistent = true;
                 returned = false;
                 publisherChannel.BasicPublish("", record.IsError ? record.ErrorQueue : localAddress, true, props, envelope.Body);
-                if (!publisherChannel.WaitForConfirms(publisherConfirmTimeout)) throw new InvalidOperationException("RabbitMQ did not confirm the publish.");
+                AwaitConfirms();
                 if (returned) throw new InvalidOperationException("Recovery message was unroutable.");
             }
         }

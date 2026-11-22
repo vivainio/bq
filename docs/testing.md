@@ -19,9 +19,11 @@ The messaging CI job installs the [published rabbit-sim wheel](https://pypi.org/
 ```sh
 python3 -m venv .venv-rabbit-sim
 source .venv-rabbit-sim/bin/activate
-python -m pip install rabbit-sim==0.2.0
+python -m pip install rabbit-sim==0.3.0
 bash scripts/test-rabbit-sim.sh
 ```
+
+The simulator can also be made slow or unreliable on purpose. `POST /chaos/latency?confirm=MS` holds every publisher confirm back and `POST /chaos/nack?count=N` declines the next publishes. Tests use them to show that batched dispatch beats one confirm per row when confirms are slow, that a batch the broker declines is published again and the inbox absorbs the duplicates, and that a confirm that does not arrive in time raises the critical-error callback. They skip themselves on a real broker or an older simulator.
 
 The runner starts the simulator with `--rabbitmq 4` when it supports it, so a test that RabbitMQ 4 would reject, such as declaring a transient queue that is not exclusive, fails here too. The runner uses `--data` to persist broker state to a temporary SQLite file. It stops the simulator, waits for the endpoint to observe the outage, and restarts it with that same file before running the Windsor sample.
 

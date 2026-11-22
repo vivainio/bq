@@ -388,6 +388,18 @@ namespace Bq.Messaging.Tests
         // sends roughly ten rows a second there, and backlog cases are sized for it.
         static bool OnSimulator => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BQ_RABBITSIM_HTTP"));
 
+        // Calls a fault-injection endpoint of rabbit-sim. False when there is no simulator, or this one does not have the endpoint.
+        static async Task<bool> Chaos(string pathAndQuery)
+        {
+            var http = Environment.GetEnvironmentVariable("BQ_RABBITSIM_HTTP");
+            if (string.IsNullOrEmpty(http)) return false;
+            using (var client = new System.Net.Http.HttpClient())
+            {
+                var response = await client.PostAsync(http + pathAndQuery, null);
+                return response.StatusCode != System.Net.HttpStatusCode.NotFound && response.IsSuccessStatusCode;
+            }
+        }
+
         static async Task Eventually(Func<bool> condition, string what, int seconds = 15)
         {
             for (var i = 0; i < seconds * 10; i++) { if (condition()) return; await Task.Delay(100); }
@@ -973,6 +985,105 @@ namespace Bq.Messaging.Tests
                     }
                 }
                 finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+
+            await Case("batching beats one confirm per row when confirms are slow", async () =>
+            {
+                if (!await Chaos("/chaos/latency?confirm=0")) { Console.WriteLine("Slow-confirm test skipped: needs rabbit-sim with /chaos/latency."); return; }
+                async Task<double> Drain(int batchSize)
+                {
+                    var name = "bq.test.edge.slowconfirm." + batchSize + "." + Guid.NewGuid().ToString("N");
+                    var path = EdgeOutbox.NewPath(name);
+                    try
+                    {
+                        var store = await EdgeOutbox.Store(path, name);
+                        await EdgeOutbox.Seed(store, name, Enumerable.Range(0, 100).Select(i => "r" + i));
+                        var configuration = new EndpointConfiguration(name, uri) { Persistence = store, OutboxBatchSize = batchSize };
+                        var handled = 0;
+                        configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { Interlocked.Increment(ref handled); return Task.CompletedTask; }));
+                        var watch = System.Diagnostics.Stopwatch.StartNew();
+                        using (var endpoint = RabbitEndpoint.Start(configuration))
+                        {
+                            await Eventually(() => Volatile.Read(ref handled) == 100, "all 100 rows with batch size " + batchSize, 60);
+                            return watch.Elapsed.TotalSeconds;
+                        }
+                    }
+                    finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+                }
+                try
+                {
+                    await Chaos("/chaos/latency?confirm=25");
+                    var single = await Drain(1);
+                    var batched = await Drain(100);
+                    Console.WriteLine("With a 25 ms confirm, 100 rows took " + single.ToString("0.0") + "s one confirm at a time and " + batched.ToString("0.0") + "s in batches.");
+                    That(single >= 2.0, "one confirm per row pays the delay for every row: " + single.ToString("0.0") + "s");
+                    That(batched * 3 < single, "a batch pays it once: " + batched.ToString("0.0") + "s against " + single.ToString("0.0") + "s");
+                }
+                finally { await Chaos("/chaos/latency?confirm=0"); }
+            });
+            await Case("a batch the broker declines stays pending and is published again, and the inbox absorbs the duplicates", async () =>
+            {
+                if (!await Chaos("/chaos/nack?count=0")) { Console.WriteLine("Nack test skipped: needs rabbit-sim with /chaos/nack."); return; }
+                var name = "bq.test.edge.nackbatch." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    var counting = new EdgeBatchCounting(store);
+                    await EdgeOutbox.Seed(store, name, Enumerable.Range(0, 5).Select(i => "n" + i));
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = counting };
+                    configuration.DispatchPollInterval = TimeSpan.FromMilliseconds(50);
+                    var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen.AddOrUpdate(m.Text, 1, (key, n) => n + 1); return Task.CompletedTask; }));
+                    await Chaos("/chaos/nack?count=1");
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        await Eventually(() => seen.Count == 5, "all five rows to be handled after the declined publish");
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");
+                        await Task.Delay(500);
+                        That(counting.Batches >= 2, "the batch was fetched again after the broker declined one of its rows: " + counting.Batches);
+                        That(seen.Values.All(n => n == 1), "the rows that were published twice were handled once: " + string.Join(",", seen.Where(p => p.Value != 1).Select(p => p.Key + "x" + p.Value)));
+                    }
+                }
+                finally { await Chaos("/chaos/nack?count=0"); if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
+            });
+            await Case("a confirm that never comes in time raises the critical error and recovers when confirms are fast again", async () =>
+            {
+                if (!await Chaos("/chaos/latency?confirm=0")) { Console.WriteLine("Stalled-confirm test skipped: needs rabbit-sim with /chaos/latency."); return; }
+                var name = "bq.test.edge.stalledconfirm." + Guid.NewGuid().ToString("N");
+                var path = EdgeOutbox.NewPath(name);
+                try
+                {
+                    var store = await EdgeOutbox.Store(path, name);
+                    await EdgeOutbox.Seed(store, name, Enumerable.Range(0, 3).Select(i => "c" + i));
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store, PublisherConfirmTimeout = TimeSpan.FromMilliseconds(200), CriticalErrorThreshold = TimeSpan.FromMilliseconds(500) };
+                    configuration.DispatchPollInterval = TimeSpan.FromMilliseconds(50);
+                    var critical = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    configuration.OnCriticalError = (error, exception) => { critical.TrySetResult(error); return Task.CompletedTask; };
+                    var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen.AddOrUpdate(m.Text, 1, (key, n) => n + 1); return Task.CompletedTask; }));
+                    await Chaos("/chaos/latency?confirm=1500");
+                    var traced = new System.IO.StringWriter();
+                    var listener = new System.Diagnostics.TextWriterTraceListener(traced);
+                    System.Diagnostics.Trace.Listeners.Add(listener);
+                    try
+                    {
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        var first = await Task.WhenAny(critical.Task, Task.Delay(10000));
+                        listener.Flush();
+                        That(first == critical.Task, "no critical error within 10s; handled " + seen.Count + ", outbox rows " + await EdgeOutbox.Count(path, "bq_outbox") + "; trace: " + traced.ToString().Replace(Environment.NewLine, " | "));
+                        That(await critical.Task == "Outbox dispatcher", "the callback names the outbox dispatcher");
+                        await Chaos("/chaos/latency?confirm=0");
+                        await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the rows to be recorded once confirms are fast again", 30);
+                        await Eventually(() => seen.Count == 3, "all three rows to be handled");
+                        await Task.Delay(1500);
+                        That(seen.Values.All(n => n == 1), "publishing repeatedly while unconfirmed handled each row once: " + string.Join(",", seen.Select(p => p.Key + "x" + p.Value)));
+                    }
+                    }
+                    finally { System.Diagnostics.Trace.Listeners.Remove(listener); }
+                }
+                finally { await Chaos("/chaos/latency?confirm=0"); if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
             });
 
             await Case("a large outbox backlog drains completely and exactly once", async () =>
