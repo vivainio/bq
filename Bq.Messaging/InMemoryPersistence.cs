@@ -9,7 +9,7 @@ using Bq.Messaging.Settings;
 namespace Bq.Messaging
 {
     /// <summary>
-    /// Keeps the inbox, outbox, timeouts, sagas and recovery records in memory. Everything is lost when the process ends, so use it
+    /// Keeps the inbox, outbox, sagas and recovery records in memory. Everything is lost when the process ends, so use it
     /// for tests and local runs. Sessions have no database connection, so handlers that need <c>Connection</c> or <c>Transaction</c> cannot use it.
     /// </summary>
     public sealed class InMemoryPersistence : PersistenceDefinition
@@ -25,13 +25,11 @@ namespace Bq.Messaging
         readonly Dictionary<string, DateTime> inbox = new Dictionary<string, DateTime>(StringComparer.Ordinal);
         readonly HashSet<string> reserved = new HashSet<string>(StringComparer.Ordinal);
         readonly List<OutgoingMessage> outbox = new List<OutgoingMessage>();
-        readonly List<(OutgoingMessage Message, DateTime Due)> timeouts = new List<(OutgoingMessage, DateTime)>();
         readonly Dictionary<string, RecoveryRecord> recovery = new Dictionary<string, RecoveryRecord>(StringComparer.Ordinal);
         readonly HashSet<string> replayed = new HashSet<string>(StringComparer.Ordinal);
         readonly Dictionary<(string Type, string Id), SagaRecord> sagas = new Dictionary<(string, string), SagaRecord>();
         // Retry state of outgoing rows whose publish was rejected, by message ID.
         readonly Dictionary<string, (int Attempts, DateTime RetryAfter, string Error)> rejected = new Dictionary<string, (int, DateTime, string)>(StringComparer.Ordinal);
-        int outgoingPoll;
 
         public InMemoryPersistenceProvider(string endpoint)
         {
@@ -52,14 +50,9 @@ namespace Bq.Messaging
             Check(name);
             lock (gate)
             {
-                // Alternate between categories so a stuck head in one cannot starve the other.
-                var preferTimeout = (Interlocked.Increment(ref outgoingPoll) & 1) == 1;
                 var now = DateTime.UtcNow;
                 bool Ready(string id) => !rejected.TryGetValue(id, out var state) || state.RetryAfter <= now;
-                var due = timeouts.Where(entry => entry.Due <= now && Ready(entry.Message.Id)).OrderBy(entry => entry.Due).ThenBy(entry => entry.Message.Id, StringComparer.Ordinal)
-                    .Select(entry => entry.Message).FirstOrDefault();
-                var queued = outbox.FirstOrDefault(message => Ready(message.Id));
-                return Task.FromResult(preferTimeout ? due ?? queued : queued ?? due);
+                return Task.FromResult(outbox.FirstOrDefault(message => Ready(message.Id)));
             }
         }
 
@@ -71,12 +64,7 @@ namespace Bq.Messaging
             {
                 var now = DateTime.UtcNow;
                 bool Ready(string id) => !rejected.TryGetValue(id, out var state) || state.RetryAfter <= now;
-                var due = timeouts.Where(entry => entry.Due <= now && Ready(entry.Message.Id)).OrderBy(entry => entry.Due).ThenBy(entry => entry.Message.Id, StringComparer.Ordinal)
-                    .Select(entry => entry.Message).Take(maxCount).ToList();
-                var queued = outbox.Where(message => Ready(message.Id)).Take(maxCount).ToList();
-                var timeoutsFirst = (Interlocked.Increment(ref outgoingPoll) & 1) == 1;
-                var batch = timeoutsFirst ? (due.Count > 0 ? due : queued) : (queued.Count > 0 ? queued : due);
-                return Task.FromResult<IReadOnlyList<OutgoingMessage>>(batch);
+                return Task.FromResult<IReadOnlyList<OutgoingMessage>>(outbox.Where(message => Ready(message.Id)).Take(maxCount).ToList());
             }
         }
 
@@ -88,7 +76,6 @@ namespace Bq.Messaging
             {
                 var set = new HashSet<string>(ids, StringComparer.Ordinal);
                 outbox.RemoveAll(message => set.Contains(message.Id));
-                timeouts.RemoveAll(entry => set.Contains(entry.Message.Id));
                 foreach (var id in set) rejected.Remove(id);
             }
             return Task.CompletedTask;
@@ -100,7 +87,6 @@ namespace Bq.Messaging
             lock (gate)
             {
                 outbox.RemoveAll(message => message.Id == id);
-                timeouts.RemoveAll(entry => entry.Message.Id == id);
                 rejected.Remove(id);
             }
             return Task.CompletedTask;
@@ -135,7 +121,7 @@ namespace Bq.Messaging
             Check(name);
             lock (gate)
             {
-                if (!outbox.Any(message => message.Id == messageId) && !timeouts.Any(entry => entry.Message.Id == messageId)) return Task.CompletedTask;
+                if (!outbox.Any(message => message.Id == messageId)) return Task.CompletedTask;
                 var attempts = (rejected.TryGetValue(messageId, out var state) ? state.Attempts : 0) + 1;
                 rejected[messageId] = (attempts, DateTime.UtcNow.Add(OutgoingRetry.Delay(attempts)), OutgoingRetry.Describe(failure));
             }
@@ -199,7 +185,6 @@ namespace Bq.Messaging
             readonly InMemoryPersistenceProvider owner;
             readonly HashSet<string> claims = new HashSet<string>(StringComparer.Ordinal);
             readonly List<OutgoingMessage> outgoing = new List<OutgoingMessage>();
-            readonly List<(OutgoingMessage, DateTime)> scheduled = new List<(OutgoingMessage, DateTime)>();
             readonly List<RecoveryRecord> recoveries = new List<RecoveryRecord>();
             readonly Dictionary<(string, string), SagaChange> changes = new Dictionary<(string, string), SagaChange>();
             bool finished;
@@ -223,13 +208,6 @@ namespace Bq.Messaging
             }
 
             public Task StoreOutgoing(OutgoingMessage message) { outgoing.Add(message); return Task.CompletedTask; }
-
-            public Task StoreTimeout(OutgoingMessage message, DateTime dueUtc)
-            {
-                if (dueUtc.Kind != DateTimeKind.Utc) throw new ArgumentException("Timeout must use UTC.", nameof(dueUtc));
-                scheduled.Add((message, dueUtc));
-                return Task.CompletedTask;
-            }
 
             public Task<bool> HasRecovery(string name, string recoveryId)
             {
@@ -293,7 +271,6 @@ namespace Bq.Messaging
                     foreach (var claim in claims) { owner.reserved.Remove(claim); owner.inbox[claim] = DateTime.UtcNow; }
                     claims.Clear();
                     owner.outbox.AddRange(outgoing);
-                    owner.timeouts.AddRange(scheduled.Select(entry => (entry.Item1, entry.Item2)));
                     foreach (var record in recoveries) if (!owner.recovery.ContainsKey(record.RecoveryId)) owner.recovery.Add(record.RecoveryId, record);
                     foreach (var pair in changes)
                     {

@@ -210,7 +210,6 @@ namespace Bq.Messaging.Tests
             public DbTransaction Transaction => session.Transaction;
             public Task<bool> TryClaimMessage(string endpoint, string id) => session.TryClaimMessage(endpoint, id);
             public Task StoreOutgoing(OutgoingMessage message) => session.StoreOutgoing(message);
-            public Task StoreTimeout(OutgoingMessage message, DateTime due) => session.StoreTimeout(message, due);
             public Task<SagaRecord> LoadSaga(string type, string id) => session.LoadSaga(type, id);
             public Task SaveSaga(string type, string id, byte[] data, long? version) => session.SaveSaga(type, id, data, version);
             public Task DeleteSaga(string type, string id, long version) => session.DeleteSaga(type, id, version);
@@ -573,28 +572,6 @@ namespace Bq.Messaging.Tests
                 await store.MarkDispatched("test", "sent");
                 Assert(await store.NextOutgoing("test") == null, "outbox dispatch");
                 Assert((await store.GetDispatchBacklog()).Outgoing == 0, "dispatched item leaves backlog");
-                using (var session = await store.OpenSession())
-                {
-                    await session.StoreOutgoing(new OutgoingMessage { Id = "ordinary", Type = "t",
-                        Exchange = "", RoutingKey = "q", Body = new byte[] { 1 } });
-                    await session.StoreTimeout(new OutgoingMessage { Id = "timeout", Type = "t",
-                        Exchange = "", RoutingKey = "q", Body = new byte[] { 1 } }, DateTime.UtcNow.AddSeconds(-1));
-                    session.Commit();
-                }
-                Assert((await store.NextOutgoing("test")).Id == "timeout" &&
-                    (await store.NextOutgoing("test")).Id == "ordinary",
-                    "outgoing polls alternate between due timeouts and ordinary messages");
-                await store.MarkDispatched("test", "ordinary");
-                await store.MarkDispatched("test", "timeout");
-                using (var session = await store.OpenSession())
-                {
-                    await session.StoreTimeout(new OutgoingMessage { Id = "later", Type = typeof(SagaTimeoutMessage).FullName,
-                        Exchange = "", RoutingKey = "q", Body = new byte[] { 1 } }, DateTime.UtcNow.AddHours(1));
-                    session.Commit();
-                }
-                Assert((await store.ListPendingDispatches(DispatchKind.SagaTimeout)).Count == 1 &&
-                    (await store.ListReadyDispatches(DispatchKind.SagaTimeout)).Count == 0,
-                    "ready inspection excludes scheduled timeouts");
                 var failedAt = DateTime.UtcNow;
                 using (var session = await store.OpenSession())
                 {
@@ -786,6 +763,8 @@ namespace Bq.Messaging.Tests
                         using (var queueOwner = connection.CreateModel())
                         {
                             queueOwner.QueueDeclare(producerName, true, false, false);
+                            // A delayed message comes back through the delivery exchange, so the queue has to be bound to it.
+                            DelayTopology.BindDestination(queueOwner, producerName);
                             try
                             {
                                 IMessageSession session = producer;
@@ -821,17 +800,7 @@ namespace Bq.Messaging.Tests
                             }
                             finally { queueOwner.QueueDelete(producerName); }
                         }
-                        await producer.PublishAt(new Event { Text = "event" }, DateTimeOffset.UtcNow.AddSeconds(3));
                         await producer.StopAsync();
-                    }
-                    Assert((await producerStore.ListPendingDispatches(DispatchKind.ScheduledSend)).Count == 1 &&
-                        !gotEvent1.Task.IsCompleted && !gotEvent2.Task.IsCompleted,
-                        "scheduled event remains in the database after stopping the producer");
-                    using (var restartedProducer = RabbitEndpoint.Start(producerConfig))
-                    {
-                        Assert(await Within(gotEvent1.Task) == "event" && await Within(gotEvent2.Task) == "event",
-                            "scheduled event reaches both subscribers after producer restart");
-                        await restartedProducer.StopAsync();
                     }
                     await a.Send(new Failed());
                     Assert(await Within(gotCommand.Task) == "command", "command");
@@ -975,26 +944,26 @@ namespace Bq.Messaging.Tests
             sender.Route<ChangeOrder>(endpointName);
             try
             {
+                DateTimeOffset timeoutAt = default;
                 using (var a = RabbitEndpoint.Start(sender))
                 {
                     using (var sagaEndpoint = RabbitEndpoint.Start(config))
                     {
                         await a.Send(new ChangeOrder { OrderId = "missing" });
-                        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(3).ToOffset(TimeSpan.FromHours(2));
+                        timeoutAt = DateTimeOffset.UtcNow.AddSeconds(3).ToOffset(TimeSpan.FromHours(2));
                         await a.Send(new StartOrder { OrderId = "restart", TimeoutAt = timeoutAt, FailFirst = true });
                         await WaitFor(async () => await ReadOrder(store, "restart") != null, "start saga");
                         Assert(OrderWorkflow.StartAttempts == 2, "handler retry starts new transaction");
-                        var pending = await store.ListPendingDispatches(DispatchKind.SagaTimeout);
-                        Assert(pending.Count == 1 && pending[0].DueAtUtc == timeoutAt.UtcDateTime, "absolute timeout preserves due time across retry");
                         Assert(await ReadOrder(store, "missing") == null && missingCount == 1, "non-start message invokes not-found callback");
                         Assert(missingHandlerCount == 1, "Windsor resolves the saga-not-found handler inside the message scope");
                         Assert(missingHandlerDisposals == 1, "Windsor releases the transient handler before endpoint shutdown");
                         Assert(otherHandlerCount == 1, "ordinary handler and saga share message");
                     }
-                    // Timeout is stored in SQLite and is still due after endpoint restart.
+                    // The broker holds the timeout and delivers it to the endpoint's queue, so it is still handled after a restart.
                     using (var sagaEndpoint = RabbitEndpoint.Start(config))
                     {
                         await WaitFor(async () => (await ReadOrder(store, "restart"))?.Data.TimeoutCount == 1, "timeout after restart");
+                        Assert(DateTimeOffset.UtcNow >= timeoutAt, "an absolute timeout is not delivered before its due time, and the failed first attempt added none");
                         await Task.Delay(1500);
                         Assert((await ReadOrder(store, "restart")).Data.TimeoutCount == 1, "failed attempt did not leave an extra timeout");
                         await a.Send(new ChangeOrder { OrderId = "restart" });

@@ -9,7 +9,7 @@ NServiceBus has several persisters, and the details below come from its document
 | What | NServiceBus | Bq |
 | --- | --- | --- |
 | Saga state | One table per saga in SQL Persistence, with JSON data. Other persisters use their own stores | One table, `bq_saga`, with MessagePack data |
-| Saga timeouts | With the RabbitMQ transport, in the broker's delayed-delivery queues. SQL Persistence 7.x also has a legacy `TimeoutData` table | `bq_saga_timeout`, polled by the endpoint's dispatcher |
+| Saga timeouts | With the RabbitMQ transport, in the broker's delayed-delivery queues. SQL Persistence 7.x also has a legacy `TimeoutData` table | An outbox row that the broker holds until it is due, in delay levels or natively. See [delayed delivery](delayed-delivery.md) |
 | Outbox | An `OutboxData` table with the endpoint name as a prefix, when the outbox is enabled | `bq_outbox`, always on |
 | Duplicate detection | The outbox table, when the outbox is enabled | `bq_inbox`, always on |
 | Subscriptions | Stored only when the transport has no native publish-subscribe. RabbitMQ has it, so nothing is stored | Bindings on the event exchange, `bq.events` by default. No table |
@@ -50,25 +50,23 @@ NServiceBus needs subscription storage only for transports without native publis
 
 ### How Bq's timeouts differ
 
-Bq has nothing like the delay queues. It does not declare a delay exchange or delay queues, and it does not read or honour NServiceBus's. A delayed send, a saga timeout and a delayed retry are each a row with a due time: in `bq_saga_timeout` for sends and timeouts, and in `bq_recovery` for retries. The endpoint's dispatcher polls for rows that are due and publishes them to the real queue. The broker never holds a delayed message.
-
-That changes how timeouts behave:
+Bq also lets the broker hold a delayed message, but with its own topology. A delayed send, a saga timeout and a delayed publish are published at once and wait in RabbitMQ until they are due. Bq declares its own delay queues, named `bq.v1.delay-level-NN` with a final exchange `bq.v1.delay-delivery`, or on RabbitMQ 4.4 and later uses the native `x-opt-delivery-time` header. It does not read or honour NServiceBus's `nsb.v2` queues, so the two do not share delay infrastructure. See [delayed delivery](delayed-delivery.md).
 
 | | NServiceBus on RabbitMQ | Bq |
 | --- | --- | --- |
-| Where a pending timeout waits | In the broker's delay queues | In the endpoint's database |
-| Needs the database to fire | No. The broker releases it | Yes. The dispatcher reads the row |
-| Needs the endpoint running to fire | No. The broker releases it to the queue, and a consumer picks it up when one is running | Yes. Only a running dispatcher publishes due rows |
-| Created with the handler's work | Sent by the saga, like any message | Written in the handler's own transaction, so it exists only if the work committed |
-| After an outage | Overdue delayed messages are released as the broker catches up | Overdue rows are published when the dispatcher is back, so they arrive late, not lost |
-| Where to see them | The delay queues in the management UI | `SELECT ... FROM bq_saga_timeout` |
-| Timing | Set by its delay levels. See its docs for how exact that is | Polling, so it fires after the due time, by up to the dispatch poll interval (one second by default), and later when the dispatcher is blocked |
+| Where a pending timeout waits | In the broker's `nsb.v2` delay queues | In the broker: `bq.v1` delay queues, or natively on a quorum queue |
+| Needs the database to fire | No | No, once published |
+| Needs the endpoint running to fire | No | No |
+| Created with the handler's work | Only with the outbox | Yes, as an outbox row in the handler's own transaction |
+| Where to see them | The delay queues in the management UI | The delay queues, or the destination queue's delayed messages |
+| Delayed publish | Not possible | Native delay only, RabbitMQ 4.4 or later |
+| Delayed retries | Delayed delivery | Still `bq_recovery` rows polled by a loop |
 
-Two things follow for a migration. A saga that moves to Bq depends on its database and its dispatcher for every timeout, so a stopped endpoint stops its timeouts, where NServiceBus's would still be in the broker. And a timeout that exists only in the NServiceBus delay queues is invisible to Bq. See [sagas and timeouts](sagas.md) for how Bq delivers and discards them.
+A timeout the NServiceBus side requested stays in its own delay queues and fires there. Bq cannot take it over.
 
 ## Where Bq keeps things
 
-Everything is in the endpoint's database, in tables whose names start with `bq_`: `bq_inbox`, `bq_outbox`, `bq_recovery`, `bq_saga` and `bq_saga_timeout`. The [schema page](schema.md) has the columns, indexes and the differences between SQLite and Oracle. The names do not collide with NServiceBus's tables, so the two can share a database, though a separate schema or database for the Bq group keeps the blast radius smaller.
+Everything is in the endpoint's database, in tables whose names start with `bq_`: `bq_inbox`, `bq_outbox`, `bq_recovery` and `bq_saga`. The [schema page](schema.md) has the columns, indexes and the differences between SQLite and Oracle. The names do not collide with NServiceBus's tables, so the two can share a database, though a separate schema or database for the Bq group keeps the blast radius smaller.
 
 Bq's outbox, inbox, saga state and your application's writes share one database transaction. That is why a handler's sends must come from the same stack as its data. See [never send a Bq message from an NServiceBus handler](gradual-migration.md#never-send-a-bq-message-from-an-nservicebus-handler).
 

@@ -25,26 +25,6 @@ CREATE TABLE bq_outbox (
 
 CREATE INDEX bq_outbox_ready_ix ON bq_outbox (endpoint, enqueue_order);
 
-CREATE TABLE bq_saga_timeout (
-    endpoint VARCHAR2(255 BYTE) NOT NULL,
-    id VARCHAR2(255 BYTE) NOT NULL,
-    correlation_id VARCHAR2(255 BYTE),
-    reply_to VARCHAR2(255 BYTE),
-    type_name VARCHAR2(255 BYTE) NOT NULL,
-    exchange_name VARCHAR2(255 BYTE),
-    routing_key VARCHAR2(255 BYTE) NOT NULL,
-    mandatory NUMBER(1) NOT NULL CHECK (mandatory IN (0, 1)),
-    body BLOB NOT NULL,
-    headers BLOB NOT NULL,
-    due_ticks NUMBER(19) NOT NULL,
-    attempts NUMBER(10) DEFAULT 0 NOT NULL,
-    retry_after_ticks NUMBER(19) DEFAULT 0 NOT NULL,
-    last_error VARCHAR2(1000 BYTE),
-    CONSTRAINT bq_saga_timeout_pk PRIMARY KEY (endpoint, id)
-);
-
-CREATE INDEX bq_saga_timeout_due_ix ON bq_saga_timeout (endpoint, due_ticks, id);
-
 CREATE TABLE bq_saga (
     endpoint VARCHAR2(255 BYTE) NOT NULL,
     saga_type VARCHAR2(512 BYTE) NOT NULL,

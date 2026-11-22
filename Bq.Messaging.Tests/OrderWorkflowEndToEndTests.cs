@@ -198,9 +198,8 @@ namespace Bq.Messaging.Tests
                                 "the saga publishes one correlated completion after confirmation and timeout");
                             Assert(await Within(originatorReply.Task) == await Within(starterId.Task),
                                 "saga replies to the intake endpoint with the starting message ID as correlation");
-                            Assert(await CountMigrationRows(fulfillmentPath, "bq_saga") == 0 &&
-                                await CountMigrationRows(fulfillmentPath, "bq_saga_timeout") == 0,
-                                "completion removes persisted saga state and the timeout is consumed");
+                            Assert(await CountMigrationRows(fulfillmentPath, "bq_saga") == 0,
+                                "completion removes persisted saga state");
 
                             channel.BasicPublish("", recordingName, original.BasicProperties, original.Body);
                             // Also redeliver the successful retry cycle to exercise inbox deduplication.

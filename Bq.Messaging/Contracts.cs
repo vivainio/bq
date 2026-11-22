@@ -166,6 +166,8 @@ namespace Bq.Messaging
         public Action<RabbitMQ.Client.ConnectionFactory> ConfigureRabbitMqConnection { get; set; }
         public string EventsExchange { get; set; } = "bq.events";
         public string ErrorExchange { get; set; } = "bq.errors";
+        /// <summary>How delayed sends and saga timeouts are held until they are due. The default picks native delay when it can.</summary>
+        public DelayedDeliveryMode DelayedDelivery { get; set; } = DelayedDeliveryMode.Auto;
         public IDictionary<string, object> InputQueueArguments { get; } = new Dictionary<string, object>();
         // Maximum concurrently executing deliveries for this endpoint instance.
         public ushort MaxConcurrency { get; set; } = 1;

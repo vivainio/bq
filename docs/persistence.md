@@ -54,7 +54,7 @@ Every process that runs an endpoint polls the same rows. The rows belong to the 
 
 ### What each process does
 
-- It runs an **outbox loop** that publishes ready outbox rows and due saga timeouts. A send-only endpoint runs only this loop.
+- It runs an **outbox loop** that publishes ready outbox rows. Delayed sends and saga timeouts are ordinary rows, published at once and held by the broker. A send-only endpoint runs only this loop.
 - Unless it is send-only, it also runs a **recovery loop** for delayed retries and failed messages.
 - When a loop finds a row it publishes it and looks again at once. When it finds nothing, or fails, it waits `DispatchPollInterval` (one second by default).
 
@@ -72,7 +72,7 @@ In every case the worst outcome is a duplicate publish with the original message
 
 ### What more processes cost
 
-- **Polling.** Every idle loop queries the database once per `DispatchPollInterval`. On Oracle a poll can run two queries, one for outbox rows and one for scheduled rows. They use indexes (`bq_outbox_ready_ix` on `(endpoint, enqueue_order)` and `bq_saga_timeout_due_ix` on `(endpoint, due_ticks, id)`), so each is cheap. But the load is linear in the number of processes and has no backoff. Twenty processes with the defaults run forty loops, which is roughly forty to sixty small queries a second while idle.
+- **Polling.** Every idle loop queries the database once per `DispatchPollInterval`. Each poll is one query on the outbox, which uses the index `bq_outbox_ready_ix` on `(endpoint, enqueue_order)` on Oracle, so it is cheap. But the load is linear in the number of processes and has no backoff. Twenty processes with the defaults run forty loops, which is roughly forty small queries a second while idle.
 - **No extra throughput.** A dispatcher takes the first ready row, or the first `OutboxBatchSize` rows, in order. If another process holds those rows, the second process finds them locked, gets nothing, and waits for the next poll. So for one endpoint, publishing is in effect done by one process at a time. This follows from how the query is written. It has not been load-tested.
 - **Ordering.** Rows are published in the order they were stored by one dispatcher. With several dispatchers Bq does not promise that order across processes, so do not depend on it. Receivers that need order should carry their own sequence.
 - **Timeouts.** A due timeout is published by whichever process polls it first, up to one poll interval after it falls due.
@@ -88,7 +88,7 @@ In every case the worst outcome is a duplicate publish with the original message
 
 `config.DispatchPollInterval` sets the wait after an empty or failed dispatch poll. It defaults to one second, and both the outbox and recovery loops use it. Shorter intervals reduce idle pickup latency and increase database polling. `config.PublisherConfirmTimeout` controls how long direct sends and both background dispatchers wait for publisher confirmation. It defaults to ten seconds. After a failed confirmation, durable records remain pending for another attempt.
 
-Use `await store.GetDispatchBacklog()` to count pending outbox messages, due and scheduled saga timeouts, and due and scheduled recovery records for the SQLite endpoint. Counts include records awaiting publisher confirmation. Use `await store.ListPendingDispatches(limit: 100)` to inspect message IDs, dispatch kinds, exchanges, routing keys, and scheduled UTC times. Pass a `DispatchKind` such as `DispatchKind.Error` as the first argument to filter before applying the limit. The listing omits message bodies and its order is for inspection.
+Use `await store.GetDispatchBacklog()` to count pending outbox messages, including delayed sends not yet published, and due and scheduled recovery records for the SQLite endpoint. Counts include records awaiting publisher confirmation. Use `await store.ListPendingDispatches(limit: 100)` to inspect message IDs, dispatch kinds, exchanges, routing keys, and scheduled UTC times. Pass a `DispatchKind` such as `DispatchKind.Error` as the first argument to filter before applying the limit. The listing omits message bodies and its order is for inspection.
 
 ## Retention
 

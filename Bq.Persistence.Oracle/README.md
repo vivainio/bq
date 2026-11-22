@@ -2,7 +2,7 @@
 
 `Bq.Persistence.Oracle` targets .NET Standard 2.0 and uses Oracle 12c or later SQL. It implements transactional inbox deduplication, outbox and scheduled delivery, saga storage, and recovery. The application supplies either a Devart dotConnect or Oracle ODP.NET connection. The adapter has no compile-time dependency on either driver.
 
-Apply [001_create_bq_tables.sql](migrations/001_create_bq_tables.sql) once through your schema migration process. Use a connection whose current schema contains those tables. Set the endpoint name to the same value used for `EndpointConfiguration.Name`.
+Apply [001_create_bq_tables.sql](migrations/001_create_bq_tables.sql) once through your schema migration process. A database created before delayed sends moved into the broker also has a `bq_saga_timeout` table. After its endpoints have no rows left in it, apply [002_drop_bq_saga_timeout.sql](migrations/002_drop_bq_saga_timeout.sql) to remove it. Use a connection whose current schema contains those tables. Set the endpoint name to the same value used for `EndpointConfiguration.Name`.
 
 ```csharp
 using Bq.Persistence.Oracle;
@@ -49,7 +49,7 @@ export BQ_ORACLE_CONNECTION_TYPE=Oracle.ManagedDataAccess.Client.OracleConnectio
 bash scripts/test-rabbit-sim.sh
 ```
 
-With those variables set, the test run also starts a whole endpoint on Oracle: a handler, a failed message that recovers through the recovery table, and a saga timeout that fires from the timeout table. The Apple Silicon (arm64) image works without emulation. The Podman VM needs about 4 GiB of memory.
+With those variables set, the test run also starts a whole endpoint on Oracle: a handler, a failed message that recovers through the recovery table, and a saga timeout that RabbitMQ holds and delivers. The Apple Silicon (arm64) image works without emulation. The Podman VM needs about 4 GiB of memory.
 
 ### EF6 on the same connection and transaction
 

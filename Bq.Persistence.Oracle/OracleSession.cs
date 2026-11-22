@@ -41,18 +41,6 @@ namespace Bq.Persistence.Oracle
                     ("headers", MessageHeaderCodec.Encode(message.Headers))).ConfigureAwait(false);
             }
 
-            public async Task StoreTimeout(OutgoingMessage message, DateTime dueUtc)
-            {
-                if (dueUtc.Kind != DateTimeKind.Utc) throw new ArgumentException("Timeout must use UTC.", nameof(dueUtc));
-                await Execute(Connection, Transaction, @"INSERT INTO bq_saga_timeout
-                    (endpoint, id, correlation_id, reply_to, type_name, exchange_name, routing_key, mandatory, body, headers, due_ticks)
-                    VALUES (:endpoint, :id, :correlation, :reply_to, :type_name, :exchange_name, :routing_key, :mandatory, :body, :headers, :due)",
-                    ("endpoint", owner.endpoint), ("id", message.Id), ("correlation", message.CorrelationId), ("reply_to", message.ReplyTo),
-                    ("type_name", message.Type), ("exchange_name", message.Exchange), ("routing_key", message.RoutingKey),
-                    ("mandatory", message.Mandatory ? 1 : 0), ("body", message.Body),
-                    ("headers", MessageHeaderCodec.Encode(message.Headers)), ("due", dueUtc.Ticks)).ConfigureAwait(false);
-            }
-
             public async Task<SagaRecord> LoadSaga(string sagaType, string sagaId)
             {
                 using (var command = Command(Connection, Transaction, "SELECT saga_version, saga_data FROM bq_saga " +

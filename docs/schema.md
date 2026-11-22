@@ -5,12 +5,11 @@ Every Bq persistence provider keeps the same five tables. They sit in the same d
 | Table | Holds | Rows are written | Rows are removed |
 |---|---|---|---|
 | `bq_inbox` | The ID of every message an endpoint has handled | When an attempt claims a message, in the handler's transaction | When older than `Retention.InboxRetention` (30 days by default) |
-| `bq_outbox` | Messages waiting to be published | With the handler's business writes | After RabbitMQ confirms the publish |
-| `bq_saga_timeout` | Saga timeouts and scheduled sends, with the time they fall due | With the handler's business writes | After RabbitMQ confirms the publish |
+| `bq_outbox` | Messages waiting to be published, including delayed sends and saga timeouts, which the broker holds once published | With the handler's business writes | After RabbitMQ confirms the publish |
 | `bq_saga` | The state of each running saga | When a saga handles a message | When the saga completes |
 | `bq_recovery` | Retries waiting to be sent and messages that failed for good | When an attempt fails | A sent row is marked `dispatched` and a replayed error is marked `replayed`. Finished rows are removed when older than `Retention.RecoveryRetention` (30 days by default). An error nobody replayed stays |
 
-SQLite creates the tables in `SqlitePersistence.Initialize`, which `EnableInstallers()` calls at start. Oracle uses the script `Bq.Persistence.Oracle/migrations/001_create_bq_tables.sql`, which you apply through your own schema process. There is no upgrade path between versions of the schema yet.
+SQLite creates the tables in `SqlitePersistence.Initialize`, which `EnableInstallers()` calls at start. Oracle uses the script `Bq.Persistence.Oracle/migrations/001_create_bq_tables.sql`, which you apply through your own schema process. A database created before delayed sends moved into the broker also needs `002_drop_bq_saga_timeout.sql`, which removes the old timeout table. There is no other upgrade path between versions of the schema yet.
 
 Treat the tables as Bq's. Read them to see what is pending, and use `ListPendingDispatches` and `GetDispatchBacklog` on the SQLite provider where they fit. Do not write to them, apart from adding your own indexes. Times are .NET ticks in UTC (`DateTime.UtcNow.Ticks`: 100 nanosecond units since 0001-01-01). Booleans are `0` or `1`.
 
@@ -21,9 +20,9 @@ Treat the tables as Bq's. Read them to see what is pending, and use `ListPending
 | `endpoint`, `message_id` | Primary key. A message ID that is already here is a duplicate and is skipped |
 | `claimed_ticks` | When the message was claimed. Retention removes rows older than the inbox retention |
 
-## `bq_outbox` and `bq_saga_timeout`
+## `bq_outbox`
 
-Both tables describe a message to publish, with the same columns. `bq_saga_timeout` adds `due_ticks`. The dispatcher sends a timeout row only once it is due.
+Each row is a message to publish. A delayed send or a saga timeout is an ordinary row that carries an `x-bq-deliver-at` header, the UTC ticks it must not be delivered before. The dispatcher publishes it at once and the broker holds it, see [delayed delivery](delayed-delivery.md).
 
 | Column | Meaning |
 |---|---|
@@ -34,13 +33,12 @@ Both tables describe a message to publish, with the same columns. `bq_saga_timeo
 | `mandatory` | `1` for commands, so an unroutable message is returned and counted as a failed publish |
 | `body` | The serialized message in the endpoint's wire format (MessagePack or JSON) |
 | `headers` | The AMQP headers. They include `x-bq-outbox-content-type`, the wire format of `body`, so a row keeps its format if the endpoint changes format before it is sent |
-| `due_ticks` | `bq_saga_timeout` only. When the row may be sent |
 | `attempts` | How many times publishing was rejected because of this message, for example no queue accepted it. `0` for a row that has never failed |
 | `retry_after_ticks` | While in the future, the dispatcher skips the row so the rows behind it are sent. The delay starts at 100 milliseconds and doubles up to 30 seconds. `0` if the row never failed |
 | `last_error` | The reason for the last rejection, up to 500 characters |
 | `enqueue_order` | Oracle only. An identity column that orders `bq_outbox`. SQLite orders by its row ID |
 
-Indexes: Oracle has `bq_outbox_ready_ix (endpoint, enqueue_order)` and `bq_saga_timeout_due_ix (endpoint, due_ticks, id)`. SQLite has `bq_saga_timeout_due (endpoint, due_ticks)`.
+Indexes: Oracle has `bq_outbox_ready_ix (endpoint, enqueue_order)`. SQLite orders by its row ID.
 
 ## `bq_saga`
 

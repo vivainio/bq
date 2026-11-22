@@ -55,7 +55,7 @@ Set `config.NetworkRecoveryInterval` to tune the delay between RabbitMQ client r
 
 Use `await endpoint.SendAt("billing", message, dueAt)` with a `DateTimeOffset` to store a durable send. The message becomes eligible for publication at that instant. Polling and broker availability affect actual delivery time. Use `SendAt(message, dueAt)` to use the configured route or `SendLocalAt(message, dueAt)` to target the endpoint’s own queue. For a send-only producer, provision the named queue separately.
 
-Handlers and application transaction callbacks can call `session.SendAt(destination, message, dueAt)` on their context or transactional session. The schedule commits with their other database work and disappears on rollback. The SQLite backlog totals labeled timeouts also include scheduled sends. Use `DispatchKind.ScheduledSend` to inspect ordinary scheduled messages separately.
+Handlers and application transaction callbacks can call `session.SendAt(destination, message, dueAt)` on their context or transactional session. The schedule commits with their other database work and disappears on rollback. Once committed, the dispatcher publishes the message and the broker holds it until it is due. See [delayed delivery](delayed-delivery.md) for how, and for why `PublishAt` needs RabbitMQ 4.4.
 
 Use `PublishAt(event, dueAt)` to schedule an event for all subscribers bound when RabbitMQ routes the publish. Scheduling is also available on a uniform session. A handler-scoped uniform session uses the handler transaction, and a session created outside a handler opens a transaction to store the schedule. Like immediate publish, a scheduled event can have no subscribers.
 

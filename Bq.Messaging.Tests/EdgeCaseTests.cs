@@ -1148,15 +1148,11 @@ namespace Bq.Messaging.Tests
                 {
                     await session.StoreOutgoing(new OutgoingMessage { Id = "head", Body = new byte[0] });
                     await session.StoreOutgoing(new OutgoingMessage { Id = "second", Body = new byte[0] });
-                    await session.StoreTimeout(new OutgoingMessage { Id = "timeout", Body = new byte[0] }, DateTime.UtcNow.AddMinutes(-1));
                     session.Commit();
                 }
                 // Four rejections each make the delay 800 ms, so the checks below are not racing the clock.
                 for (var i = 0; i < 4; i++)
-                {
                     await memory.RecordOutgoingFailure("edge-retry", "head", new Exception("nobody accepts this"));
-                    await memory.RecordOutgoingFailure("edge-retry", "timeout", new Exception("nor this"));
-                }
                 await memory.RecordOutgoingFailure("edge-retry", "unknown-id", new Exception("ignored"));
                 var offered = new List<string>();
                 for (var i = 0; i < 4; i++)
@@ -1176,7 +1172,7 @@ namespace Bq.Messaging.Tests
                     returning.Add(next.Id);
                     await memory.MarkDispatched("edge-retry", next.Id);
                 }
-                That(returning.OrderBy(id => id).SequenceEqual(new[] { "head", "timeout" }), "the deferred rows come back after their retry time: " + string.Join(",", returning));
+                That(returning.SequenceEqual(new[] { "head" }), "the deferred row comes back after its retry time: " + string.Join(",", returning));
                 await ThrowsAsync<InvalidOperationException>(() => memory.RecordOutgoingFailure("other", "head", new Exception()), "another endpoint name");
             });
             await CaseAsync("SQLite records the retry state of a rejected row and shows it as pending but not ready", async () =>
@@ -1277,23 +1273,17 @@ namespace Bq.Messaging.Tests
             {
                 OutgoingMessage Row(string id) => new OutgoingMessage { Id = id, Type = "t", Body = new byte[] { 1 }, RoutingKey = "q", Exchange = "", Headers = new Dictionary<string, object>() };
                 for (var i = 1; i <= 5; i++) await session.StoreOutgoing(Row("o" + i));
-                for (var i = 1; i <= 3; i++) await session.StoreTimeout(Row("t" + i), DateTime.UtcNow.AddMinutes(-10 + i));
-                await session.StoreTimeout(Row("t-later"), DateTime.UtcNow.AddHours(1));
                 session.Commit();
             }
             var first = await store.NextOutgoingBatch(endpoint, 3);
-            var second = await store.NextOutgoingBatch(endpoint, 3);
-            That(first.Count == 3 && second.Count == 3, "each call returns up to the limit: " + first.Count + ", " + second.Count);
-            That(first.All(m => m.Id[0] == first[0].Id[0]) && second.All(m => m.Id[0] == second[0].Id[0]) && first[0].Id[0] != second[0].Id[0],
-                "a batch comes from one table, and the tables take turns: " + string.Join(",", first.Select(m => m.Id)) + " / " + string.Join(",", second.Select(m => m.Id)));
-            var outbox = first[0].Id[0] == 'o' ? first : second;
-            var timeouts = first[0].Id[0] == 't' ? first : second;
-            That(outbox.Select(m => m.Id).SequenceEqual(new[] { "o1", "o2", "o3" }), "outbox rows keep their stored order");
-            That(timeouts.Select(m => m.Id).SequenceEqual(new[] { "t1", "t2", "t3" }), "timeouts come in due order, and one that is not due yet is left out");
+            var again = await store.NextOutgoingBatch(endpoint, 3);
+            That(first.Count == 3 && again.Count == 3, "each call returns up to the limit: " + first.Count + ", " + again.Count);
+            That(first.Select(m => m.Id).SequenceEqual(new[] { "o1", "o2", "o3" }), "rows keep their stored order");
+            That(again.Select(m => m.Id).SequenceEqual(first.Select(m => m.Id)), "rows stay until they are marked dispatched");
 
             // Four rejections make the delay 800 ms, so the checks below are not racing the clock.
             for (var i = 0; i < 4; i++) await store.RecordOutgoingFailure(endpoint, "o2", new Exception("rejected"));
-            await store.MarkDispatched(endpoint, new[] { "o1", "o3", "t1" });
+            await store.MarkDispatched(endpoint, new[] { "o1", "o3" });
             var remaining = new List<string>();
             for (var round = 0; round < 4; round++)
             {
@@ -1301,13 +1291,13 @@ namespace Bq.Messaging.Tests
                 remaining.AddRange(next.Select(m => m.Id));
                 if (next.Count > 0) await store.MarkDispatched(endpoint, next.Select(m => m.Id).ToList());
             }
-            That(remaining.OrderBy(id => id).SequenceEqual(new[] { "o4", "o5", "t2", "t3" }), "dispatched rows are gone and the deferred row is not offered: " + string.Join(",", remaining));
+            That(remaining.OrderBy(id => id).SequenceEqual(new[] { "o4", "o5" }), "dispatched rows are gone and the deferred row is not offered: " + string.Join(",", remaining));
             await Task.Delay(1500);
             var back = await store.NextOutgoingBatch(endpoint, 10);
             That(back.Select(m => m.Id).SequenceEqual(new[] { "o2" }), "the deferred row returns after its retry time: " + string.Join(",", back.Select(m => m.Id)));
             await store.MarkDispatched(endpoint, new string[0]);
             await store.MarkDispatched(endpoint, back.Select(m => m.Id).ToList());
-            That((await store.NextOutgoingBatch(endpoint, 10)).Count == 0, "nothing ready is left but the timeout that is not due");
+            That((await store.NextOutgoingBatch(endpoint, 10)).Count == 0, "nothing is left");
         }
 
         static async Task RunBatchCases()
@@ -1386,25 +1376,18 @@ namespace Bq.Messaging.Tests
                 Throws<ArgumentException>(() => new InMemoryPersistenceProvider(" "), "a blank endpoint");
                 await memory.Initialize();
             });
-            await CaseAsync("in-memory timeouts, outgoing order and claims", async () =>
+            await CaseAsync("in-memory outgoing order and claims", async () =>
             {
                 var memory = new InMemoryPersistenceProvider("edge-timeouts");
                 using (var session = await memory.OpenSession())
                 {
-                    await session.StoreTimeout(new OutgoingMessage { Id = "t-late", Body = new byte[0] }, DateTime.UtcNow.AddHours(1));
-                    await session.StoreTimeout(new OutgoingMessage { Id = "t-due", Body = new byte[0] }, DateTime.UtcNow.AddMinutes(-1));
-                    Throws<ArgumentException>(() => session.StoreTimeout(new OutgoingMessage { Id = "x" }, DateTime.Now.AddMinutes(1)).GetAwaiter().GetResult(), "a non-UTC due time");
                     Throws<InvalidOperationException>(() => session.TryClaimMessage("edge-timeouts", "").GetAwaiter().GetResult(), "an empty message id");
                     await session.StoreOutgoing(new OutgoingMessage { Id = "o1", Body = new byte[0] });
                     session.Commit();
                 }
-                var seen = new HashSet<string>();
-                seen.Add((await memory.NextOutgoing("edge-timeouts")).Id);
-                seen.Add((await memory.NextOutgoing("edge-timeouts")).Id);
-                That(seen.SetEquals(new[] { "o1", "t-due" }), "outgoing alternates between the outbox and due timeouts: " + string.Join(",", seen));
+                That((await memory.NextOutgoing("edge-timeouts")).Id == "o1", "the stored row is offered");
                 await memory.MarkDispatched("edge-timeouts", "o1");
-                await memory.MarkDispatched("edge-timeouts", "t-due");
-                That(await memory.NextOutgoing("edge-timeouts") == null, "a not-yet-due timeout is not returned");
+                That(await memory.NextOutgoing("edge-timeouts") == null, "nothing is offered once it is dispatched");
             });
             await CaseAsync("in-memory saga concurrency at commit and delete", async () =>
             {

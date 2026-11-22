@@ -75,17 +75,6 @@ namespace Bq.Messaging.Tests
                 Assert(await store.NextOutgoing(endpoint) == null, "Oracle removes the confirmed outbox entry");
 
                 var now = DateTime.UtcNow;
-                message.Id = "scheduled";
-                using (var session = await store.OpenSession())
-                {
-                    await session.StoreTimeout(message, now.AddMinutes(30));
-                    message.Id = "due";
-                    await session.StoreTimeout(message, now);
-                    session.Commit();
-                }
-                Assert(await store.DispatchOutgoing(endpoint, outgoing => Assert(outgoing.Id == "due", "Oracle selects due scheduled sends")),
-                    "Oracle dispatches a due scheduled send");
-                Assert(await store.NextOutgoing(endpoint) == null, "Oracle leaves future scheduled sends pending");
 
                 var error = new RecoveryRecord
                 {
@@ -116,7 +105,7 @@ namespace Bq.Messaging.Tests
                     await connection.OpenAsync();
                     using (var transaction = connection.BeginTransaction())
                     {
-                        foreach (var table in new[] { "bq_inbox", "bq_outbox", "bq_saga_timeout", "bq_saga", "bq_recovery" })
+                        foreach (var table in new[] { "bq_inbox", "bq_outbox", "bq_saga", "bq_recovery" })
                         {
                             using (var command = connection.CreateCommand())
                             {

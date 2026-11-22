@@ -31,7 +31,7 @@ All registered handlers for a delivery share a persistence session. Writes using
 
 ## Dispatch workers
 
-The endpoint polls recovery records separately from ordinary outgoing messages. SQLite alternates preference between ordinary outbox messages and due saga timeouts. A failed recovery destination can hold up other recovery records. An unroutable outbox message can hold up later records in its own category.
+The endpoint polls recovery records separately from ordinary outgoing messages. Delayed sends and saga timeouts are ordinary outbox rows that the broker holds until they are due, so they need no polling of their own, see [delayed delivery](delayed-delivery.md). A failed recovery destination can hold up other recovery records. An unroutable outbox message can hold up later records in its own category.
 
 With several processes on one endpoint, extra processes add failover and polling load, not publishing speed. See [many processes on one endpoint](persistence.md#many-processes-on-one-endpoint).
 

@@ -34,7 +34,6 @@ namespace Bq.Messaging.Tests
             public Task<bool> HasRecovery(string e, string id) => Task.FromResult(false);
             public Task StoreRecovery(string e, RecoveryRecord r) => throw new NotSupportedException();
             public Task StoreOutgoing(OutgoingMessage m) => throw new NotSupportedException();
-            public Task StoreTimeout(OutgoingMessage m, DateTime t) => throw new NotSupportedException();
             public Task<SagaRecord> LoadSaga(string t, string id) => throw new NotSupportedException();
             public Task SaveSaga(string t, string id, byte[] data, long? version) => throw new NotSupportedException();
             public Task DeleteSaga(string t, string id, long version) => throw new NotSupportedException();

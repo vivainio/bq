@@ -17,6 +17,7 @@ nav = [
     { "Persistence and outbox" = "persistence.md" },
     { "Database schema" = "schema.md" },
     { "Sagas and timeouts" = "sagas.md" },
+    { "Delayed delivery" = "delayed-delivery.md" },
     { "Retries and replay" = "recoverability.md" },
     { "Troubleshooting" = "troubleshooting.md" },
   ] },

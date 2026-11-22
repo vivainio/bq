@@ -106,7 +106,7 @@ What makes it hard:
 
 - **State lives in the old store.** An NServiceBus saga's data sits in its own persister. Bq keeps saga state in `bq_saga`, keyed by endpoint, saga type name and the correlation key as a string, with the data serialized as MessagePack. The two do not read each other's data.
 - **Follow-up messages need the right stack.** A message for an instance that started on NServiceBus must reach NServiceBus, and a message for one that started on Bq must reach Bq. Whoever sends the follow-up has to know which. When other services send them, that is often impossible to know.
-- **Timeouts work differently.** NServiceBus on RabbitMQ keeps them in the broker. Bq keeps them as database rows that its dispatcher publishes when they fall due, so a Bq saga's timeouts depend on its database and a running endpoint. See [how Bq's timeouts differ](databases-in-migration.md#how-bqs-timeouts-differ).
+- **Timeouts work differently.** Both stacks let the broker hold them, but in different delay queues, so a pending NServiceBus timeout never moves to Bq. See [how Bq's timeouts differ](databases-in-migration.md#how-bqs-timeouts-differ).
 - **Pending timeouts stay behind.** A timeout the old saga requested fires on the old side. With the RabbitMQ transport it is a message in the broker's delay queues, not a database row, so it does not move by itself. See [databases in a migration](databases-in-migration.md).
 - **The saga sends messages.** A saga is a handler, so the [rule above](#never-send-a-bq-message-from-an-nservicebus-handler) applies. A saga that sends commands to a handler you have already moved to Bq must move too, or its commands will not be atomic.
 

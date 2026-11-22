@@ -14,7 +14,8 @@ foreach (var item in ready)
 | Symptom | What to check |
 | --- | --- |
 | An ordinary outbox message remains pending | Match its exchange and routing key to the broker topology. For a direct send, check that the destination queue exists. Check logs for publisher confirmation failures. A stuck ordinary message can hold up later ordinary messages. |
-| A retry or saga timeout has yet to fire | Check its UTC due time using `ListPendingDispatches()`. When it is due, check the dispatch logs and the destination queue. A broker may have accepted the message even though the receiver has yet to process it. |
+| A retry has yet to fire | Check its UTC due time using `ListPendingDispatches()`. When it is due, check the dispatch logs and the destination queue. A broker may have accepted the message even though the receiver has yet to process it. |
+| A saga timeout or delayed send has yet to arrive | It is held by the broker once published, not in the database. Check that `ListPendingDispatches()` no longer lists it, then look at the delay queues (`bq.v1.delay-level-NN`), or for native delay at the destination queue's delayed messages. A delayed message for a queue that is not bound to `bq.v1.delay-delivery` is dropped after the delay. See [delayed delivery](delayed-delivery.md). |
 | An error is visible in SQL but missing from RabbitMQ | Check the error record’s `Dispatched` flag and `ListReadyDispatches(DispatchKind.Error)`, then verify the configured error queue exists. An unavailable error queue can delay later recovery records. Ordinary messages and saga timeouts continue polling separately. |
 | A message appears more than once | Compare message IDs. A lost or unrecorded publisher confirmation can trigger another publish with the same ID. A manual replay uses a fresh ID. |
 

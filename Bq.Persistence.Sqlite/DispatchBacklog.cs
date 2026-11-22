@@ -2,19 +2,15 @@ namespace Bq.Persistence.Sqlite
 {
     public sealed class DispatchBacklog
     {
-        internal DispatchBacklog(long outgoing, long dueTimeouts, long scheduledTimeouts,
-            long dueRecoveries, long scheduledRecoveries)
+        internal DispatchBacklog(long outgoing, long dueRecoveries, long scheduledRecoveries)
         {
             Outgoing = outgoing;
-            DueTimeouts = dueTimeouts;
-            ScheduledTimeouts = scheduledTimeouts;
             DueRecoveries = dueRecoveries;
             ScheduledRecoveries = scheduledRecoveries;
         }
 
+        /// <summary>Outbox rows not yet published, including delayed sends and saga timeouts, which the broker holds once published.</summary>
         public long Outgoing { get; }
-        public long DueTimeouts { get; }
-        public long ScheduledTimeouts { get; }
         public long DueRecoveries { get; }
         public long ScheduledRecoveries { get; }
     }

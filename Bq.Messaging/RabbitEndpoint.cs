@@ -28,6 +28,10 @@ namespace Bq.Messaging
         const string OutboxExpirationHeader = "x-bq-outbox-audit-expiration";
         // The stored body keeps the wire format it was written in, so the content type travels with the outbox row.
         const string OutboxContentTypeHeader = "x-bq-outbox-content-type";
+        // The UTC ticks a delayed row must not be delivered before. The broker holds the message until then.
+        const string OutboxDeliverAtHeader = "x-bq-deliver-at";
+        const string NativeDelayHeader = "x-opt-delivery-time";
+        DelayedDeliveryMode delayMode = DelayedDeliveryMode.Levels;
         readonly string eventsExchange;
         readonly string errorExchange;
         const string ContentType = "application/x-msgpack";
@@ -210,6 +214,12 @@ namespace Bq.Messaging
                 publisherChannel = connection.CreateModel();
                 if (configuration.UsePreProvisionedTopology) publisherChannel.ExchangeDeclarePassive(eventsExchange);
                 else publisherChannel.ExchangeDeclare(eventsExchange, ExchangeType.Topic, true);
+                delayMode = ResolveDelayMode();
+                if (delayMode == DelayedDeliveryMode.Levels)
+                {
+                    if (configuration.UsePreProvisionedTopology) publisherChannel.ExchangeDeclarePassive(DelayTopology.DeliveryExchange);
+                    else DelayTopology.Declare(publisherChannel);
+                }
                 publisherChannel.ConfirmSelect();
                 publisherChannel.BasicReturn += (sender, args) =>
                 {
@@ -244,6 +254,12 @@ namespace Bq.Messaging
                                 ["x-dead-letter-exchange"] = errorExchange,
                                 ["x-dead-letter-routing-key"] = localAddress
                             });
+                        // Delayed messages for this queue come back through the delivery exchange.
+                        if (delayMode == DelayedDeliveryMode.Levels)
+                        {
+                            DelayTopology.BindDestination(consumerChannel, localAddress);
+                            if (instanceAddress != null) DelayTopology.BindDestination(consumerChannel, instanceAddress);
+                        }
                     }
                     if (configuration.PurgeInputQueueOnStartup) consumerChannel.QueuePurge(localAddress);
                     var conventions = configuration.Conventions().Conventions;
@@ -496,15 +512,75 @@ namespace Bq.Messaging
         Task PublishAtWithHeaders<T>(T message, DateTimeOffset dueAt, IDictionary<string, object> headers) =>
             ExecuteTransaction(session => ((TransactionalSession)session).PublishAt(message, dueAt, headers));
 
+        // A delayed message is an ordinary outbox row that remembers when it may be delivered. The dispatcher publishes it at once, and
+        // the broker holds it until then, so nothing polls the database for due rows.
         async Task StoreScheduledEvent<T>(IPersistenceSession session, T message, DateTime dueUtc, string correlationId,
-            IDictionary<string, object> headers = null) =>
-            await session.StoreTimeout(
-                await Prepare(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers, deferred: true, dueUtc: dueUtc).ConfigureAwait(false), dueUtc).ConfigureAwait(false);
+            IDictionary<string, object> headers = null)
+        {
+            if (delayMode != DelayedDeliveryMode.Native)
+                throw new NotSupportedException("A delayed publish needs native delayed delivery: RabbitMQ 4.4 or later, with quorum queues for the endpoints that subscribe. " +
+                    "Delay levels deliver to one queue, so they cannot hold a publish. Use a delayed send instead.");
+            var row = await Prepare(message, eventsExchange, WireName(ContractType(message)), correlationId, false, headers, deferred: true, dueUtc: dueUtc).ConfigureAwait(false);
+            await session.StoreOutgoing(StampDeliverAt(row, dueUtc)).ConfigureAwait(false);
+        }
 
         async Task StoreScheduled<T>(IPersistenceSession session, string destination, T message, DateTime dueUtc, string correlationId,
-            IDictionary<string, object> headers = null) =>
-            await session.StoreTimeout(
-                await Prepare(message, "", RequireDestination(destination), correlationId, true, headers, deferred: true, dueUtc: dueUtc).ConfigureAwait(false), dueUtc).ConfigureAwait(false);
+            IDictionary<string, object> headers = null)
+        {
+            if (delayMode == DelayedDeliveryMode.Levels && dueUtc - DateTime.UtcNow > DelayTopology.MaxDelay)
+                throw new ArgumentOutOfRangeException(nameof(dueUtc), "Delay levels hold a message for at most " + DelayTopology.MaxDelay + ".");
+            var row = await Prepare(message, "", RequireDestination(destination), correlationId, true, headers, deferred: true, dueUtc: dueUtc).ConfigureAwait(false);
+            await session.StoreOutgoing(StampDeliverAt(row, dueUtc)).ConfigureAwait(false);
+        }
+
+        static OutgoingMessage StampDeliverAt(OutgoingMessage row, DateTime dueUtc)
+        {
+            if (row.Headers == null) row.Headers = new Dictionary<string, object>();
+            row.Headers[OutboxDeliverAtHeader] = dueUtc.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return row;
+        }
+
+        DelayedDeliveryMode ResolveDelayMode()
+        {
+            var version = connection.ServerProperties != null && connection.ServerProperties.TryGetValue("version", out var raw) && raw is byte[] bytes
+                ? Encoding.UTF8.GetString(bytes) : null;
+            var native = version != null && Version.TryParse(version.Split('-')[0], out var parsed) && parsed >= new Version(4, 4);
+            var quorumInput = configuration.InputQueueArguments.TryGetValue("x-queue-type", out var type) &&
+                string.Equals(type as string, "quorum", StringComparison.OrdinalIgnoreCase);
+            switch (configuration.DelayedDelivery)
+            {
+                case DelayedDeliveryMode.Levels:
+                    return DelayedDeliveryMode.Levels;
+                case DelayedDeliveryMode.Native:
+                    if (!native) throw new InvalidOperationException("Native delayed delivery needs RabbitMQ 4.4 or later, but this broker reports version " + (version ?? "unknown") + ".");
+                    if (!sendOnly && !quorumInput && !configuration.UsePreProvisionedTopology)
+                        throw new InvalidOperationException("Native delayed delivery needs quorum queues, because a classic queue ignores the delay. Set InputQueueArguments[\"x-queue-type\"] to \"quorum\".");
+                    return DelayedDeliveryMode.Native;
+                default:
+                    return native && quorumInput ? DelayedDeliveryMode.Native : DelayedDeliveryMode.Levels;
+            }
+        }
+
+        // Where a row is published. A delayed row goes into the delay levels, or carries the native delivery time, so the broker holds it.
+        (string Exchange, string RoutingKey) DispatchRoute(OutgoingMessage message, IBasicProperties props)
+        {
+            if (message.Headers == null || !message.Headers.TryGetValue(OutboxDeliverAtHeader, out var stamp) || !(stamp is string text) ||
+                !long.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var ticks))
+                return (message.Exchange, message.RoutingKey);
+            var due = new DateTime(ticks, DateTimeKind.Utc);
+            var remaining = due - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero) return (message.Exchange, message.RoutingKey);
+            if (delayMode == DelayedDeliveryMode.Native)
+            {
+                if (props.Headers == null) props.Headers = new Dictionary<string, object>();
+                props.Headers[NativeDelayHeader] = new DateTimeOffset(due).ToUnixTimeMilliseconds();
+                return (message.Exchange, message.RoutingKey);
+            }
+            if (message.Exchange.Length != 0)
+                throw new OutgoingMessageRejectedException(message.Id, "A delayed publish needs native delayed delivery.");
+            if (remaining > DelayTopology.MaxDelay) remaining = DelayTopology.MaxDelay;
+            return (DelayTopology.EntryExchange(remaining), DelayTopology.RoutingKey(remaining, message.RoutingKey));
+        }
 
         public Task Subscribe(Type eventType, SubscribeOptions options)
         {
@@ -755,6 +831,7 @@ namespace Bq.Messaging
                 if (headers.TryGetValue(OutboxContentTypeHeader, out var storedContentType) && storedContentType is string contentType)
                     props.ContentType = contentType;
                 headers.Remove(OutboxContentTypeHeader);
+                headers.Remove(OutboxDeliverAtHeader);
                 props.Headers = headers;
             }
             return props;
@@ -766,8 +843,9 @@ namespace Bq.Messaging
             {
                 if (disposed) throw new ObjectDisposedException(nameof(RabbitEndpoint));
                 var props = OutgoingProperties(message);
+                var route = DispatchRoute(message, props);
                 returned = false;
-                publisherChannel.BasicPublish(message.Exchange, message.RoutingKey, message.Mandatory, props, message.Body);
+                publisherChannel.BasicPublish(route.Exchange, route.RoutingKey, message.Mandatory, props, message.Body);
                 AwaitConfirms();
                 if (returned) throw new OutgoingMessageRejectedException(message.Id, "Message was unroutable: " + message.RoutingKey);
             }
@@ -785,8 +863,9 @@ namespace Bq.Messaging
                 for (var i = 0; i < messages.Count; i++)
                 {
                     var props = OutgoingProperties(messages[i]);
+                    var route = DispatchRoute(messages[i], props);
                     wireIds[i] = props.MessageId;
-                    publisherChannel.BasicPublish(messages[i].Exchange, messages[i].RoutingKey, messages[i].Mandatory, props, messages[i].Body);
+                    publisherChannel.BasicPublish(route.Exchange, route.RoutingKey, messages[i].Mandatory, props, messages[i].Body);
                 }
                 AwaitConfirms();
                 var rejected = new List<string>();

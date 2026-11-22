@@ -140,6 +140,7 @@ namespace Bq.Messaging.Tests
     {
         public static string ForwardTarget;
         public static int Triggers;
+        public static bool PublishAtSupported;
         public override async Task Invoke(IInvokeHandlerContext context, Func<Task> next)
         {
             if (!(context.MessageBeingHandled is EdgeUowMessage trigger) || trigger.Text != "trigger") { await next(); return; }
@@ -167,7 +168,7 @@ namespace Bq.Messaging.Tests
             await context.SendAt(Make("send-at"), due);
             await context.SendAt(destination, Make("send-at-dest"), due);
             await context.SendLocalAt(Make("local-at"), due);
-            await context.PublishAt(Make("publish-at"), due);
+            if (PublishAtSupported) await context.PublishAt(Make("publish-at"), due);
             await context.ForwardCurrentMessageTo(ForwardTarget);
             await next();
         }
@@ -401,6 +402,21 @@ namespace Bq.Messaging.Tests
             }
         }
 
+        // Moves the simulator's clock forward, which lets queue TTLs expire and delayed messages through at once. The clock is shared by every
+        // test, and absolute delivery times follow it, so a test that advances it must call ResetClock when it ends. False when there is no simulator.
+        static async Task<bool> AdvanceClock(int milliseconds) => await PostClock("/chaos/clock/advance?ms=" + milliseconds);
+        static async Task<bool> ResetClock() => await PostClock("/chaos/clock/reset");
+        static async Task<bool> PostClock(string path)
+        {
+            var http = Environment.GetEnvironmentVariable("BQ_RABBITSIM_HTTP");
+            if (string.IsNullOrEmpty(http)) return false;
+            using (var client = new System.Net.Http.HttpClient())
+            {
+                var response = await client.PostAsync(http + path, null);
+                return response.IsSuccessStatusCode;
+            }
+        }
+
         static async Task Eventually(Func<bool> condition, string what, int seconds = 15)
         {
             for (var i = 0; i < seconds * 10; i++) { if (condition()) return; await Task.Delay(100); }
@@ -413,9 +429,28 @@ namespace Bq.Messaging.Tests
             return r;
         }
 
+        // True when the broker is RabbitMQ 4.4 or later, which holds a delayed publish. Delayed publishes are tested only there.
+        public static bool BrokerHasNativeDelay(Uri uri)
+        {
+            using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+            {
+                var version = connection.ServerProperties != null && connection.ServerProperties.TryGetValue("version", out var raw) && raw is byte[] bytes
+                    ? System.Text.Encoding.UTF8.GetString(bytes) : null;
+                return version != null && Version.TryParse(version.Split('-')[0], out var parsed) && parsed >= new Version(4, 4);
+            }
+        }
+
+        // Native delayed delivery needs quorum queues, so endpoints that receive delayed messages ask for one.
+        static void UseNativeDelayWhenAvailable(EndpointConfiguration configuration)
+        {
+            if (nativeDelay) configuration.InputQueueArguments["x-queue-type"] = "quorum";
+        }
+        static bool nativeDelay;
+
         public static async Task<IReadOnlyList<(string Name, Func<Task> Body)>> Collect(Uri uri)
         {
             cases.Clear();
+            nativeDelay = BrokerHasNativeDelay(uri);
             await Case("units of work end in reverse order and see the failure", async () =>
             {
                 EdgeUnit.Log.Clear(); EdgeUnit.FailEnd = false;
@@ -665,6 +700,156 @@ namespace Bq.Messaging.Tests
                 }
             });
 
+            await Case("a delay is split into levels, and the routing key and entry exchange follow its bits", () =>
+            {
+                That(DelayTopology.Seconds(TimeSpan.FromMilliseconds(1)) == 1, "a delay rounds up to a whole second");
+                That(DelayTopology.Seconds(TimeSpan.FromSeconds(10)) == 10, "ten seconds is ten");
+                That(DelayTopology.EntryExchange(TimeSpan.FromSeconds(10)) == "bq.v1.delay-level-03", "10 = 1010 enters at level 3, found " + DelayTopology.EntryExchange(TimeSpan.FromSeconds(10)));
+                That(DelayTopology.EntryExchange(TimeSpan.FromSeconds(1)) == "bq.v1.delay-level-00", "one second enters at level 0");
+                That(DelayTopology.EntryExchange(DelayTopology.MaxDelay) == "bq.v1.delay-level-27", "the longest delay enters at level 27");
+                var key = DelayTopology.RoutingKey(TimeSpan.FromSeconds(10), "orders.q");
+                That(key == string.Join(".", Enumerable.Repeat("0", 24)) + ".1.0.1.0.orders.q", "the key is 28 bits then the destination: " + key);
+                That(DelayTopology.DestinationBindingKey("orders.q") == string.Join(".", Enumerable.Repeat("*", 28)) + ".orders.q", "the destination binds after 28 wildcard bits");
+                That(DelayTopology.MaxDelay == TimeSpan.FromSeconds(268435455), "the longest delay is 2^28-1 seconds");
+                foreach (var bad in new[] { TimeSpan.Zero, TimeSpan.FromSeconds(-1), DelayTopology.MaxDelay + TimeSpan.FromSeconds(1) })
+                {
+                    var rejected = false;
+                    try { DelayTopology.Seconds(bad); } catch (ArgumentOutOfRangeException) { rejected = true; }
+                    That(rejected, "a delay of " + bad + " is refused");
+                }
+                return Task.CompletedTask;
+            });
+            await Case("delayed messages travel the levels and arrive in order of their due time", async () =>
+            {
+              try
+              {
+                var queue = "bq.test.edge.delay." + Guid.NewGuid().ToString("N");
+                using (var connection = new ConnectionFactory { Uri = uri }.CreateConnection())
+                using (var model = connection.CreateModel())
+                {
+                    DelayTopology.Declare(model);
+                    model.QueueDeclare(queue, true, false, false);
+                    DelayTopology.BindDestination(model, queue);
+                    void Delay(string body, TimeSpan delay)
+                    {
+                        var props = model.CreateBasicProperties();
+                        props.Persistent = true;
+                        model.BasicPublish(DelayTopology.EntryExchange(delay), DelayTopology.RoutingKey(delay, queue), props, System.Text.Encoding.UTF8.GetBytes(body));
+                    }
+                    string Take() { var r = model.BasicGet(queue, true); return r == null ? null : System.Text.Encoding.UTF8.GetString(r.Body.ToArray()); }
+                    // Sent long first and short second, so arriving in due-time order proves each delay is honoured on its own.
+                    var started = DateTime.UtcNow;
+                    var scale = OnSimulator ? 1 : 0;
+                    Delay("long", TimeSpan.FromSeconds(OnSimulator ? 10 : 3));
+                    Delay("short", TimeSpan.FromSeconds(OnSimulator ? 2 : 1));
+                    await Task.Delay(300);
+                    That(Take() == null, "nothing arrives before its delay");
+                    if (OnSimulator)
+                    {
+                        await AdvanceClock(2000);
+                        string first = null;
+                        await Eventually(() => (first = Take()) != null, "the short message after two simulated seconds", 5);
+                        That(first == "short", "the shorter delay arrives first, got " + first);
+                        await AdvanceClock(7000);
+                        await Task.Delay(300);
+                        That(Take() == null, "the long message is still waiting after nine simulated seconds");
+                        await AdvanceClock(1000);
+                    }
+                    else
+                    {
+                        string first = null;
+                        await Eventually(() => (first = Take()) != null, "the short message", 8);
+                        That(first == "short", "the shorter delay arrives first, got " + first);
+                        That(DateTime.UtcNow - started >= TimeSpan.FromMilliseconds(800), "the short message was held for about its delay: " + (DateTime.UtcNow - started));
+                    }
+                    string second = null;
+                    await Eventually(() => (second = Take()) != null, "the long message", 10);
+                    That(second == "long", "the longer delay arrives second, got " + second);
+                    if (!OnSimulator) That(DateTime.UtcNow - started >= TimeSpan.FromMilliseconds(2500), "the long message was held for about its delay: " + (DateTime.UtcNow - started));
+                    model.QueueDelete(queue);
+                }
+              }
+              finally { await ResetClock(); }
+            });
+
+            foreach (var delayMode in new[] { DelayedDeliveryMode.Levels, DelayedDeliveryMode.Native })
+            {
+                var mode = delayMode;
+                await Case("a delayed send is held by the broker until it is due, with " + mode + " delay", async () =>
+                {
+                    if (mode == DelayedDeliveryMode.Native && !nativeDelay) { Console.WriteLine("Native delay test skipped: needs RabbitMQ 4.4 or later."); return; }
+                    var name = "bq.test.edge.delayed." + mode + "." + Guid.NewGuid().ToString("N");
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name), DelayedDelivery = mode };
+                    if (mode == DelayedDeliveryMode.Native) configuration.InputQueueArguments["x-queue-type"] = "quorum";
+                    var handled = new System.Collections.Concurrent.ConcurrentQueue<(string Text, DateTime At)>();
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { handled.Enqueue((m.Text, DateTime.UtcNow)); return Task.CompletedTask; }));
+                    using (var endpoint = RabbitEndpoint.Start(configuration))
+                    {
+                        var due = DateTimeOffset.UtcNow.AddMilliseconds(2500);
+                        await endpoint.SendLocalAt(new EdgeUowMessage { Text = "later" }, due);
+                        await endpoint.SendLocal(new EdgeUowMessage { Text = "now" });
+                        await Eventually(() => handled.Count == 1, "the immediate message", 5);
+                        await Task.Delay(1000);
+                        That(handled.Count == 1 && handled.First().Text == "now", "the delayed message has not arrived after one second");
+                        await Eventually(() => handled.Count == 2, "the delayed message once due", 10);
+                        That(handled.Last().Text == "later" && handled.Last().At >= due.UtcDateTime, "it arrives after its due time: " + (handled.Last().At - due.UtcDateTime));
+                        await Task.Delay(500);
+                        That(handled.Count == 2, "it arrives once");
+                    }
+                });
+            }
+            await Case("with delay levels a delayed publish is refused, because levels deliver to one queue", async () =>
+            {
+                var name = "bq.test.edge.levelspublish." + Guid.NewGuid().ToString("N");
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name), DelayedDelivery = DelayedDeliveryMode.Levels };
+                using (var endpoint = RabbitEndpoint.Start(configuration))
+                {
+                    var refused = false;
+                    try { await endpoint.PublishAt(new EdgeUowMessage { Text = "event" }, DateTimeOffset.UtcNow.AddMinutes(1)); }
+                    catch (NotSupportedException) { refused = true; }
+                    That(refused, "PublishAt throws NotSupportedException");
+                }
+            });
+            await Case("a delayed publish reaches every subscriber when due, with native delay", async () =>
+            {
+                if (!nativeDelay) { Console.WriteLine("Delayed publish test skipped: needs RabbitMQ 4.4 or later."); return; }
+                var suffix = Guid.NewGuid().ToString("N");
+                var events = "bq.test.events." + suffix;
+                var received = new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>();
+                EndpointConfiguration Subscriber(string name)
+                {
+                    var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name), EventsExchange = events, DelayedDelivery = DelayedDeliveryMode.Native };
+                    configuration.InputQueueArguments["x-queue-type"] = "quorum";
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { received[name] = DateTime.UtcNow; return Task.CompletedTask; }), true);
+                    return configuration;
+                }
+                var (one, two) = ("bq.test.edge.sub1." + suffix, "bq.test.edge.sub2." + suffix);
+                var publisherName = "bq.test.edge.pub." + suffix;
+                var publisher = new EndpointConfiguration(publisherName, uri) { Persistence = new InMemoryPersistenceProvider(publisherName), EventsExchange = events, DelayedDelivery = DelayedDeliveryMode.Native };
+                publisher.SendOnly();
+                using (var first = RabbitEndpoint.Start(Subscriber(one)))
+                using (var second = RabbitEndpoint.Start(Subscriber(two)))
+                using (var endpoint = RabbitEndpoint.Start(publisher))
+                {
+                    var due = DateTimeOffset.UtcNow.AddMilliseconds(2000);
+                    await endpoint.PublishAt(new EdgeUowMessage { Text = "event" }, due);
+                    await Task.Delay(800);
+                    That(received.IsEmpty, "no subscriber has the event before it is due");
+                    await Eventually(() => received.Count == 2, "both subscribers to get the event", 10);
+                    That(received.Values.All(at => at >= due.UtcDateTime), "each got it after the due time");
+                }
+            });
+            await Case("native delay refuses an input queue that is not a quorum queue, because a classic queue would ignore the delay", () =>
+            {
+                if (!nativeDelay) { Console.WriteLine("Native delay guard test skipped: needs RabbitMQ 4.4 or later."); return Task.CompletedTask; }
+                var name = "bq.test.edge.nativeclassic." + Guid.NewGuid().ToString("N");
+                var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name), DelayedDelivery = DelayedDeliveryMode.Native };
+                var refused = false;
+                try { RabbitEndpoint.Start(configuration).Dispose(); } catch (InvalidOperationException ex) { refused = ex.Message.Contains("quorum"); }
+                That(refused, "start-up fails and names quorum queues");
+                return Task.CompletedTask;
+            });
+
             foreach (var viaContainer in new[] { false, true })
             {
                 var container = viaContainer;
@@ -845,6 +1030,7 @@ namespace Bq.Messaging.Tests
             {
                 var name = "bq.test.edge.transactional." + Guid.NewGuid().ToString("N");
                 var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                UseNativeDelayWhenAvailable(configuration);
                 configuration.Route(typeof(EdgeUowMessage), name);
                 var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
                 configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) =>
@@ -874,7 +1060,7 @@ namespace Bq.Messaging.Tests
                         await session.Publish(new EdgeUowMessage { Text = "published" });
                         await session.Publish<EdgeUowMessage>(m => m.Text = "published-init");
                         await session.Publish(new EdgeUowMessage { Text = "published-opts" }, new PublishOptions());
-                        await session.PublishAt(new EdgeUowMessage { Text = "published-at" }, DateTimeOffset.UtcNow.AddMilliseconds(200));
+                        if (nativeDelay) await session.PublishAt(new EdgeUowMessage { Text = "published-at" }, DateTimeOffset.UtcNow.AddMilliseconds(200));
                         await session.WithHeader("h", "scoped-at").SendAt(new EdgeUowMessage { Text = "scoped-at" }, DateTimeOffset.UtcNow.AddMilliseconds(200));
                         await session.WithHeader("h", "scoped-local").SendLocal(new EdgeUowMessage { Text = "scoped-local" });
                     });
@@ -888,7 +1074,9 @@ namespace Bq.Messaging.Tests
                 EdgeInvokeSender.Triggers = 0;
                 var name = "bq.test.edge.invokectx." + Guid.NewGuid().ToString("N");
                 EdgeInvokeSender.ForwardTarget = name + ".forward";
+                EdgeInvokeSender.PublishAtSupported = nativeDelay;
                 var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                UseNativeDelayWhenAvailable(configuration);
                 configuration.Route(typeof(EdgeUowMessage), name);
                 configuration.Pipeline.Register("edge-invoke-sender", new EdgeInvokeSender(), "Send from the invoke stage");
                 var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, bool>();
@@ -953,6 +1141,7 @@ namespace Bq.Messaging.Tests
             {
                 var name = "bq.test.edge.uniform." + Guid.NewGuid().ToString("N");
                 var configuration = new EndpointConfiguration(name, uri) { Persistence = new InMemoryPersistenceProvider(name) };
+                UseNativeDelayWhenAvailable(configuration);
                 configuration.Route(typeof(EdgeUowMessage), name);
                 var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
                 configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen[m.Text] = c.MessageHeaders.TryGetValue("h", out var header) ? header : ""; return Task.CompletedTask; }));
@@ -973,7 +1162,7 @@ namespace Bq.Messaging.Tests
                     await session.Publish(new EdgeUowMessage { Text = "u-publish" });
                     await session.Publish<EdgeUowMessage>(m => m.Text = "u-publish-init");
                     await session.Publish(new EdgeUowMessage { Text = "u-publish-opts" }, new PublishOptions());
-                    await session.PublishAt(new EdgeUowMessage { Text = "u-publish-at" }, due);
+                    if (nativeDelay) await session.PublishAt(new EdgeUowMessage { Text = "u-publish-at" }, due);
                     await session.WithHeader("h", "scoped").Send(new EdgeUowMessage { Text = "u-header" });
                     var expected = new[] { "u-send", "u-dest", "u-local", "u-init", "u-opts", "u-object-opts", "u-init-opts", "u-at", "u-at-dest", "u-local-at", "u-header" };
                     await Eventually(() => expected.All(seen.ContainsKey), "every message to be handled; missing " + string.Join(",", expected.Where(e => !seen.ContainsKey(e))));
@@ -1342,33 +1531,6 @@ namespace Bq.Messaging.Tests
                         await Eventually(() => channel.MessageCount(name + ".nowhere") == 1, "the deferred row to be delivered after its retry time");
                         await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");
                     }
-                }
-                finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
-            });
-            await Case("a deferred scheduled row does not hold back other scheduled rows", async () =>
-            {
-                var name = "bq.test.edge.outbox.poisontimeout." + Guid.NewGuid().ToString("N");
-                var path = EdgeOutbox.NewPath(name);
-                try
-                {
-                    var store = await EdgeOutbox.Store(path, name);
-                    var format = new Bq.Messaging.Serialization.MessagePackSerialization().CreateWireFormat();
-                    using (var session = await store.OpenSession())
-                    {
-                        async Task Timeout(string text, string queue, int minutesAgo) => await session.StoreTimeout(new OutgoingMessage
-                        {
-                            Id = Guid.NewGuid().ToString("N"), Type = EndpointConfiguration.MessageType(typeof(EdgeUowMessage)), Exchange = "", RoutingKey = queue, Mandatory = true,
-                            Headers = new Dictionary<string, object>(), Body = format.Serialize(typeof(EdgeUowMessage), new EdgeUowMessage { Text = text })
-                        }, DateTime.UtcNow.AddMinutes(-minutesAgo));
-                        await Timeout("scheduled-unroutable", name + ".nowhere", 10);
-                        await Timeout("scheduled-after", name, 5);
-                        session.Commit();
-                    }
-                    var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
-                    var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, bool>();
-                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen[m.Text] = true; return Task.CompletedTask; }));
-                    using (var endpoint = RabbitEndpoint.Start(configuration))
-                        await Eventually(() => seen.ContainsKey("scheduled-after"), "the later scheduled row to be sent past the unroutable one");
                 }
                 finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
             });

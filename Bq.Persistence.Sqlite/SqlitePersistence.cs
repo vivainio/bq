@@ -11,7 +11,6 @@ namespace Bq.Persistence.Sqlite
     {
         readonly Func<DbConnection> factory;
         readonly string endpoint;
-        int outgoingPoll;
         public SqlitePersistence(Func<DbConnection> factory, string endpoint)
         {
             this.factory = factory ?? throw new ArgumentNullException(nameof(factory));
@@ -30,15 +29,12 @@ namespace Bq.Persistence.Sqlite
             {
                 cmd.CommandText = @"CREATE TABLE IF NOT EXISTS bq_inbox (endpoint TEXT NOT NULL, message_id TEXT NOT NULL, claimed_ticks INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(endpoint,message_id));
 CREATE TABLE IF NOT EXISTS bq_outbox (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, headers BLOB, attempts INTEGER NOT NULL DEFAULT 0, retry_after_ticks INTEGER NOT NULL DEFAULT 0, last_error TEXT, PRIMARY KEY(endpoint,id));
-CREATE TABLE IF NOT EXISTS bq_saga_timeout (endpoint TEXT NOT NULL, id TEXT NOT NULL, correlation_id TEXT, reply_to TEXT, type TEXT NOT NULL, exchange_name TEXT NOT NULL, routing_key TEXT NOT NULL, mandatory INTEGER NOT NULL, body BLOB NOT NULL, due_ticks INTEGER NOT NULL, headers BLOB, attempts INTEGER NOT NULL DEFAULT 0, retry_after_ticks INTEGER NOT NULL DEFAULT 0, last_error TEXT, PRIMARY KEY(endpoint,id));
-CREATE INDEX IF NOT EXISTS bq_saga_timeout_due ON bq_saga_timeout(endpoint,due_ticks);
 CREATE TABLE IF NOT EXISTS bq_recovery (endpoint TEXT NOT NULL, recovery_id TEXT NOT NULL, message_id TEXT NOT NULL, cycle INTEGER NOT NULL, is_error INTEGER NOT NULL, error_queue TEXT, exception_type TEXT, exception_message TEXT, exception_detail TEXT, failed_ticks INTEGER NOT NULL, due_ticks INTEGER NOT NULL, payload BLOB NOT NULL, dispatched INTEGER NOT NULL DEFAULT 0, replayed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(endpoint,recovery_id));
 CREATE INDEX IF NOT EXISTS bq_recovery_errors ON bq_recovery(endpoint,is_error,replayed,failed_ticks DESC,recovery_id DESC);
 CREATE INDEX IF NOT EXISTS bq_recovery_due ON bq_recovery(endpoint,dispatched,due_ticks);
 CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT NULL, saga_id TEXT NOT NULL, version INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(endpoint,saga_type,saga_id));";
                 await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
                 EnsureColumn(c, "bq_outbox", "headers", "BLOB");
-                EnsureColumn(c, "bq_saga_timeout", "headers", "BLOB");
             }
         }
         static void EnsureColumn(DbConnection connection, string table, string column, string definition)
@@ -81,16 +77,13 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             using (var connection = await Open().ConfigureAwait(false))
             using (var command = Command(connection, null, @"SELECT
     (SELECT COUNT(*) FROM bq_outbox WHERE endpoint=@e),
-    (SELECT COUNT(*) FROM bq_saga_timeout WHERE endpoint=@e AND due_ticks<=@now),
-    (SELECT COUNT(*) FROM bq_saga_timeout WHERE endpoint=@e AND due_ticks>@now),
     (SELECT COUNT(*) FROM bq_recovery WHERE endpoint=@e AND dispatched=0 AND due_ticks<=@now),
     (SELECT COUNT(*) FROM bq_recovery WHERE endpoint=@e AND dispatched=0 AND due_ticks>@now)",
                 "@e", endpoint, "@now", DateTime.UtcNow.Ticks))
             using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
             {
                 await reader.ReadAsync().ConfigureAwait(false);
-                return new DispatchBacklog(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2),
-                    reader.GetInt64(3), reader.GetInt64(4));
+                return new DispatchBacklog(reader.GetInt64(0), reader.GetInt64(1), reader.GetInt64(2));
             }
         }
 
@@ -113,14 +106,12 @@ CREATE TABLE IF NOT EXISTS bq_saga (endpoint TEXT NOT NULL, saga_type TEXT NOT N
             using (var command = Command(connection, null, @"SELECT id, kind, destination, due_ticks, exchange_name, attempts, last_error, retry_after FROM (
     SELECT id, 'Outbox' AS kind, routing_key AS destination, NULL AS due_ticks, exchange_name, attempts, last_error, retry_after_ticks AS retry_after FROM bq_outbox WHERE endpoint=@e
     UNION ALL
-    SELECT id, CASE WHEN type=@saga THEN 'SagaTimeout' ELSE 'ScheduledSend' END, routing_key, due_ticks, exchange_name, attempts, last_error, retry_after_ticks FROM bq_saga_timeout WHERE endpoint=@e
-    UNION ALL
     SELECT message_id, CASE WHEN is_error=1 THEN 'Error' ELSE 'Recovery' END,
         CASE WHEN is_error=1 THEN error_queue ELSE endpoint END, due_ticks, '', 0, NULL, 0
         FROM bq_recovery WHERE endpoint=@e AND dispatched=0
 ) WHERE (@kind IS NULL OR kind=@kind) AND (@dueBy IS NULL OR ((due_ticks IS NULL OR due_ticks<=@dueBy) AND retry_after<=@dueBy))
 ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
-                "@e", endpoint, "@limit", limit, "@kind", kind?.ToString(), "@dueBy", dueBy, "@saga", typeof(SagaTimeoutMessage).FullName))
+                "@e", endpoint, "@limit", limit, "@kind", kind?.ToString(), "@dueBy", dueBy))
             using (var reader = await command.ExecuteReaderAsync().ConfigureAwait(false))
             {
                 while (await reader.ReadAsync().ConfigureAwait(false))
@@ -140,20 +131,9 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
         public async Task<OutgoingMessage> NextOutgoing(string name)
         {
             CheckEndpoint(name);
-            // Alternate preference so a sustained backlog or an unroutable head in one
-            // category does not prevent attempts in the other category.
-            var preferTimeout = System.Threading.Interlocked.Increment(ref outgoingPoll) & 1;
-            const string fields = "id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,headers";
-            var sql = "SELECT " + fields + @" FROM (
-    SELECT * FROM (SELECT " + fields + @", 1 AS category FROM bq_saga_timeout
-        WHERE endpoint=@e AND due_ticks<=@now AND retry_after_ticks<=@now ORDER BY due_ticks,id LIMIT 1)
-    UNION ALL
-    SELECT * FROM (SELECT " + fields + @", 0 AS category FROM bq_outbox
-        WHERE endpoint=@e AND retry_after_ticks<=@now ORDER BY rowid LIMIT 1)
-) ORDER BY (category=@preferred) DESC LIMIT 1";
+            const string sql = "SELECT id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,headers FROM bq_outbox WHERE endpoint=@e AND retry_after_ticks<=@now ORDER BY rowid LIMIT 1";
             using (var c = await Open().ConfigureAwait(false))
-            using (var cmd = Command(c, null, sql, "@e", endpoint, "@now", DateTime.UtcNow.Ticks,
-                "@preferred", preferTimeout))
+            using (var cmd = Command(c, null, sql, "@e", endpoint, "@now", DateTime.UtcNow.Ticks))
             using (var r = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
             {
                 if (!await r.ReadAsync().ConfigureAwait(false)) return null;
@@ -169,29 +149,18 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             Headers = MessageHeaderCodec.Decode(r.IsDBNull(8) ? null : (byte[])r.GetValue(8))
         };
 
-        /// <summary>
-        /// Up to <paramref name="maxCount"/> ready rows from one table, in dispatch order. Like <see cref="NextOutgoing"/> it prefers
-        /// ordinary outbox rows and due timeouts in turn, so a backlog in one cannot starve the other.
-        /// </summary>
+        /// <summary>Up to <paramref name="maxCount"/> ready outbox rows, in the order they were stored.</summary>
         public async Task<System.Collections.Generic.IReadOnlyList<OutgoingMessage>> NextOutgoingBatch(string name, int maxCount)
         {
             CheckEndpoint(name);
             if (maxCount < 1) throw new ArgumentOutOfRangeException(nameof(maxCount));
-            var timeoutsFirst = (System.Threading.Interlocked.Increment(ref outgoingPoll) & 1) == 1;
-            var outboxSql = "SELECT " + OutgoingFields + " FROM bq_outbox WHERE endpoint=@e AND retry_after_ticks<=@now ORDER BY rowid LIMIT @n";
-            var timeoutSql = "SELECT " + OutgoingFields + " FROM bq_saga_timeout WHERE endpoint=@e AND due_ticks<=@now AND retry_after_ticks<=@now ORDER BY due_ticks,id LIMIT @n";
+            var rows = new System.Collections.Generic.List<OutgoingMessage>();
             using (var c = await Open().ConfigureAwait(false))
-            {
-                foreach (var sql in timeoutsFirst ? new[] { timeoutSql, outboxSql } : new[] { outboxSql, timeoutSql })
-                {
-                    var rows = new System.Collections.Generic.List<OutgoingMessage>();
-                    using (var cmd = Command(c, null, sql, "@e", endpoint, "@now", DateTime.UtcNow.Ticks, "@n", maxCount))
-                    using (var r = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
-                        while (await r.ReadAsync().ConfigureAwait(false)) rows.Add(ReadOutgoing(r));
-                    if (rows.Count > 0) return rows;
-                }
-            }
-            return new OutgoingMessage[0];
+            using (var cmd = Command(c, null, "SELECT " + OutgoingFields + " FROM bq_outbox WHERE endpoint=@e AND retry_after_ticks<=@now ORDER BY rowid LIMIT @n",
+                "@e", endpoint, "@now", DateTime.UtcNow.Ticks, "@n", maxCount))
+            using (var r = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
+                while (await r.ReadAsync().ConfigureAwait(false)) rows.Add(ReadOutgoing(r));
+            return rows;
         }
 
         public async Task MarkDispatched(string name, System.Collections.Generic.IReadOnlyCollection<string> ids)
@@ -203,14 +172,13 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             using (var tx = c.BeginTransaction())
             {
                 foreach (var chunk in System.Linq.Enumerable.Select(System.Linq.Enumerable.GroupBy(System.Linq.Enumerable.Select(ids, (id, i) => (id, i)), pair => pair.i / 400), group => System.Linq.Enumerable.ToList(System.Linq.Enumerable.Select(group, pair => pair.id))))
-                    foreach (var table in new[] { "bq_outbox", "bq_saga_timeout" })
-                    {
-                        var parameters = new System.Collections.Generic.List<object> { "@e", endpoint };
-                        var names = new System.Collections.Generic.List<string>();
-                        for (var i = 0; i < chunk.Count; i++) { names.Add("@p" + i); parameters.Add("@p" + i); parameters.Add(chunk[i]); }
-                        using (var cmd = Command(c, tx, "DELETE FROM " + table + " WHERE endpoint=@e AND id IN (" + string.Join(",", names) + ")", parameters.ToArray()))
-                            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
-                    }
+                {
+                    var parameters = new System.Collections.Generic.List<object> { "@e", endpoint };
+                    var names = new System.Collections.Generic.List<string>();
+                    for (var i = 0; i < chunk.Count; i++) { names.Add("@p" + i); parameters.Add("@p" + i); parameters.Add(chunk[i]); }
+                    using (var cmd = Command(c, tx, "DELETE FROM bq_outbox WHERE endpoint=@e AND id IN (" + string.Join(",", names) + ")", parameters.ToArray()))
+                        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+                }
                 tx.Commit();
             }
         }
@@ -219,7 +187,7 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
         {
             CheckEndpoint(name);
             using (var c = await Open().ConfigureAwait(false))
-            using (var cmd = Command(c, null, "DELETE FROM bq_outbox WHERE endpoint=@e AND id=@id; DELETE FROM bq_saga_timeout WHERE endpoint=@e AND id=@id", "@e", endpoint, "@id", id)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+            using (var cmd = Command(c, null, "DELETE FROM bq_outbox WHERE endpoint=@e AND id=@id", "@e", endpoint, "@id", id)) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
         }
         public async Task<int> PurgeInbox(string name, DateTime claimedBeforeUtc, int maxRows)
         {
@@ -248,21 +216,17 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             CheckEndpoint(name);
             using (var c = await Open().ConfigureAwait(false))
             {
-                foreach (var table in new[] { "bq_outbox", "bq_saga_timeout" })
+                int attempts;
+                using (var read = Command(c, null, "SELECT attempts FROM bq_outbox WHERE endpoint=@e AND id=@id", "@e", endpoint, "@id", id))
                 {
-                    int attempts;
-                    using (var read = Command(c, null, "SELECT attempts FROM " + table + " WHERE endpoint=@e AND id=@id", "@e", endpoint, "@id", id))
-                    {
-                        var current = await read.ExecuteScalarAsync().ConfigureAwait(false);
-                        if (current == null || current == DBNull.Value) continue;
-                        attempts = Convert.ToInt32(current) + 1;
-                    }
-                    var retryAfter = DateTime.UtcNow.Add(OutgoingRetry.Delay(attempts)).Ticks;
-                    using (var update = Command(c, null, "UPDATE " + table + " SET attempts=@a, retry_after_ticks=@r, last_error=@m WHERE endpoint=@e AND id=@id",
-                        "@a", attempts, "@r", retryAfter, "@m", OutgoingRetry.Describe(failure), "@e", endpoint, "@id", id))
-                        await update.ExecuteNonQueryAsync().ConfigureAwait(false);
-                    return;
+                    var current = await read.ExecuteScalarAsync().ConfigureAwait(false);
+                    if (current == null || current == DBNull.Value) return;
+                    attempts = Convert.ToInt32(current) + 1;
                 }
+                var retryAfter = DateTime.UtcNow.Add(OutgoingRetry.Delay(attempts)).Ticks;
+                using (var update = Command(c, null, "UPDATE bq_outbox SET attempts=@a, retry_after_ticks=@r, last_error=@m WHERE endpoint=@e AND id=@id",
+                    "@a", attempts, "@r", retryAfter, "@m", OutgoingRetry.Describe(failure), "@e", endpoint, "@id", id))
+                    await update.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
         }
         static RecoveryRecord ReadRecovery(DbDataReader r) => new RecoveryRecord
@@ -357,11 +321,6 @@ ORDER BY COALESCE(due_ticks, 0), kind, id LIMIT @limit",
             public async Task StoreOutgoing(OutgoingMessage m)
             {
                 using (var cmd = Command(Connection, Transaction, "INSERT INTO bq_outbox(endpoint,id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,headers) VALUES(@e,@id,@c,@r,@t,@x,@k,@m,@b,@h)", "@e", endpoint, "@id", m.Id, "@c", m.CorrelationId, "@r", m.ReplyTo, "@t", m.Type, "@x", m.Exchange, "@k", m.RoutingKey, "@m", m.Mandatory ? 1 : 0, "@b", m.Body, "@h", MessageHeaderCodec.Encode(m.Headers))) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
-            }
-            public async Task StoreTimeout(OutgoingMessage m, DateTime dueUtc)
-            {
-                if (dueUtc.Kind != DateTimeKind.Utc) throw new ArgumentException("Timeout must use UTC.", nameof(dueUtc));
-                using (var cmd = Command(Connection, Transaction, "INSERT INTO bq_saga_timeout(endpoint,id,correlation_id,reply_to,type,exchange_name,routing_key,mandatory,body,due_ticks,headers) VALUES(@e,@id,@c,@r,@t,@x,@k,@m,@b,@due,@h)", "@e", endpoint, "@id", m.Id, "@c", m.CorrelationId, "@r", m.ReplyTo, "@t", m.Type, "@x", m.Exchange, "@k", m.RoutingKey, "@m", m.Mandatory ? 1 : 0, "@b", m.Body, "@due", dueUtc.Ticks, "@h", MessageHeaderCodec.Encode(m.Headers))) await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
             }
             public async Task<SagaRecord> LoadSaga(string type, string id)
             {
