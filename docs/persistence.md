@@ -11,7 +11,19 @@ config.Persistence = store;
 using (var endpoint = RabbitEndpoint.Start(config)) { /* host the endpoint */ }
 ```
 
-Within a handler, `context.PersistenceSession.Connection` and `.Transaction` are the same connection and local transaction used by the inbox, saga and outbox stores. Application commands must use both. Bq records the incoming message ID in a unique inbox key, invokes the handler, records context-generated sends/publishes/replies in the outbox, commits, and then acknowledges RabbitMQ. On failure the transaction is disposed without commit. Each immediate retry creates a new session and transaction. A dispatcher polls committed outbox records; it deletes a record only after a broker confirmation. Publisher-confirm uncertainty and multiple dispatchers can produce duplicates, with the same outgoing message ID.
+Within a handler, `context.PersistenceSession.Connection` and `.Transaction` are the same connection and local transaction used by the inbox, saga and outbox stores. Application commands must use both.
+
+For each delivery Bq:
+
+1. Records the incoming message ID in a unique inbox key.
+2. Invokes the handler.
+3. Records context-generated sends, publishes and replies in the outbox.
+4. Commits.
+5. Acknowledges RabbitMQ.
+
+On failure the transaction is disposed without commit. Each immediate retry creates a new session and transaction.
+
+A dispatcher polls committed outbox records and deletes a record only after a broker confirmation. Publisher-confirm uncertainty and multiple dispatchers can produce duplicates, with the same outgoing message ID.
 
 ## Transactions outside handlers
 

@@ -131,10 +131,10 @@ Within a handler, `context.PersistenceSession.Connection` and `.Transaction` are
 
 ### Sagas
 
-Define a saga with a data class, message handlers, and optional timeout handlers. Register each message's correlation-key selector; `Start` messages create an instance when none exists, while `Handle` messages only apply to an existing instance. This API resembles NServiceBus concepts but is not its configuration API.
+Define a saga as in NServiceBus: a data class, message handlers, optional timeout handlers, and `ConfigureHowToFindSaga` to map each message to the saga's correlation property. The saga types match NServiceBus at the source level (`Saga<TData>`, `MapSaga`, `ConfigureMapping`, `MarkAsComplete`, `RequestTimeout`), so ported sagas need only namespace changes. `Start` messages create an instance when none exists, while `Handle` messages only apply to an existing instance. Bq supports one scalar correlation property per saga.
 
 ```csharp
-public class OrderState { public string Status { get; set; } }
+public class OrderState { public string OrderId { get; set; } public string Status { get; set; } }
 public class PlaceOrder { public string OrderId { get; set; } }
 public class PaymentReceived { public string OrderId { get; set; } }
 public class PaymentDeadline { public string OrderId { get; set; } }
@@ -142,8 +142,14 @@ public class PaymentDeadline { public string OrderId { get; set; } }
 public class OrderSaga : Saga<OrderState>, IAmStartedByMessages<PlaceOrder>,
     IHandleMessages<PaymentReceived>, IHandleTimeouts<PaymentDeadline>
 {
+    protected override void ConfigureHowToFindSaga(SagaPropertyMapper<OrderState> mapper) =>
+        mapper.MapSaga(data => data.OrderId)
+            .ToMessage<PlaceOrder>(m => m.OrderId)
+            .ToMessage<PaymentReceived>(m => m.OrderId);
+
     public async Task Handle(PlaceOrder message, IMessageHandlerContext context)
     {
+        Data.OrderId = message.OrderId;
         Data.Status = "waiting";
         await RequestTimeout(TimeSpan.FromMinutes(15), new PaymentDeadline { OrderId = message.OrderId });
     }
@@ -159,6 +165,12 @@ public class OrderSaga : Saga<OrderState>, IAmStartedByMessages<PlaceOrder>,
     }
 }
 
+config.RegisterSaga<OrderSaga, OrderState>();
+```
+
+To give the mappings at registration instead, or to construct the saga yourself, pass a factory and mappings:
+
+```csharp
 config.RegisterSaga<OrderSaga, OrderState>(() => new OrderSaga(), mappings =>
 {
     mappings.Start<PlaceOrder>(m => m.OrderId);

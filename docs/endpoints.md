@@ -1,6 +1,14 @@
 # Endpoints and sessions
 
-Register handlers explicitly before calling `RabbitEndpoint.Start`. Register event handlers with `config.Handle(() => new EventHandler(), subscribe: true)`. The factory creates a handler for each processing attempt. For scoped dependencies, use `config.Handle<PlaceOrder>(context => new Handler(/* construct services using context */))`. `RabbitEndpoint.Start` never discovers handlers; the host registers them. `Endpoint.Start` (and `Endpoint.Create(...).Start()`) scans assemblies like NServiceBus: it registers concrete `IHandleMessages<T>` classes and `Saga<T>` types in the endpoint container and skips message types that already have an explicit handler. Configure it with `AssemblyScanner()`, `ExcludeAssemblies`, `ExcludeTypes` and `ScanAssembliesInNestedDirectories`. Send-only endpoints do not scan. Add dependencies with `RegisterComponents`. See the [Castle Windsor reference application](windsor.md) for an end-to-end example.
+Register handlers explicitly before calling `RabbitEndpoint.Start`. It never discovers handlers; the host registers them.
+
+- Event handler: `config.Handle(() => new EventHandler(), subscribe: true)`. The factory creates a handler for each processing attempt.
+- Handler with scoped dependencies: `config.Handle<PlaceOrder>(context => new Handler(/* construct services using context */))`.
+- Dependencies: add them with `RegisterComponents`.
+
+`Endpoint.Start` (and `Endpoint.Create(...).Start()`) scans assemblies like NServiceBus. It registers concrete `IHandleMessages<T>` classes and `Saga<T>` types in the endpoint container, and skips message types that already have an explicit handler. Configure it with `AssemblyScanner()`, `ExcludeAssemblies`, `ExcludeTypes` and `ScanAssembliesInNestedDirectories`. Send-only endpoints do not scan.
+
+See the [Castle Windsor reference application](windsor.md) for an end-to-end example.
 
 Configure command destinations with `config.Route<PlaceOrder>("orders")`, then call `await endpoint.Send(command)`; `endpoint.Publish(evt)` broadcasts to registered subscribers. `endpoint.SendLocal(message)` sends to that endpoint's own queue without a route.
 
@@ -125,7 +133,19 @@ Use `AddHeaderToAllOutgoingMessages` to set endpoint-wide defaults for new outgo
 
 Apply `[TimeToBeReceived("00:10:00")]` to a message contract to set its RabbitMQ TTL. For scheduled and outbox messages, the TTL starts at broker publish. Use `Conventions().DefiningTimeToBeReceivedAs(...)` to replace attribute-based lookup. Return `TimeSpan.MaxValue` for contracts with no TTL.
 
-Use `RoutingOptionExtensions` for explicit destination and reply-route helpers and `DelayedDeliveryOptionExtensions` for scheduling helpers. Use `GetDestination`, `GetReplyToRoute`, `IsRoutingToThisEndpoint`, `GetDeliveryDelay`, `GetDeliveryDate`, `GetMessageId`, and `GetHeaders` to inspect explicitly configured options. Shared helpers can set and read message IDs and text headers through `ExtendableOptions`. `GetHeaders` returns a text snapshot. `GetExtensions()` gives caller code a context bag on each send, publish, reply, subscribe, or unsubscribe options instance. The bag is local to that options object. Use `Send(destination, message)` and `SendLocal(message)` on `IMessageSession` or `IPipelineContext`. Both shortcuts also accept message initializers. Use `IPipelineContextExtensions` and `IMessageProcessingContextExtensions` for explicit calls to the pipeline send, publish, and reply helpers. Use `Publish<T>()` on either API to publish a default-initialized event.
+Helpers for send, publish, reply and scheduling options:
+
+- `RoutingOptionExtensions`: explicit destination and reply-route helpers.
+- `DelayedDeliveryOptionExtensions`: scheduling helpers.
+- `GetDestination`, `GetReplyToRoute`, `IsRoutingToThisEndpoint`, `GetDeliveryDelay`, `GetDeliveryDate`, `GetMessageId` and `GetHeaders` inspect explicitly configured options. `GetHeaders` returns a text snapshot.
+- Shared helpers can set and read message IDs and text headers through `ExtendableOptions`.
+- `GetExtensions()` gives caller code a context bag on each send, publish, reply, subscribe or unsubscribe options instance. The bag is local to that options object.
+
+Shortcuts:
+
+- `Send(destination, message)` and `SendLocal(message)` on `IMessageSession` or `IPipelineContext`. Both also accept message initializers.
+- `IPipelineContextExtensions` and `IMessageProcessingContextExtensions` for explicit calls to the pipeline send, publish and reply helpers.
+- `Publish<T>()` on either API publishes a default-initialized event.
 
 The object-based `IMessageSession` overloads resolve the contract from the concrete message type. You can pass typed message initializers directly to `IEndpointInstance.Send` and `Publish` and to handler-context `Send`, `Publish`, and `Reply`, with or without options. Uniform and transactional sessions also accept optionless `Send` and `Publish` initializers. Message-initializer overloads accept classes with a public parameterless constructor and public interfaces with read/write data properties. Interface contracts use their declared type for routing and wire names. Use `IMessageCreator` with Bq's `MessageCreator` to construct a message separately from sending or publishing it.
 
@@ -197,7 +217,16 @@ Use `Conventions().DefiningDataBusPropertiesAs(property => ...)` to choose prope
 
 ## Encrypted string properties
 
-A message property of type `WireEncryptedString` travels encrypted. Set `Value` before sending. Bq encrypts it with the endpoint's `IEncryptionService` just before serialization, so only `EncryptedValue` goes on the wire, and it decrypts it before behaviors and handlers run, so the receiver reads `Value`. Enable the Rijndael (AES-CBC) service with `config.RijndaelEncryptionService(keyIdentifier, key, expiredKeys)`, where keys are 16, 24 or 32 bytes, or call `config.RijndaelEncryptionService()` to read the `RijndaelEncryptionServiceConfig` section (`Key`, `KeyIdentifier`, `KeyFormat` of `Ascii` or `Base64`, and `ExpiredKeys`). The sender names its key in the `NServiceBus.RijndaelKeyIdentifier` header, and the receiver falls back to the other and expired keys, so a rotated key still reads messages already in flight. Use `RegisterEncryptionService` or a container-registered `IEncryptionService` for another algorithm. This is separate from `EnableMessagePropertyEncryption`, which encrypts ordinary string properties chosen by convention.
+A message property of type `WireEncryptedString` travels encrypted. Set `Value` before sending. Bq encrypts it with the endpoint's `IEncryptionService` just before serialization, so only `EncryptedValue` goes on the wire. It decrypts the property before behaviors and handlers run, so the receiver reads `Value`.
+
+To enable the Rijndael (AES-CBC) service:
+
+- `config.RijndaelEncryptionService(keyIdentifier, key, expiredKeys)`, where keys are 16, 24 or 32 bytes.
+- `config.RijndaelEncryptionService()` reads the `RijndaelEncryptionServiceConfig` section: `Key`, `KeyIdentifier`, `KeyFormat` (`Ascii` or `Base64`) and `ExpiredKeys`.
+
+The sender names its key in the `NServiceBus.RijndaelKeyIdentifier` header. The receiver falls back to the other and expired keys, so a rotated key still reads messages already in flight.
+
+For another algorithm, use `RegisterEncryptionService` or a container-registered `IEncryptionService`. This is separate from `EnableMessagePropertyEncryption`, which encrypts ordinary string properties chosen by convention.
 
 ## JSON on the wire
 

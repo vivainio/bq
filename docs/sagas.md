@@ -1,9 +1,9 @@
 # Sagas and timeouts
 
-Define a saga with a data class, message handlers, and optional timeout handlers. Register each message's correlation-key selector; `Start` messages create an instance when none exists, while `Handle` messages only apply to an existing instance. This API resembles NServiceBus concepts but is not its configuration API.
+Define a saga as in NServiceBus: a data class, message handlers, optional timeout handlers, and `ConfigureHowToFindSaga` to map each message to the saga's correlation property. The saga types match NServiceBus at the source level (`Saga<TData>`, `MapSaga`, `ConfigureMapping`, `MarkAsComplete`, `RequestTimeout`), so ported sagas need only namespace changes. `Start` messages create an instance when none exists, while `Handle` messages only apply to an existing instance. Bq supports one scalar correlation property per saga.
 
 ```csharp
-public class OrderState { public string Status { get; set; } }
+public class OrderState { public string OrderId { get; set; } public string Status { get; set; } }
 public class PlaceOrder { public string OrderId { get; set; } }
 public class PaymentReceived { public string OrderId { get; set; } }
 public class PaymentDeadline { public string OrderId { get; set; } }
@@ -11,8 +11,14 @@ public class PaymentDeadline { public string OrderId { get; set; } }
 public class OrderSaga : Saga<OrderState>, IAmStartedByMessages<PlaceOrder>,
     IHandleMessages<PaymentReceived>, IHandleTimeouts<PaymentDeadline>
 {
+    protected override void ConfigureHowToFindSaga(SagaPropertyMapper<OrderState> mapper) =>
+        mapper.MapSaga(data => data.OrderId)
+            .ToMessage<PlaceOrder>(m => m.OrderId)
+            .ToMessage<PaymentReceived>(m => m.OrderId);
+
     public async Task Handle(PlaceOrder message, IMessageHandlerContext context)
     {
+        Data.OrderId = message.OrderId;
         Data.Status = "waiting";
         await RequestTimeout(TimeSpan.FromMinutes(15), new PaymentDeadline { OrderId = message.OrderId });
     }
@@ -28,6 +34,12 @@ public class OrderSaga : Saga<OrderState>, IAmStartedByMessages<PlaceOrder>,
     }
 }
 
+config.RegisterSaga<OrderSaga, OrderState>();
+```
+
+To give the mappings at registration instead, or to construct the saga yourself, pass a factory and mappings:
+
+```csharp
 config.RegisterSaga<OrderSaga, OrderState>(() => new OrderSaga(), mappings =>
 {
     mappings.Start<PlaceOrder>(m => m.OrderId);
@@ -40,7 +52,15 @@ Saga registrations require persistence. The selector returns a nonempty, stable 
 
 `MarkAsComplete()` deletes the active state at commit. A later start message may create a new instance with the same key. Timeouts have a unique saga-instance identity, so timeouts requested by the old instance are ignored. A non-starting message with no matching saga is ignored by default; set `config.SagaNotFound` to inspect it or throw to trigger recoverability. Missing or obsolete timeouts are silently ignored. Messages may arrive out of order, so choose the callback behavior accordingly.
 
-A timeout is an outbox row, committed with the saga state, that the broker holds until it is due, so it fires after a restart and while the endpoint is stopped. See [delayed delivery](delayed-delivery.md). It can arrive later than requested, by up to a second with delay levels. Delivery is at least once and duplicate suppression uses the persistent inbox. Completion does not cancel outstanding timeouts; they are discarded when delivered. Keep the inbox and saga data for as long as messages can be redelivered. Saga type names, correlation keys, timeout types and MessagePack property names are persisted contracts. The lower-level `IPersistenceSession` saga methods remain available for manual state management; they use their own type keys and do not automatically manage the saga lifecycle.
+A timeout is an outbox row, committed with the saga state, that the broker holds until it is due. It fires after a restart and while the endpoint is stopped. See [delayed delivery](delayed-delivery.md).
+
+- It can arrive later than requested, by up to a second with delay levels.
+- Delivery is at least once, and duplicate suppression uses the persistent inbox.
+- Completion does not cancel outstanding timeouts; they are discarded when delivered.
+- Keep the inbox and saga data for as long as messages can be redelivered.
+- Saga type names, correlation keys, timeout types and MessagePack property names are persisted contracts.
+
+The lower-level `IPersistenceSession` saga methods remain available for manual state management. They use their own type keys and do not automatically manage the saga lifecycle.
 
 ## Mapping, originator replies, and missing sagas
 
