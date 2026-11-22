@@ -83,16 +83,19 @@ namespace Bq.Messaging
         Task RecordOutgoingFailure(string endpoint, string messageId, Exception failure);
     }
 
-    /// <summary>How long a rejected outgoing row waits before it is tried again: 1 second, doubling, up to 1 minute.</summary>
+    /// <summary>
+    /// How long a rejected outgoing row waits before it is tried again: 100 milliseconds, doubling, up to 30 seconds. A
+    /// queue that appears a moment later is found quickly, and a row that never succeeds is retried every 30 seconds.
+    /// </summary>
     public static class OutgoingRetry
     {
-        public static readonly TimeSpan MaxDelay = TimeSpan.FromMinutes(1);
+        public static readonly TimeSpan BaseDelay = TimeSpan.FromMilliseconds(100);
+        public static readonly TimeSpan MaxDelay = TimeSpan.FromSeconds(30);
 
         public static TimeSpan Delay(int attempts)
         {
             if (attempts < 1) attempts = 1;
-            var seconds = Math.Pow(2, Math.Min(attempts - 1, 10));
-            var delay = TimeSpan.FromSeconds(seconds);
+            var delay = TimeSpan.FromTicks(BaseDelay.Ticks * (1L << Math.Min(attempts - 1, 10)));
             return delay > MaxDelay ? MaxDelay : delay;
         }
 

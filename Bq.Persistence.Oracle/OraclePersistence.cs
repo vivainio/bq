@@ -212,13 +212,13 @@ namespace Bq.Persistence.Oracle
             }
         }
 
-        // The delay doubles with each rejection, as OutgoingRetry.Delay does: 2^attempts seconds with the old attempt count, up to a minute.
+        // The delay doubles with each rejection, as OutgoingRetry.Delay does: 100 ms times 2^attempts with the old attempt count, up to 30 seconds.
         Task<int> RecordFailure(DbConnection connection, DbTransaction transaction, string table, string id, Exception failure) =>
             Execute(connection, transaction,
                 $"UPDATE {table} SET attempts = attempts + 1, " +
-                "retry_after_ticks = :now + LEAST(:max, POWER(2, LEAST(attempts, 10)) * 10000000), last_error = :error " +
+                "retry_after_ticks = :now + LEAST(:max, POWER(2, LEAST(attempts, 10)) * :base), last_error = :error " +
                 "WHERE endpoint = :endpoint AND id = :id",
-                ("now", DateTime.UtcNow.Ticks), ("max", OutgoingRetry.MaxDelay.Ticks), ("error", OutgoingRetry.Describe(failure)),
+                ("now", DateTime.UtcNow.Ticks), ("max", OutgoingRetry.MaxDelay.Ticks), ("base", OutgoingRetry.BaseDelay.Ticks), ("error", OutgoingRetry.Describe(failure)),
                 ("endpoint", endpoint), ("id", id));
 
         public async Task RecordOutgoingFailure(string name, string messageId, Exception failure)

@@ -341,9 +341,13 @@ namespace Bq.Messaging.Tests
             if (await Task.WhenAny(task, Task.Delay(15000)) != task) throw new Exception("Timed out waiting for the result.");
             return await task;
         }
-        static async Task Eventually(Func<bool> condition, string what)
+        // The simulator confirms a publish at once. A real broker confirms durable messages one at a time, so the dispatcher
+        // sends roughly ten rows a second there, and backlog cases are sized for it.
+        static bool OnSimulator => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BQ_RABBITSIM_HTTP"));
+
+        static async Task Eventually(Func<bool> condition, string what, int seconds = 15)
         {
-            for (var i = 0; i < 150; i++) { if (condition()) return; await Task.Delay(100); }
+            for (var i = 0; i < seconds * 10; i++) { if (condition()) return; await Task.Delay(100); }
             throw new Exception("Timed out: " + what);
         }
         static async Task<BasicGetResult> GetFrom(IModel channel, string queue)
@@ -841,14 +845,14 @@ namespace Bq.Messaging.Tests
                 try
                 {
                     var store = await EdgeOutbox.Store(path, name);
-                    var expected = Enumerable.Range(0, 200).Select(i => i.ToString("D4")).ToList();
+                    var expected = Enumerable.Range(0, OnSimulator ? 200 : 40).Select(i => i.ToString("D4")).ToList();
                     await EdgeOutbox.Seed(store, name, expected);
                     var configuration = new EndpointConfiguration(name, uri) { Persistence = store };
                     var received = new List<string>();
                     configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { lock (received) received.Add(m.Text); return Task.CompletedTask; }));
                     using (var endpoint = RabbitEndpoint.Start(configuration))
                     {
-                        await Eventually(() => { lock (received) return received.Count == expected.Count; }, "all 200 rows to be handled");
+                        await Eventually(() => { lock (received) return received.Count == expected.Count; }, "all " + expected.Count + " rows to be handled", OnSimulator ? 15 : 90);
                         lock (received) That(received.SequenceEqual(expected), "rows arrive in stored order, first out of order: " + string.Join(",", received.Where((t, i) => t != expected[i]).Take(3)));
                         await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the dispatched rows to leave the outbox");
                     }
@@ -862,7 +866,7 @@ namespace Bq.Messaging.Tests
                 try
                 {
                     var store = await EdgeOutbox.Store(path, name);
-                    const int total = 1500;
+                    var total = OnSimulator ? 1500 : 150;
                     await EdgeOutbox.Seed(store, name, Enumerable.Range(0, total).Select(i => "v" + i));
                     var configuration = new EndpointConfiguration(name, uri) { Persistence = store, MaxConcurrency = 8 };
                     var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, int>();
@@ -870,7 +874,7 @@ namespace Bq.Messaging.Tests
                     var started = DateTime.UtcNow;
                     using (var endpoint = RabbitEndpoint.Start(configuration))
                     {
-                        for (var i = 0; i < 600 && seen.Count < total; i++) await Task.Delay(100);
+                        for (var i = 0; i < 1200 && seen.Count < total; i++) await Task.Delay(100);
                         That(seen.Count == total, "all rows were handled, got " + seen.Count + " of " + total);
                         Console.WriteLine("Outbox backlog of " + total + " drained in " + (DateTime.UtcNow - started).TotalSeconds.ToString("0.0") + "s.");
                         await Eventually(() => EdgeOutbox.Count(path, "bq_outbox").GetAwaiter().GetResult() == 0, "the outbox to empty");

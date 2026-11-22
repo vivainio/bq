@@ -20,7 +20,7 @@ configuration.Persistence = new OraclePersistence(
 
 Choose the driver that your application data layer uses. The factory returns a new closed connection on each call, and Bq owns its lifetime. Bq exposes the open connection and transaction through `IMessageHandlerContext.PersistenceSession` and `ITransactionalSession`. For EF6, construct the context with that exact connection and `contextOwnsConnection: false`, then call `context.Database.UseTransaction(session.Transaction)`. Let Bq commit. Execute application writes or call `SaveChanges` before the handler or before-commit callback completes.
 
-The dispatcher holds an Oracle row lock while publishing and records delivery after broker confirmation. A failed publish leaves the record pending. When the failure belongs to the message, such as a mandatory message no queue accepts, the row is deferred with a growing delay (`attempts`, `retry_after_ticks` and `last_error` in `bq_outbox` and `bq_saga_timeout`) so the rows behind it are still sent. Delivery remains at least once if the broker confirms and the database commit subsequently fails. The adapter does not schedule retention cleanup.
+The dispatcher holds an Oracle row lock while publishing and records delivery after broker confirmation. A failed publish leaves the record pending. When the failure belongs to the message, such as a mandatory message no queue accepts, the row is deferred with a growing delay (100 ms doubling to 30 seconds) (`attempts`, `retry_after_ticks` and `last_error` in `bq_outbox` and `bq_saga_timeout`) so the rows behind it are still sent. Delivery remains at least once if the broker confirms and the database commit subsequently fails. The adapter does not schedule retention cleanup.
 
 ## Integration check
 

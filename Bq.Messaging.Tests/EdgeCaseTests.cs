@@ -1131,10 +1131,10 @@ namespace Bq.Messaging.Tests
 
         static async Task RunOutgoingRetryCases()
         {
-            Case("the retry delay doubles up to a minute", () =>
+            Case("the retry delay starts at 100 ms, doubles and stops at 30 seconds", () =>
             {
-                That(OutgoingRetry.Delay(1) == TimeSpan.FromSeconds(1) && OutgoingRetry.Delay(2) == TimeSpan.FromSeconds(2) && OutgoingRetry.Delay(4) == TimeSpan.FromSeconds(8), "doubling");
-                That(OutgoingRetry.Delay(7) == TimeSpan.FromSeconds(60) && OutgoingRetry.Delay(500) == OutgoingRetry.MaxDelay && OutgoingRetry.Delay(0) == TimeSpan.FromSeconds(1), "capped at a minute, and never below one second");
+                That(OutgoingRetry.Delay(1) == TimeSpan.FromMilliseconds(100) && OutgoingRetry.Delay(2) == TimeSpan.FromMilliseconds(200) && OutgoingRetry.Delay(4) == TimeSpan.FromMilliseconds(800), "doubling");
+                That(OutgoingRetry.Delay(9) == TimeSpan.FromMilliseconds(25600) && OutgoingRetry.Delay(10) == TimeSpan.FromSeconds(30) && OutgoingRetry.Delay(500) == OutgoingRetry.MaxDelay && OutgoingRetry.Delay(0) == TimeSpan.FromMilliseconds(100), "capped at 30 seconds, and never below the first delay");
                 That(OutgoingRetry.Describe(new Exception(new string('x', 900))).Length == 500 && OutgoingRetry.Describe(null) == "", "the reason is kept short");
                 var rejected = new OutgoingMessageRejectedException("id-1", "no queue");
                 That(rejected.MessageId == "id-1" && rejected is InvalidOperationException, "the exception names the message");
@@ -1149,8 +1149,12 @@ namespace Bq.Messaging.Tests
                     await session.StoreTimeout(new OutgoingMessage { Id = "timeout", Body = new byte[0] }, DateTime.UtcNow.AddMinutes(-1));
                     session.Commit();
                 }
-                await memory.RecordOutgoingFailure("edge-retry", "head", new Exception("nobody accepts this"));
-                await memory.RecordOutgoingFailure("edge-retry", "timeout", new Exception("nor this"));
+                // Four rejections each make the delay 800 ms, so the checks below are not racing the clock.
+                for (var i = 0; i < 4; i++)
+                {
+                    await memory.RecordOutgoingFailure("edge-retry", "head", new Exception("nobody accepts this"));
+                    await memory.RecordOutgoingFailure("edge-retry", "timeout", new Exception("nor this"));
+                }
                 await memory.RecordOutgoingFailure("edge-retry", "unknown-id", new Exception("ignored"));
                 var offered = new List<string>();
                 for (var i = 0; i < 4; i++)
@@ -1161,7 +1165,7 @@ namespace Bq.Messaging.Tests
                     await memory.MarkDispatched("edge-retry", next.Id);
                 }
                 That(offered.SequenceEqual(new[] { "second" }), "only the row that was not rejected is offered: " + string.Join(",", offered));
-                await Task.Delay(1200);
+                await Task.Delay(1500);
                 var returning = new List<string>();
                 for (var i = 0; i < 4; i++)
                 {
@@ -1182,16 +1186,16 @@ namespace Bq.Messaging.Tests
                     var store = await EdgeOutbox.Store(path, name);
                     await EdgeOutbox.Seed(store, "q", new[] { "one" });
                     var row = await store.NextOutgoing(name);
-                    await store.RecordOutgoingFailure(name, row.Id, new Exception("rejected"));
+                    // Four rejections make the delay 800 ms, so the checks below are not racing the clock.
+                    for (var i = 0; i < 3; i++) await store.RecordOutgoingFailure(name, row.Id, new Exception("rejected"));
+                    await store.RecordOutgoingFailure(name, row.Id, new Exception("rejected again"));
                     That(await store.NextOutgoing(name) == null, "the rejected row is deferred");
                     var pending = (await store.ListPendingDispatches(10)).Single();
-                    That(pending.Attempts == 1 && pending.LastError == "rejected" && pending.RetryAfterUtc > DateTime.UtcNow, "its retry state is recorded");
+                    That(pending.Attempts == 4 && pending.LastError == "rejected again" && pending.RetryAfterUtc > DateTime.UtcNow, "its retry state is recorded and each rejection counts");
                     That((await store.ListReadyDispatches(null, 10)).Count == 0, "a deferred row is pending but not ready");
-                    await store.RecordOutgoingFailure(name, row.Id, new Exception("rejected again"));
-                    That((await store.ListPendingDispatches(10)).Single().Attempts == 2, "each rejection counts");
                     await store.RecordOutgoingFailure(name, "unknown-id", new Exception("ignored"));
                     await store.Initialize();
-                    That((await store.ListPendingDispatches(10)).Single().Attempts == 2, "initializing again keeps the retry state");
+                    That((await store.ListPendingDispatches(10)).Single().Attempts == 4, "initializing again keeps the retry state");
                 }
                 finally { if (System.IO.File.Exists(path)) System.IO.File.Delete(path); }
             });

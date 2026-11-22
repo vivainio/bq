@@ -36,7 +36,7 @@ Both tables describe a message to publish, with the same columns. `bq_saga_timeo
 | `headers` | The AMQP headers. They include `x-bq-outbox-content-type`, the wire format of `body`, so a row keeps its format if the endpoint changes format before it is sent |
 | `due_ticks` | `bq_saga_timeout` only. When the row may be sent |
 | `attempts` | How many times publishing was rejected because of this message, for example no queue accepted it. `0` for a row that has never failed |
-| `retry_after_ticks` | While in the future, the dispatcher skips the row so the rows behind it are sent. The delay doubles from one second up to one minute. `0` if the row never failed |
+| `retry_after_ticks` | While in the future, the dispatcher skips the row so the rows behind it are sent. The delay starts at 100 milliseconds and doubles up to 30 seconds. `0` if the row never failed |
 | `last_error` | The reason for the last rejection, up to 500 characters |
 | `enqueue_order` | Oracle only. An identity column that orders `bq_outbox`. SQLite orders by its row ID |
 
