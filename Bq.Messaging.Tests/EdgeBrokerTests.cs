@@ -620,6 +620,51 @@ namespace Bq.Messaging.Tests
                 finally { await Chaos(); }
             });
 
+            await Case("endpoints with the same name on different virtual hosts keep their messages apart", async () =>
+            {
+                if (!OnSimulator) { Console.WriteLine("Virtual host test skipped: real brokers need the virtual hosts created first."); return; }
+                Uri OnVhost(string vhost) => new UriBuilder(uri) { Path = "/" + vhost }.Uri;
+                var suffix = Guid.NewGuid().ToString("N");
+                var (hostA, hostB) = ("bq-a-" + suffix, "bq-b-" + suffix);
+                // An older simulator accepts any virtual host but keeps one namespace, so a queue declared on one shows on the other.
+                var probe = "bq.test.edge.vhostprobe." + suffix;
+                using (var a = new ConnectionFactory { Uri = OnVhost(hostA) }.CreateConnection())
+                using (var b = new ConnectionFactory { Uri = OnVhost(hostB) }.CreateConnection())
+                using (var ma = a.CreateModel())
+                {
+                    ma.QueueDeclare(probe, true, false, false);
+                    var shared = true;
+                    using (var mb = b.CreateModel())
+                    {
+                        try { mb.QueueDeclarePassive(probe); } catch (global::RabbitMQ.Client.Exceptions.OperationInterruptedException) { shared = false; }
+                    }
+                    ma.QueueDelete(probe);
+                    if (shared) { Console.WriteLine("Virtual host test skipped: needs rabbit-sim with virtual hosts."); return; }
+                }
+                var name = "bq.test.edge.vhost." + suffix;
+                var seen = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
+                RabbitEndpoint Start(string vhost)
+                {
+                    var configuration = new EndpointConfiguration(name, OnVhost(vhost)) { Persistence = new InMemoryPersistenceProvider(name) };
+                    configuration.Route(typeof(EdgeUowMessage), name);
+                    configuration.Handle(() => new Handler<EdgeUowMessage>((m, c) => { seen[m.Text] = vhost; return Task.CompletedTask; }));
+                    return RabbitEndpoint.Start(configuration);
+                }
+                using (var endpointA = Start(hostA))
+                using (var endpointB = Start(hostB))
+                {
+                    for (var i = 0; i < 3; i++)
+                    {
+                        await endpointA.Send(new EdgeUowMessage { Text = "a" + i });
+                        await endpointB.Send(new EdgeUowMessage { Text = "b" + i });
+                    }
+                    await Eventually(() => seen.Count == 6, "all six messages");
+                    await Task.Delay(300);
+                    That(seen.Count == 6, "no message was duplicated or lost: " + seen.Count);
+                    That(seen.All(p => p.Key.StartsWith("a") ? p.Value == hostA : p.Value == hostB), "each endpoint handled only its own vhost's messages: " + string.Join(",", seen.Select(p => p.Key + "@" + p.Value)));
+                }
+            });
+
             foreach (var viaContainer in new[] { false, true })
             {
                 var container = viaContainer;

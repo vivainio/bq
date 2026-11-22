@@ -19,11 +19,11 @@ The messaging CI job installs the [published rabbit-sim wheel](https://pypi.org/
 ```sh
 python3 -m venv .venv-rabbit-sim
 source .venv-rabbit-sim/bin/activate
-python -m pip install rabbit-sim==0.4.0
+python -m pip install rabbit-sim==0.4.1
 bash scripts/test-rabbit-sim.sh
 ```
 
-The simulator can also be made slow or unreliable on purpose. `POST /chaos` takes a JSON body such as `{"confirm_delay_ms":25,"deliver_delay_ms":40,"ack_delay_ms":250,"nack_next":1}` that sets the whole behaviour (`{}` turns it off): it holds publisher confirms, deliveries and consumer acks back and declines the next publishes. Tests use them to show that batched dispatch beats one confirm per row when confirms are slow, that a batch the broker declines is published again and the inbox absorbs the duplicates, and that a confirm that does not arrive in time raises the critical-error callback, and that slow deliveries and acks keep handler concurrency within `MaxConcurrency` and prefetch without losing or repeating a message. They skip themselves on a real broker or an older simulator.
+The simulator can also be made slow or unreliable on purpose. `POST /chaos` takes a JSON body such as `{"confirm_delay_ms":25,"deliver_delay_ms":40,"ack_delay_ms":250,"nack_next":1}` that sets the whole behaviour (`{}` turns it off): it holds publisher confirms, deliveries and consumer acks back and declines the next publishes. Tests use them to show that batched dispatch beats one confirm per row when confirms are slow, that a batch the broker declines is published again and the inbox absorbs the duplicates, and that a confirm that does not arrive in time raises the critical-error callback, and that slow deliveries and acks keep handler concurrency within `MaxConcurrency` and prefetch without losing or repeating a message. A virtual-host test shows two endpoints with the same name on different virtual hosts keeping their messages apart. They skip themselves on a real broker or an older simulator.
 
 The runner starts the simulator with `--rabbitmq 4` when it supports it, so a test that RabbitMQ 4 would reject, such as declaring a transient queue that is not exclusive, fails here too. The runner uses `--data` to persist broker state to a temporary SQLite file. It stops the simulator, waits for the endpoint to observe the outage, and restarts it with that same file before running the Windsor sample.
 

@@ -27,3 +27,7 @@ using (var endpoint = RabbitEndpoint.Start(config))
     // Keep the process running until shutdown.
 }
 ```
+
+## Virtual hosts
+
+The path of the AMQP URI is the virtual host, as with any RabbitMQ client: `amqp://guest:guest@localhost:5672/` uses the default `/`, and `amqp://guest:guest@localhost:5672/tenant-a` uses `tenant-a`. The `virtualhost=tenant-a` key of the connection-string form means the same. An endpoint's queues and exchanges live in its own virtual host, so two endpoints with the same name on different virtual hosts are separate, and so are their messages. Bq does not create virtual hosts: on RabbitMQ, create the virtual host and give the user permissions on it first. rabbit-sim 0.4.1 and later creates a virtual host when a client first opens it.
