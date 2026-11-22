@@ -77,3 +77,29 @@ Run the complete suite with `./scripts/test-rabbitmq.sh`. It requires the .NET S
 Use the Messaging integration workflow’s manual trigger to also run the two RabbitMQ image jobs (3.13 and 4.x).
 
 To check a broker upgrade, set `BQ_RABBITMQ_IMAGE` to the RabbitMQ container image used by your deployment. The runner defaults to `docker.io/library/rabbitmq:3.13-management`. The selected image must provide `rabbitmq-server` and `rabbitmq-diagnostics`.
+
+## Stress and fuzz run
+
+`bash scripts/stress.sh [seconds]` runs a long stress test on your own machine. It is not part of CI. It needs `rabbit-sim` on `PATH`, starts its own simulator, and runs the net10 program `Bq.Stress`. The default is 300 seconds.
+
+While it runs, four producers send fuzzed messages into one endpoint with a SQLite database. Each message has random text in several scripts, including empty and very long strings, and a random binary body up to 64 KB. A checksum shows whether the payload changed on the way. A message can have follow-up messages, which the handler sends from inside its own transaction.
+
+The run injects these faults:
+
+- **Broker faults:** random confirm, delivery and ack delays, and declined publishes, through the simulator's `/chaos` endpoint.
+- **Handler failures:** random exceptions before and after the database write, random slow handlers, and a small share of poison messages that always fail.
+- **Restarts:** the endpoint is stopped, or disposed with work in flight as a crash would, and started again on the same database.
+- **Aborted producers:** a send transaction is rolled back after its messages were queued.
+- **Garbage:** random bytes published straight into the input queue.
+
+When the time is up, the faults stop and the run waits for the endpoint to drain. It then checks that:
+
+- every sent message ended up handled, or in the error queue, and none is missing;
+- no message had its effect applied more than once;
+- no effect exists without a sent message;
+- no poison message was applied and no payload changed;
+- the error records equal the failed messages plus the garbage injected.
+
+It prints `PASS`, or `FAIL` with the reasons, and exits with a nonzero code on failure. A failed run keeps its SQLite database for inspection. The run prints its seed. Set `BQ_STRESS_SEED` to reuse it, though thread timing still varies, so a failure may not repeat exactly. Other settings are `BQ_STRESS_PRODUCERS`, `BQ_STRESS_CONCURRENCY`, `BQ_STRESS_FAIL_RATE` and `BQ_STRESS_BACKLOG`, which caps how far producers run ahead of the handlers.
+
+The injected delays limit throughput on purpose: an ack delay holds a prefetch slot, so a run handles tens of messages per second, not thousands.
